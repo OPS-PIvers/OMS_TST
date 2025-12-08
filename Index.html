@@ -289,6 +289,7 @@
 
     function loadAdminEarned() {
       google.script.run.withSuccessHandler(data => {
+        STATE.pendingEarned = data; // Store for Edit lookup
         const html = `
           <div class="bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
             <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-ops-blue-lighter">
@@ -329,6 +330,12 @@
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm font-bold text-ops-blue">+${row.hours}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm flex gap-2">
+                           <button onclick="openEditEarnedModal(${row.rowIndex})" class="text-ops-gray-dark bg-white border border-gray-300 hover:bg-gray-50 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Edit">
+                            <i class="fas fa-pencil-alt"></i>
+                          </button>
+                           <button onclick="deleteItem('earned', ${row.rowIndex})" class="text-white bg-ops-red hover:bg-ops-red-dark px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Delete">
+                            <i class="fas fa-trash"></i>
+                          </button>
                            <button onclick="denyEarned(${row.rowIndex})" class="text-ops-red bg-white border border-ops-red hover:bg-red-50 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95">
                             Deny
                           </button>
@@ -349,6 +356,7 @@
 
     function loadAdminUsed() {
       google.script.run.withSuccessHandler(data => {
+        STATE.pendingUsed = data; // Store for Edit lookup
         const html = `
           <div class="bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
             <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-ops-red-lighter">
@@ -380,7 +388,13 @@
                         </td>
                         <td class="px-6 py-4 text-sm text-ops-gray-dark">${new Date(row.date).toLocaleDateString()}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-ops-red font-bold">-${row.used}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm">
+                        <td class="px-6 py-4 whitespace-nowrap text-sm flex gap-2">
+                           <button onclick="openEditUsedModal(${row.rowIndex})" class="text-ops-gray-dark bg-white border border-gray-300 hover:bg-gray-50 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Edit">
+                            <i class="fas fa-pencil-alt"></i>
+                          </button>
+                           <button onclick="deleteItem('used', ${row.rowIndex})" class="text-white bg-ops-red hover:bg-ops-red-dark px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Delete">
+                            <i class="fas fa-trash"></i>
+                          </button>
                           <button onclick="approveItem('used', ${row.rowIndex})" class="text-white bg-ops-red hover:bg-ops-red-dark px-4 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95">
                             Finalize
                           </button>
@@ -1003,6 +1017,145 @@
         showLoading(false);
         alert("Email sent successfully.");
       }).sendStatusEmail(email, name);
+    }
+
+    function deleteItem(type, rowIndex) {
+      if(!confirm("Are you sure you want to DELETE this request? This action cannot be undone.")) return;
+
+      const row = document.getElementById(`row-${rowIndex}`);
+      row.classList.add('opacity-50', 'pointer-events-none', 'bg-red-50');
+
+      const handler = type === 'earned' ? 'deleteEarnedRow' : 'deleteUsedRow';
+
+      google.script.run.withSuccessHandler(() => {
+        row.remove();
+        // Update local state if needed, or just reload tab
+        // For simplicity, we just remove row from UI
+      }).withFailureHandler(err => {
+        alert("Error deleting: " + err);
+        row.classList.remove('opacity-50', 'pointer-events-none', 'bg-red-50');
+      })[handler](rowIndex);
+    }
+
+    function openEditEarnedModal(rowIndex) {
+      const row = STATE.pendingEarned.find(r => r.rowIndex === rowIndex);
+      if(!row) return alert("Error: Row not found in cache.");
+
+      // Format date for input
+      const dateVal = new Date(row.date).toISOString().split('T')[0];
+      const isHalf = row.hours == 0.5;
+
+      const html = `
+        <form onsubmit="submitEditEarned(event, ${rowIndex})">
+          <div class="mb-4">
+            <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Teacher (Earner)</label>
+            <input type="text" value="${row.name}" disabled class="block w-full rounded border-gray-200 bg-gray-100 p-2 border text-gray-500">
+          </div>
+          <div class="mb-4">
+             <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Subbed For</label>
+             <input type="text" name="subbedFor" value="${row.subbedFor}" required class="block w-full rounded border-gray-300 p-2 border">
+          </div>
+          <div class="grid grid-cols-2 gap-4 mb-4">
+            <div>
+               <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Date</label>
+               <input type="date" name="date" value="${dateVal}" required class="block w-full rounded border-gray-300 p-2 border">
+            </div>
+            <div>
+               <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Period</label>
+               <select name="period" class="block w-full rounded border-gray-300 p-2 border bg-white">
+                 ${[1,2,3,4,5,6,7,8].map(p => `<option ${row.period == p ? 'selected' : ''}>${p}</option>`).join('')}
+               </select>
+            </div>
+          </div>
+          <div class="mb-6">
+            <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Duration</label>
+            <div class="flex gap-3">
+              <label class="flex-1 cursor-pointer">
+                <input type="radio" name="duration" value="1" ${!isHalf ? 'checked' : ''} class="peer sr-only">
+                <div class="rounded border border-gray-200 p-2 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue peer-checked:text-white transition">
+                  <span class="text-sm font-bold">Full (1.0)</span>
+                </div>
+              </label>
+              <label class="flex-1 cursor-pointer">
+                <input type="radio" name="duration" value="0.5" ${isHalf ? 'checked' : ''} class="peer sr-only">
+                <div class="rounded border border-gray-200 p-2 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue peer-checked:text-white transition">
+                  <span class="text-sm font-bold">Half (0.5)</span>
+                </div>
+              </label>
+            </div>
+          </div>
+          <button type="submit" class="w-full bg-ops-blue text-white font-bold py-3 px-4 rounded shadow hover:bg-ops-blue-dark transition uppercase tracking-wide">
+            Save Changes
+          </button>
+        </form>
+      `;
+      showModal("Edit Earned Request", html);
+    }
+
+    function submitEditEarned(e, rowIndex) {
+      e.preventDefault();
+      const form = e.target;
+      const durationVal = form.duration.value;
+      
+      const payload = {
+        subbedFor: form.subbedFor.value,
+        date: form.date.value,
+        period: form.period.value,
+        amountDecimal: parseFloat(durationVal),
+        amountType: durationVal == "1" ? "Full Period" : "Half Period"
+      };
+
+      showLoading(true);
+      google.script.run.withSuccessHandler(() => {
+        showLoading(false);
+        closeModal();
+        loadAdminEarned(); // Refresh table
+      }).withFailureHandler(handleError).updateEarnedRow(rowIndex, payload);
+    }
+
+    function openEditUsedModal(rowIndex) {
+      const row = STATE.pendingUsed.find(r => r.rowIndex === rowIndex);
+      if(!row) return alert("Error: Row not found in cache.");
+
+      const dateVal = new Date(row.date).toISOString().split('T')[0];
+
+      const html = `
+        <form onsubmit="submitEditUsed(event, ${rowIndex})">
+           <div class="mb-4">
+            <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Teacher (User)</label>
+            <input type="text" value="${row.name}" disabled class="block w-full rounded border-gray-200 bg-gray-100 p-2 border text-gray-500">
+          </div>
+          <div class="mb-4">
+             <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Date of Usage</label>
+             <input type="date" name="date" value="${dateVal}" required class="block w-full rounded border-gray-300 p-2 border">
+          </div>
+          <div class="mb-6">
+            <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Hours Used</label>
+            <input type="number" name="amount" step="0.5" min="0.5" value="${row.used}" required class="block w-full rounded border-gray-300 p-2 border">
+          </div>
+          <button type="submit" class="w-full bg-ops-red text-white font-bold py-3 px-4 rounded shadow hover:bg-ops-red-dark transition uppercase tracking-wide">
+            Save Changes
+          </button>
+        </form>
+      `;
+      showModal("Edit Usage Request", html);
+    }
+
+    function submitEditUsed(e, rowIndex) {
+      e.preventDefault();
+      const form = e.target;
+      
+      const payload = {
+        date: form.date.value,
+        amount: parseFloat(form.amount.value)
+      };
+
+      showLoading(true);
+      google.script.run.withSuccessHandler(() => {
+        showLoading(false);
+        closeModal();
+        loadAdminUsed(); // Refresh table
+      }).withFailureHandler(handleError).updateUsedRow(rowIndex, payload);
     }
 
     // --- Utilities ---

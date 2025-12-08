@@ -208,6 +208,102 @@ function denyEarnedRow(rowIndex) {
 }
 
 /**
+ * Admin Action: Delete an Earned request.
+ * Deletes from BOTH 'TST Approvals (New)' and 'Form Responses 1'.
+ */
+function deleteEarnedRow(rowIndex) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const approvalSheet = ss.getSheetByName('TST Approvals (New)');
+  const formSheet = ss.getSheetByName('Form Responses 1');
+  
+  // 1. Get details from Approval Sheet to find match
+  // Indexes: 0=Email, 1=Name, 2=SubbedFor, 4=Date, 5=Period
+  const rowValues = approvalSheet.getRange(rowIndex, 1, 1, 6).getValues()[0];
+  const email = rowValues[0];
+  const date = new Date(rowValues[4]);
+  const period = rowValues[5];
+  
+  // 2. Find and Delete in Form Responses 1
+  const formData = formSheet.getDataRange().getValues();
+  // Form Responses: Col B=Email (1), E=Date (4), F=Period (5)
+  // Loop backwards to safely delete
+  for (let i = formData.length - 1; i >= 1; i--) { // Skip header
+    const r = formData[i];
+    const rDate = new Date(r[4]);
+    
+    // Loose date comparison (checking year, month, day)
+    const isDateMatch = rDate.getFullYear() === date.getFullYear() &&
+                        rDate.getMonth() === date.getMonth() &&
+                        rDate.getDate() === date.getDate();
+                        
+    if (r[1] === email && isDateMatch && r[5] == period) {
+       formSheet.deleteRow(i + 1);
+       // We stop after first match? Or continue? usually one entry.
+       // Let's break to be safe/efficient, assuming duplicates aren't common or handled elsewhere.
+       break; 
+    }
+  }
+
+  // 3. Delete from TST Approvals (New)
+  approvalSheet.deleteRow(rowIndex);
+  
+  return true;
+}
+
+/**
+ * Admin Action: Edit an Earned request.
+ * Updates BOTH 'TST Approvals (New)' and 'Form Responses 1'.
+ */
+function updateEarnedRow(rowIndex, newData) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const approvalSheet = ss.getSheetByName('TST Approvals (New)');
+  const formSheet = ss.getSheetByName('Form Responses 1');
+  
+  // 1. Get OLD details to find match in Form Responses
+  const rowValues = approvalSheet.getRange(rowIndex, 1, 1, 6).getValues()[0];
+  const oldEmail = rowValues[0];
+  const oldDate = new Date(rowValues[4]);
+  const oldPeriod = rowValues[5];
+  
+  // 2. Update Form Responses 1
+  const formData = formSheet.getDataRange().getValues();
+  let foundInForm = false;
+  
+  for (let i = formData.length - 1; i >= 1; i--) {
+    const r = formData[i];
+    const rDate = new Date(r[4]);
+    const isDateMatch = rDate.getFullYear() === oldDate.getFullYear() &&
+                        rDate.getMonth() === oldDate.getMonth() &&
+                        rDate.getDate() === oldDate.getDate();
+
+    if (r[1] === oldEmail && isDateMatch && r[5] == oldPeriod) {
+       // Found match. Update columns.
+       // Form Responses: C=SubbedFor (2), E=Date (4), F=Period (5), G=AmountType (6), H=Decimal (7)
+       // We don't update Timestamp or Email usually, but we could.
+       
+       formSheet.getRange(i + 1, 3).setValue(newData.subbedFor);
+       formSheet.getRange(i + 1, 5).setValue(new Date(newData.date));
+       formSheet.getRange(i + 1, 6).setValue(newData.period);
+       formSheet.getRange(i + 1, 7).setValue(newData.amountType);
+       formSheet.getRange(i + 1, 8).setValue(newData.amountDecimal);
+       foundInForm = true;
+       break;
+    }
+  }
+
+  // 3. Update TST Approvals (New) directly to reflect changes immediately
+  // Cols: C=SubbedFor (3/idx 2), E=Date (5/idx 4), F=Period (6/idx 5), G=Type (7/idx 6), H=Hours (8/idx 7)
+  approvalSheet.getRange(rowIndex, 3).setValue(newData.subbedFor);
+  approvalSheet.getRange(rowIndex, 5).setValue(new Date(newData.date));
+  approvalSheet.getRange(rowIndex, 6).setValue(newData.period);
+  approvalSheet.getRange(rowIndex, 7).setValue(newData.amountType);
+  approvalSheet.getRange(rowIndex, 8).setValue(newData.amountDecimal);
+
+  return true;
+}
+
+
+/**
  * Admin Action: Approve a Used request.
  */
 function approveUsedRow(rowIndex) {
@@ -216,6 +312,28 @@ function approveUsedRow(rowIndex) {
   // Col E (5) is status, Col F (6) is timestamp
   sheet.getRange(rowIndex, 5).setValue(true);
   sheet.getRange(rowIndex, 6).setValue(new Date());
+  return true;
+}
+
+/**
+ * Admin Action: Delete a Used request.
+ */
+function deleteUsedRow(rowIndex) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('TST Usage (New)');
+  sheet.deleteRow(rowIndex);
+  return true;
+}
+
+/**
+ * Admin Action: Edit a Used request.
+ */
+function updateUsedRow(rowIndex, newData) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('TST Usage (New)');
+  // Cols: C=Date (3), D=Amount (4)
+  sheet.getRange(rowIndex, 3).setValue(new Date(newData.date));
+  sheet.getRange(rowIndex, 4).setValue(newData.amount);
   return true;
 }
 
