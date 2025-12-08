@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <!-- Google Fonts: Lexend -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- FontAwesome -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  
+  <!-- Tailwind CSS with Custom Config -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Lexend', 'sans-serif'],
+          },
+          colors: {
+            ops: {
+              blue: '#2d3f89',       // Primary Blue
+              'blue-dark': '#1d2a5d', // Darkest Blue
+              'blue-light': '#4356a0',
+              'blue-lighter': '#eaecf5', // Info Background
+              red: '#ad2122',        // Primary Red
+              'red-dark': '#7a1718',
+              'red-light': '#c13435',
+              'red-lighter': '#e5c7c7', // Warning Background
+              gray: {
+                dark: '#333333',
+                DEFAULT: '#666666',
+                light: '#999999',
+                lighter: '#CCCCCC'
+              }
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    /* Custom Loader using Brand Colors */
+    .loader {
+      border: 4px solid #eaecf5; /* ops-blue-lighter */
+      border-top: 4px solid #2d3f89; /* ops-blue */
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    
+    body {
+      color: #333333; /* ops-gray-dark */
+    }
+    
+    /* Smooth transitions for tabs */
+    .tab-btn {
+      transition: all 0.2s ease-in-out;
+    }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen font-sans">
+
+  <!-- Setup & Loading State -->
+  <div id="app-loading" class="fixed inset-0 flex flex-col items-center justify-center bg-white z-50">
+    <div class="loader mb-4"></div>
+    <p class="text-ops-gray font-medium">Authenticating & Loading Directory...</p>
+  </div>
+
+  <!-- Main App Container (Hidden until loaded) -->
+  <div id="app-container" class="hidden flex flex-col min-h-screen">
+    
+    <!-- Navigation -->
+    <nav class="bg-ops-blue text-white shadow-lg">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex items-center justify-between h-20">
+          <div class="flex items-center">
+            <!-- Brand Logo Area -->
+            <div class="flex-shrink-0 flex items-center gap-3">
+              <div class="bg-white text-ops-blue rounded-full h-10 w-10 flex items-center justify-center shadow-sm">
+                <i class="fas fa-layer-group text-xl"></i>
+              </div>
+              <div>
+                <span class="font-bold text-xl tracking-tight block leading-tight">Orono Middle School</span>
+                <span class="text-xs font-light text-blue-100 uppercase tracking-wider block">TST Manager</span>
+              </div>
+            </div>
+          </div>
+          <div class="flex items-center space-x-6">
+            <div id="user-info" class="text-sm font-light text-blue-100 hidden md:block"></div>
+            <button onclick="logout()" class="text-xs bg-ops-blue-dark hover:bg-opacity-80 transition px-4 py-2 rounded text-white font-medium uppercase tracking-wide">
+              Refresh
+            </button>
+          </div>
+        </div>
+        
+        <!-- Tab Navigation -->
+        <div class="flex space-x-2 pb-0 overflow-x-auto mt-2" id="nav-tabs">
+          <!-- Injected via JS -->
+        </div>
+      </div>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main class="flex-grow max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
+      <div id="view-container">
+        <!-- Views injected here -->
+      </div>
+    </main>
+    
+    <!-- Footer -->
+    <footer class="bg-white border-t border-gray-200 mt-auto py-6">
+      <div class="max-w-7xl mx-auto px-4 text-center text-xs text-ops-gray-light">
+        &copy; Orono Technology. All rights reserved.
+      </div>
+    </footer>
+
+  </div>
+
+  <!-- Modal Template -->
+  <div id="modal-backdrop" class="fixed inset-0 bg-ops-blue-dark bg-opacity-75 hidden z-40 flex items-center justify-center backdrop-blur-sm">
+    <div class="bg-white rounded-lg shadow-2xl w-full max-w-2xl mx-4 overflow-hidden transform transition-all border-t-4 border-ops-blue">
+      <div class="flex justify-between items-center bg-gray-50 px-6 py-4 border-b border-gray-100">
+        <h3 id="modal-title" class="text-xl font-bold text-ops-blue-dark">Modal Title</h3>
+        <button onclick="closeModal()" class="text-ops-gray-light hover:text-ops-red transition rounded-full p-1">
+          <i class="fas fa-times text-lg"></i>
+        </button>
+      </div>
+      <div id="modal-content" class="p-8 max-h-[70vh] overflow-y-auto">
+        <!-- Content -->
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // --- State Management ---
+    let STATE = {
+      user: null, 
+      currentTab: null,
+      dataCache: {}
+    };
+
+    // --- Initialization ---
+    window.onload = function() {
+      google.script.run
+        .withSuccessHandler(initApp)
+        .withFailureHandler(handleError)
+        .getInitialData();
+    };
+
+    function initApp(data) {
+      STATE.user = data;
+      document.getElementById('app-loading').classList.add('hidden');
+      document.getElementById('app-container').classList.remove('hidden');
+      
+      document.getElementById('user-info').innerHTML = `
+        <span class="block font-medium">${data.name}</span>
+        <span class="text-xs opacity-75">${data.role}</span>
+      `;
+
+      renderNav();
+      
+      if (data.role === 'Admin') {
+        switchTab('admin-earned');
+      } else if (data.role === 'Teacher') {
+        switchTab('teacher-totals');
+      } else {
+        document.getElementById('view-container').innerHTML = `
+          <div class="bg-ops-red-lighter border-l-4 border-ops-red p-4 rounded text-ops-red-dark">
+            <p class="font-bold">Access Denied</p>
+            <p>Your email is not listed in the Staff Directory.</p>
+          </div>`;
+      }
+    }
+
+    // --- Navigation Logic ---
+    function renderNav() {
+      const navContainer = document.getElementById('nav-tabs');
+      let tabs = [];
+
+      if (STATE.user.role === 'Admin') {
+        tabs = [
+          { id: 'admin-earned', label: 'TST Earned', sub: 'Pending', icon: 'fa-inbox' },
+          { id: 'admin-used', label: 'TST Used', sub: 'Pending', icon: 'fa-hand-holding-usd' },
+          { id: 'admin-totals', label: 'Directory', sub: 'Finalized', icon: 'fa-users' }
+        ];
+      } else if (STATE.user.role === 'Teacher') {
+        tabs = [
+          { id: 'teacher-submit', label: 'Submit', sub: 'Earned Time', icon: 'fa-plus-circle' },
+          { id: 'teacher-request', label: 'Request', sub: 'Usage', icon: 'fa-minus-circle' },
+          { id: 'teacher-totals', label: 'My Report', sub: 'Totals', icon: 'fa-chart-pie' }
+        ];
+      }
+
+      navContainer.innerHTML = tabs.map(t => `
+        <button 
+          onclick="switchTab('${t.id}')"
+          id="btn-${t.id}"
+          class="tab-btn group flex items-center px-5 py-3 rounded-t-lg border-b-4 border-transparent hover:bg-ops-blue-light">
+          <i class="fas ${t.icon} text-lg mr-3 group-hover:text-white transition-colors"></i>
+          <div class="text-left leading-tight">
+            <div class="font-bold text-sm transition-colors">${t.label}</div>
+            <div class="text-[10px] uppercase tracking-wider font-medium transition-colors">${t.sub}</div>
+          </div>
+        </button>
+      `).join('');
+    }
+
+    function switchTab(tabId) {
+      STATE.currentTab = tabId;
+      
+      // Reset all tabs to inactive state
+      document.querySelectorAll('#nav-tabs button').forEach(b => {
+        // Remove Active Classes
+        b.classList.remove('bg-gray-50', 'border-ops-blue-dark');
+        
+        // Add Inactive Styling (Transparent bg, light blue text)
+        // Note: 'hover:bg-ops-blue-light' is already on the base class in renderNav
+        
+        // Reset Label Color to light blue
+        const label = b.querySelector('.font-bold');
+        if (label) {
+            label.classList.remove('text-ops-blue');
+            label.classList.add('text-blue-100', 'group-hover:text-white');
+        }
+
+        // Reset Subtext Color to dimmer blue
+        const sub = b.querySelector('.uppercase');
+        if (sub) {
+            sub.classList.remove('text-ops-gray');
+            sub.classList.add('text-blue-200', 'group-hover:text-blue-50');
+        }
+
+        // Reset Icon Color
+        const icon = b.querySelector('i');
+        if (icon) {
+            icon.classList.remove('text-ops-blue');
+            icon.classList.add('text-blue-200');
+        }
+      });
+
+      const activeBtn = document.getElementById(`btn-${tabId}`);
+      if (!activeBtn) return; // Guard clause
+
+      // Apply Active Classes
+      activeBtn.classList.remove('hover:bg-ops-blue-light'); // Remove hover effect for active tab
+      activeBtn.classList.add('bg-gray-50', 'border-ops-blue-dark'); // Active styling
+      
+      // Update Inner Text Colors for Active State
+      const label = activeBtn.querySelector('.font-bold');
+      if (label) {
+        label.classList.remove('text-blue-100', 'group-hover:text-white');
+        label.classList.add('text-ops-blue');
+      }
+      
+      const sub = activeBtn.querySelector('.uppercase');
+      if (sub) {
+        sub.classList.remove('text-blue-200', 'group-hover:text-blue-50');
+        sub.classList.add('text-ops-gray');
+      }
+
+      const icon = activeBtn.querySelector('i');
+      if (icon) {
+        icon.classList.remove('text-blue-200');
+        icon.classList.add('text-ops-blue');
+      }
+
+      // Loader
+      const container = document.getElementById('view-container');
+      container.innerHTML = `<div class="flex flex-col items-center justify-center p-20"><div class="loader mb-4"></div><span class="text-ops-gray">Loading data...</span></div>`;
+
+      // Dispatch
+      if (tabId === 'admin-earned') loadAdminEarned();
+      else if (tabId === 'admin-used') loadAdminUsed();
+      else if (tabId === 'admin-totals') loadAdminTotals();
+      else if (tabId === 'teacher-submit') renderTeacherSubmit();
+      else if (tabId === 'teacher-request') renderTeacherRequest();
+      else if (tabId === 'teacher-totals') loadTeacherTotals();
+    }
+
+    // --- Admin Views ---
+
+    function loadAdminEarned() {
+      google.script.run.withSuccessHandler(data => {
+        const html = `
+          <div class="bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
+            <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-ops-blue-lighter">
+              <div>
+                <h2 class="text-xl font-bold text-ops-blue-dark">Pending Earned Approvals</h2>
+                <p class="text-xs text-ops-gray uppercase tracking-wider mt-1">Review & Release to Directory</p>
+              </div>
+              <span class="text-sm font-bold bg-white text-ops-blue px-3 py-1 rounded-full shadow-sm border border-blue-100">${data.length} Requests</span>
+            </div>
+            ${data.length === 0 ? '<div class="p-12 text-center"><i class="fas fa-check-circle text-4xl text-gray-300 mb-4"></i><p class="text-ops-gray">All caught up! No pending approvals.</p></div>' : 
+              `<div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                  <thead class="bg-gray-50">
+                    <tr>
+                      <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Teacher</th>
+                      <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Subbed For</th>
+                      <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Details</th>
+                      <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Hours</th>
+                      <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody class="bg-white divide-y divide-gray-200">
+                    ${data.map(row => `
+                      <tr id="row-${row.rowIndex}" class="hover:bg-gray-50 transition">
+                        <td class="px-6 py-4 whitespace-nowrap">
+                          <div class="text-sm font-bold text-ops-blue-dark">${row.name}</div>
+                          <div class="text-xs text-ops-gray">${row.email}</div>
+                        </td>
+                        <td class="px-6 py-4 text-sm text-ops-gray-dark">${row.subbedFor}</td>
+                        <td class="px-6 py-4 text-sm text-ops-gray">
+                          <div><i class="far fa-calendar mr-1"></i> ${new Date(row.date).toLocaleDateString()}</div>
+                          <div class="text-xs mt-1"><span class="bg-gray-100 px-1 rounded">${row.period}</span></div>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-bold text-ops-blue">+${row.hours}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm flex gap-2">
+                           <button onclick="denyEarned(${row.rowIndex})" class="text-ops-red bg-white border border-ops-red hover:bg-red-50 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95">
+                            Deny
+                          </button>
+                          <button onclick="approveItem('earned', ${row.rowIndex})" class="text-white bg-ops-blue hover:bg-ops-blue-dark px-4 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95">
+                            Approve
+                          </button>
+                        </td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              </div>`
+            }
+          </div>`;
+        document.getElementById('view-container').innerHTML = html;
+      }).getPendingEarned();
+    }
+
+    function loadAdminUsed() {
+      google.script.run.withSuccessHandler(data => {
+        const html = `
+          <div class="bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
+            <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-ops-red-lighter">
+              <div>
+                <h2 class="text-xl font-bold text-ops-red-dark">Pending Usage Requests</h2>
+                <p class="text-xs text-ops-red-dark opacity-75 uppercase tracking-wider mt-1">Deduct from Balance</p>
+              </div>
+              <button onclick="openCreateUsageModal()" class="text-xs font-bold bg-ops-red hover:bg-ops-red-dark text-white px-4 py-2 rounded shadow transition uppercase tracking-wide">
+                <i class="fas fa-plus mr-1"></i> Create New
+              </button>
+            </div>
+            ${data.length === 0 ? '<div class="p-12 text-center"><i class="fas fa-mug-hot text-4xl text-gray-300 mb-4"></i><p class="text-ops-gray">No usage requests pending.</p></div>' : 
+              `<div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                  <thead class="bg-gray-50">
+                    <tr>
+                      <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Teacher</th>
+                      <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Date Used</th>
+                      <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Amount</th>
+                      <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody class="bg-white divide-y divide-gray-200">
+                    ${data.map(row => `
+                      <tr id="row-${row.rowIndex}" class="hover:bg-gray-50 transition">
+                        <td class="px-6 py-4 whitespace-nowrap">
+                          <div class="text-sm font-bold text-ops-blue-dark">${row.name}</div>
+                          <div class="text-xs text-ops-gray">${row.email}</div>
+                        </td>
+                        <td class="px-6 py-4 text-sm text-ops-gray-dark">${new Date(row.date).toLocaleDateString()}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-ops-red font-bold">-${row.used}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm">
+                          <button onclick="approveItem('used', ${row.rowIndex})" class="text-white bg-ops-red hover:bg-ops-red-dark px-4 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95">
+                            Finalize
+                          </button>
+                        </td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              </div>`
+            }
+          </div>`;
+        document.getElementById('view-container').innerHTML = html;
+      }).getPendingUsed();
+    }
+
+    function loadAdminTotals() {
+      google.script.run.withSuccessHandler(staffData => {
+        STATE.user.staffData = staffData;
+        renderAdminTotalsTable(staffData);
+      }).getStaffDirectoryData();
+    }
+
+    function renderAdminTotalsTable(staffList) {
+       const html = `
+          <div class="bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
+            <div class="px-6 py-4 border-b border-gray-200 bg-gray-50">
+               <div class="relative">
+                 <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400">
+                   <i class="fas fa-search"></i>
+                 </span>
+                 <input type="text" placeholder="Search staff directory..." onkeyup="filterStaffTable(this.value)" class="w-full pl-10 px-4 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-ops-blue focus:border-transparent text-sm">
+               </div>
+            </div>
+            <div class="overflow-x-auto max-h-[70vh]">
+              <table class="min-w-full divide-y divide-gray-200" id="staff-totals-table">
+                <thead class="bg-gray-50 sticky top-0 z-10 shadow-sm">
+                  <tr>
+                    <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Name</th>
+                    <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Earned</th>
+                    <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Used</th>
+                    <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Balance</th>
+                  </tr>
+                </thead>
+                <tbody class="bg-white divide-y divide-gray-200">
+                  ${staffList.map(s => `
+                    <tr onclick="openStaffDetail('${s.email}', '${s.name}')" class="cursor-pointer hover:bg-ops-blue-lighter transition-colors group">
+                      <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-ops-blue-dark group-hover:text-ops-blue">${s.name}</td>
+                      <td class="px-6 py-4 whitespace-nowrap text-sm text-ops-blue font-semibold">${Number(s.earned).toFixed(2)}</td>
+                      <td class="px-6 py-4 whitespace-nowrap text-sm text-ops-red font-semibold">${Number(s.used).toFixed(2)}</td>
+                      <td class="px-6 py-4 whitespace-nowrap text-sm font-bold ${s.total < 0 ? 'text-ops-red' : 'text-ops-gray-dark'} bg-gray-50">${Number(s.total).toFixed(2)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>`;
+        document.getElementById('view-container').innerHTML = html;
+    }
+
+    // --- Teacher Views ---
+
+    function renderTeacherSubmit() {
+      const staffOptions = STATE.user.staffData.map(s => `<option value="${s.name}">${s.name}</option>`).join('');
+      
+      const html = `
+        <div class="max-w-2xl mx-auto bg-white rounded-lg shadow-lg overflow-hidden border border-gray-200">
+          <div class="bg-ops-blue px-6 py-4 border-b border-blue-800">
+            <h2 class="text-xl font-bold text-white"><i class="fas fa-edit mr-2"></i>Submit Earned TST</h2>
+            <p class="text-blue-200 text-sm mt-1">Log hours when you sub for a colleague.</p>
+          </div>
+          <div class="p-8">
+            <form onsubmit="handleTeacherSubmit(event)">
+              <div class="mb-6">
+                <label class="block text-sm font-bold text-ops-gray-dark mb-2">I subbed for:</label>
+                <div class="relative">
+                  <select id="t-sub-type" onchange="toggleOther(this.value)" class="block w-full rounded border-gray-300 shadow-sm focus:border-ops-blue focus:ring focus:ring-ops-blue focus:ring-opacity-50 p-2 border bg-gray-50">
+                    <option value="Staff">A Staff Member</option>
+                    <option value="Other">Other (Manual Entry)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="mb-6 p-4 bg-gray-50 rounded border border-gray-200">
+                <div id="div-sub-dropdown">
+                  <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Select Staff Member</label>
+                  <select name="subbedNameDropdown" class="block w-full rounded border-gray-300 p-2 border">
+                     ${staffOptions}
+                  </select>
+                </div>
+
+                <div class="hidden" id="div-sub-manual">
+                  <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Enter Name (Manual)</label>
+                  <input type="text" name="subbedNameManual" placeholder="e.g. Guest Speaker / Admin Coverage" class="block w-full rounded border-gray-300 p-2 border">
+                </div>
+              </div>
+
+              <div class="grid grid-cols-2 gap-6 mb-6">
+                <div>
+                  <label class="block text-sm font-bold text-ops-gray-dark mb-2">Date</label>
+                  <input type="date" name="date" required class="block w-full rounded border-gray-300 p-2 border focus:border-ops-blue focus:ring-1 focus:ring-ops-blue">
+                </div>
+                <div>
+                  <label class="block text-sm font-bold text-ops-gray-dark mb-2">Period</label>
+                  <select name="period" class="block w-full rounded border-gray-300 p-2 border bg-white">
+                    <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="mb-8">
+                <label class="block text-sm font-bold text-ops-gray-dark mb-2">Duration</label>
+                <div class="flex gap-4">
+                  <label class="flex-1 cursor-pointer">
+                    <input type="radio" name="duration" value="1" checked class="peer sr-only">
+                    <div class="rounded-lg border border-gray-300 p-4 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
+                      <div class="font-bold">Full Period</div>
+                      <div class="text-xs">1.0 Hour</div>
+                    </div>
+                  </label>
+                  <label class="flex-1 cursor-pointer">
+                    <input type="radio" name="duration" value="0.5" class="peer sr-only">
+                    <div class="rounded-lg border border-gray-300 p-4 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
+                      <div class="font-bold">Half Period</div>
+                      <div class="text-xs">0.5 Hour</div>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              <button type="submit" class="w-full bg-ops-blue text-white font-bold py-3 px-4 rounded shadow hover:bg-ops-blue-dark transition transform active:scale-95 uppercase tracking-wide">
+                Submit Request
+              </button>
+            </form>
+          </div>
+        </div>`;
+      document.getElementById('view-container').innerHTML = html;
+    }
+
+    function renderTeacherRequest() {
+      const currentUserData = STATE.user.staffData.find(s => s.email === STATE.user.email);
+      const maxHours = currentUserData ? currentUserData.total : 0;
+
+      const html = `
+        <div class="max-w-xl mx-auto bg-white rounded-lg shadow-lg overflow-hidden border border-gray-200">
+           <div class="bg-ops-red px-6 py-4 border-b border-red-800">
+            <h2 class="text-xl font-bold text-white"><i class="fas fa-calendar-minus mr-2"></i>Request TST Usage</h2>
+            <p class="text-red-100 text-sm mt-1">Redeem your earned hours.</p>
+          </div>
+          
+          <div class="p-8">
+            <div class="bg-ops-blue-lighter p-4 rounded-lg mb-6 flex items-center justify-between border border-blue-200">
+              <span class="text-ops-blue-dark font-medium">Available Balance</span>
+              <span class="text-2xl font-bold text-ops-blue">${Number(maxHours).toFixed(2)} <span class="text-sm font-normal text-ops-gray">hrs</span></span>
+            </div>
+
+            <form onsubmit="handleUsageSubmit(event, '${STATE.user.email}', '${STATE.user.name}', ${maxHours})">
+              
+              <div class="mb-6">
+                <label class="block text-sm font-bold text-ops-gray-dark mb-2">Date of Usage</label>
+                <input type="date" name="date" required class="block w-full rounded border-gray-300 shadow-sm border p-2 focus:border-ops-red focus:ring-1 focus:ring-ops-red">
+              </div>
+
+              <div class="mb-8">
+                <label class="block text-sm font-bold text-ops-gray-dark mb-2">Hours Used</label>
+                <input type="number" name="amount" step="0.5" min="0.5" max="${maxHours}" required class="block w-full rounded border-gray-300 shadow-sm border p-2 focus:border-ops-red focus:ring-1 focus:ring-ops-red font-mono text-lg">
+                <p class="text-xs text-ops-red mt-2"><i class="fas fa-info-circle"></i> Cannot exceed available balance.</p>
+              </div>
+
+              <button type="submit" ${maxHours <= 0 ? 'disabled' : ''} class="w-full bg-ops-red text-white font-bold py-3 px-4 rounded shadow hover:bg-ops-red-dark disabled:opacity-50 disabled:cursor-not-allowed transition uppercase tracking-wide">
+                Submit Request
+              </button>
+            </form>
+          </div>
+        </div>`;
+      document.getElementById('view-container').innerHTML = html;
+    }
+
+    function loadTeacherTotals() {
+      const myData = STATE.user.staffData.find(s => s.email === STATE.user.email);
+      if(myData) {
+        openStaffDetail(STATE.user.email, STATE.user.name, true);
+      }
+    }
+
+
+    // --- Actions & Handlers ---
+
+    function approveItem(type, rowIndex) {
+      const row = document.getElementById(`row-${rowIndex}`);
+      row.classList.add('opacity-50', 'pointer-events-none', 'bg-gray-100');
+      
+      const handler = type === 'earned' ? 'approveEarnedRow' : 'approveUsedRow';
+      
+      google.script.run.withSuccessHandler(() => {
+        row.remove();
+      }).withFailureHandler(err => {
+        alert("Error approving: " + err);
+        row.classList.remove('opacity-50', 'pointer-events-none', 'bg-gray-100');
+      })[handler](rowIndex);
+    }
+
+    function denyEarned(rowIndex) {
+      if(!confirm("Are you sure you want to DENY this request?")) return;
+
+      const row = document.getElementById(`row-${rowIndex}`);
+      row.classList.add('opacity-50', 'pointer-events-none', 'bg-red-50');
+
+      google.script.run.withSuccessHandler(() => {
+        row.remove();
+      }).withFailureHandler(err => {
+        alert("Error denying: " + err);
+        row.classList.remove('opacity-50', 'pointer-events-none', 'bg-red-50');
+      }).denyEarnedRow(rowIndex);
+    }
+
+    function toggleOther(val) {
+      if(val === 'Other') {
+        document.getElementById('div-sub-dropdown').classList.add('hidden');
+        document.getElementById('div-sub-manual').classList.remove('hidden');
+      } else {
+        document.getElementById('div-sub-dropdown').classList.remove('hidden');
+        document.getElementById('div-sub-manual').classList.add('hidden');
+      }
+    }
+
+    function handleTeacherSubmit(e) {
+      e.preventDefault();
+      const form = e.target;
+      const isOther = form.querySelector('#t-sub-type').value === 'Other';
+      
+      const payload = {
+        email: STATE.user.email,
+        subbedForType: isOther ? 'Other' : 'Staff',
+        subbedForName: isOther ? form.subbedNameManual.value : form.subbedNameDropdown.value,
+        date: form.date.value,
+        period: form.period.value,
+        amountType: form.duration.value == "1" ? "Full Period" : "Half Period",
+        amountDecimal: parseFloat(form.duration.value)
+      };
+
+      showLoading(true);
+      google.script.run.withSuccessHandler(() => {
+        showLoading(false);
+        // Simple success banner instead of alert
+        const container = document.getElementById('view-container');
+        container.innerHTML = `
+          <div class="max-w-xl mx-auto text-center p-10">
+            <div class="inline-flex items-center justify-center h-20 w-20 rounded-full bg-green-100 mb-6">
+              <i class="fas fa-check text-3xl text-green-600"></i>
+            </div>
+            <h2 class="text-2xl font-bold text-ops-blue-dark mb-2">Submission Received!</h2>
+            <p class="text-ops-gray mb-6">Your TST earning request has been sent for approval.</p>
+            <button onclick="switchTab('teacher-submit')" class="text-ops-blue font-bold hover:underline">Submit Another</button>
+          </div>
+        `;
+      }).submitEarned(payload);
+    }
+
+    function handleUsageSubmit(e, email, name, maxHours) {
+      e.preventDefault();
+      const form = e.target;
+      const amount = parseFloat(form.amount.value);
+      
+      if(amount > maxHours) {
+        alert("You cannot use more hours than you have earned.");
+        return;
+      }
+
+      const payload = { email, name, date: form.date.value, amount };
+
+      showLoading(true);
+      google.script.run.withSuccessHandler(() => {
+        showLoading(false);
+         // Simple success banner
+        const container = document.getElementById('view-container');
+        container.innerHTML = `
+          <div class="max-w-xl mx-auto text-center p-10">
+            <div class="inline-flex items-center justify-center h-20 w-20 rounded-full bg-blue-100 mb-6">
+              <i class="fas fa-paper-plane text-3xl text-ops-blue"></i>
+            </div>
+            <h2 class="text-2xl font-bold text-ops-blue-dark mb-2">Request Sent!</h2>
+            <p class="text-ops-gray mb-6">Your usage request has been submitted for processing.</p>
+            <button onclick="switchTab('teacher-totals')" class="bg-ops-blue text-white px-6 py-2 rounded font-bold">View My Totals</button>
+          </div>
+        `;
+        
+        closeModal();
+      }).submitUsage(payload);
+    }
+
+
+    // --- Modal Logic ---
+
+    function openCreateUsageModal() {
+      const staffList = STATE.user.staffData.sort((a,b) => a.name.localeCompare(b.name));
+      const html = `
+        <form id="admin-usage-form">
+          <div class="mb-4">
+            <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Select Teacher</label>
+            <select id="usage-teacher-select" onchange="updateMaxUsage(this)" class="block w-full rounded border-gray-300 p-2 border">
+              <option value="">-- Select --</option>
+              ${staffList.map(s => `<option value="${s.email}" data-name="${s.name}" data-max="${s.total}">${s.name} (Bal: ${Number(s.total).toFixed(2)})</option>`).join('')}
+            </select>
+          </div>
+           <div class="mb-4">
+              <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Date of Usage</label>
+              <input type="date" id="usage-date" required class="block w-full rounded border-gray-300 p-2 border">
+            </div>
+            <div class="mb-6">
+              <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Hours Used</label>
+              <input type="number" id="usage-amount" step="0.5" min="0.5" required class="block w-full rounded border-gray-300 p-2 border">
+              <p id="usage-hint" class="text-xs text-ops-gray mt-1">Select a teacher to see limits.</p>
+            </div>
+            <button type="button" onclick="submitAdminUsage()" class="w-full bg-ops-red text-white font-bold py-3 px-4 rounded shadow hover:bg-ops-red-dark transition uppercase tracking-wide">Create Request</button>
+        </form>
+      `;
+      showModal("Create TST Usage", html);
+    }
+
+    function updateMaxUsage(select) {
+      const option = select.options[select.selectedIndex];
+      const max = option.getAttribute('data-max');
+      const hint = document.getElementById('usage-hint');
+      const input = document.getElementById('usage-amount');
+      
+      if(max) {
+        input.max = max;
+        hint.innerHTML = `Max available: <strong class="${max < 0 ? 'text-ops-red' : 'text-ops-blue'}">${Number(max).toFixed(2)}</strong>`;
+      }
+    }
+
+    function submitAdminUsage() {
+      const select = document.getElementById('usage-teacher-select');
+      if(!select.value) return alert("Select a teacher");
+      
+      const email = select.value;
+      const name = select.options[select.selectedIndex].getAttribute('data-name');
+      const max = parseFloat(select.options[select.selectedIndex].getAttribute('data-max'));
+      const amount = parseFloat(document.getElementById('usage-amount').value);
+      const date = document.getElementById('usage-date').value;
+
+      if(!date || !amount) return alert("Fill all fields");
+      // Admin override allowed? If not, uncomment next line
+      // if(amount > max) return alert("Exceeds balance");
+
+      const payload = { email, name, date, amount };
+      
+      showLoading(true);
+      google.script.run.withSuccessHandler(() => {
+        showLoading(false);
+        closeModal();
+        loadAdminUsed();
+      }).submitUsage(payload);
+    }
+
+    function openStaffDetail(email, name, isEmbedded = false) {
+      showLoading(true);
+      google.script.run.withSuccessHandler(history => {
+        showLoading(false);
+        const staff = STATE.user.staffData.find(s => s.email === email);
+        
+        const html = `
+          <div class="space-y-6">
+            <div class="grid grid-cols-3 gap-4 text-center">
+              <div class="bg-ops-blue-lighter p-4 rounded-lg border border-blue-100">
+                <div class="text-xs text-ops-gray uppercase tracking-wide mb-1">Earned</div>
+                <div class="text-2xl font-bold text-ops-blue">${Number(staff.earned).toFixed(2)}</div>
+              </div>
+              <div class="bg-ops-red-lighter p-4 rounded-lg border border-red-100">
+                <div class="text-xs text-ops-gray uppercase tracking-wide mb-1">Used</div>
+                <div class="text-2xl font-bold text-ops-red">${Number(staff.used).toFixed(2)}</div>
+              </div>
+              <div class="bg-gray-100 p-4 rounded-lg border border-gray-200">
+                <div class="text-xs text-ops-gray uppercase tracking-wide mb-1">Balance</div>
+                <div class="text-2xl font-bold text-ops-gray-dark">${Number(staff.total).toFixed(2)}</div>
+              </div>
+            </div>
+            
+            <div>
+              <h4 class="font-bold text-ops-blue-dark border-b pb-2 mb-3">Activity Log (Finalized)</h4>
+              <div class="max-h-64 overflow-y-auto border rounded bg-gray-50">
+                <table class="min-w-full text-sm">
+                  <thead class="bg-white sticky top-0">
+                    <tr><th class="py-2 px-3 text-left">Date</th><th class="py-2 px-3 text-left">Details</th><th class="py-2 px-3 text-right">Hours</th></tr>
+                  </thead>
+                  <tbody class="divide-y divide-gray-200">
+                    ${history.map(h => {
+                       let typeBadge = '';
+                       let details = '';
+                       let amountClass = '';
+                       let amountSign = '';
+                       let rowClass = '';
+
+                       if(h.type === 'Earned') {
+                          typeBadge = '<span class="text-xs bg-blue-100 text-ops-blue px-1.5 py-0.5 rounded mr-1">Earned</span>';
+                          details = `Subbed: ${h.subbedFor} <span class="text-xs text-gray-400 mx-1">|</span> <span class="text-xs font-semibold text-gray-500">Period ${h.period}</span>`;
+                          amountClass = 'text-ops-blue';
+                          amountSign = '+';
+                       } else if(h.type === 'Used') {
+                          typeBadge = '<span class="text-xs bg-red-100 text-ops-red px-1.5 py-0.5 rounded mr-1">Used</span>';
+                          details = 'Redeemed';
+                          amountClass = 'text-ops-red';
+                          amountSign = '-';
+                       } else { // Denied
+                          typeBadge = '<span class="text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded mr-1">Denied</span>';
+                          details = `Request Denied (Subbed: ${h.subbedFor}, Pd ${h.period})`;
+                          amountClass = 'text-gray-400 line-through';
+                          amountSign = '+';
+                          rowClass = 'bg-gray-50 italic opacity-75';
+                       }
+
+                      return `
+                      <tr class="${rowClass}">
+                        <td class="py-2 px-3 text-ops-gray-dark font-medium">${new Date(h.date).toLocaleDateString()}</td>
+                        <td class="py-2 px-3 text-ops-gray">${typeBadge} ${details}</td>
+                        <td class="py-2 px-3 text-right font-bold ${amountClass}">${amountSign}${h.amount}</td>
+                      </tr>`;
+                    }).join('')}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            ${!isEmbedded ? `
+              <div class="mt-4 pt-4 border-t flex justify-end">
+                 <button onclick="sendEmailReport('${email}', '${name}')" class="bg-ops-gray-dark text-white px-5 py-2.5 rounded shadow hover:bg-black transition text-sm font-medium">
+                   <i class="fas fa-envelope mr-2"></i> Email Report
+                 </button>
+              </div>
+            ` : ''}
+          </div>
+        `;
+        
+        if (isEmbedded) {
+          document.getElementById('view-container').innerHTML = `
+            <div class="bg-white p-8 shadow-lg rounded-lg max-w-4xl mx-auto border border-gray-200">
+              <h2 class="text-2xl font-bold text-ops-blue-dark mb-6">My TST Summary</h2>
+              ${html}
+            </div>`;
+        } else {
+          showModal(name, html);
+        }
+
+      }).getTeacherHistory(email);
+    }
+
+    function sendEmailReport(email, name) {
+      if(!confirm(`Send TST report email to ${name}?`)) return;
+      showLoading(true);
+      google.script.run.withSuccessHandler(() => {
+        showLoading(false);
+        alert("Email sent successfully.");
+      }).sendStatusEmail(email, name);
+    }
+
+    // --- Utilities ---
+    
+    function showModal(title, content) {
+      document.getElementById('modal-title').textContent = title;
+      document.getElementById('modal-content').innerHTML = content;
+      document.getElementById('modal-backdrop').classList.remove('hidden');
+    }
+
+    function closeModal() {
+      document.getElementById('modal-backdrop').classList.add('hidden');
+    }
+
+    function showLoading(isLoading) {
+      const loader = document.getElementById('app-loading');
+      if(isLoading) loader.classList.remove('hidden');
+      else loader.classList.add('hidden');
+    }
+
+    function filterStaffTable(query) {
+      const rows = document.querySelectorAll('#staff-totals-table tbody tr');
+      const q = query.toLowerCase();
+      rows.forEach(row => {
+        const text = row.innerText.toLowerCase();
+        row.style.display = text.includes(q) ? '' : 'none';
+      });
+    }
+
+    function handleError(err) {
+      showLoading(false);
+      alert("System Error: " + err);
+    }
+    
+    function logout() {
+      window.top.location.reload();
+    }
+
+  </script>
+</body>
+</html>
