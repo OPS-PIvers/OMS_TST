@@ -60,7 +60,7 @@ function getStaffDirectoryData() {
     used: r[4],
     total: r[5],
     rowIndex: i + 2 // 1-based index + header offset
-  }));
+  })).filter(r => r.email !== "");
 }
 
 /**
@@ -98,10 +98,10 @@ function getPendingEarned() {
     denied: r[10], // Denied Checkbox
     rowIndex: i + 2
   })).filter(item => {
-    // Show if NOT approved AND NOT denied
+    // Show if NOT approved AND NOT denied AND has valid data
     const isApproved = item.status === true || item.status === "TRUE";
     const isDenied = item.denied === true || item.denied === "TRUE";
-    return !isApproved && !isDenied;
+    return !isApproved && !isDenied && item.email !== "";
   });
 }
 
@@ -115,7 +115,7 @@ function getPendingUsed() {
   const data = sheet.getDataRange().getValues();
   const headers = data.shift();
   
-  // Filter for Checkbox (Col E / Index 4) == false
+  // Filter for Checkbox (Col E / Index 4) == false AND has data
   return data.map((r, i) => ({
     email: r[0],
     name: r[1],
@@ -123,7 +123,7 @@ function getPendingUsed() {
     used: r[3],
     status: r[4],
     rowIndex: i + 2
-  })).filter(item => item.status === false || item.status === "" || item.status === "FALSE");
+  })).filter(item => (item.status === false || item.status === "" || item.status === "FALSE") && item.email !== "");
 }
 
 /**
@@ -139,19 +139,22 @@ function getTeacherHistory(targetEmail) {
   
   const earned = earnedData
     .filter(r => {
-       const isEmailMatch = r[0].toString().toLowerCase() === targetEmail.toLowerCase();
-       const isApproved = r[8] === true;
-       const isDenied = r[10] === true;
-       return isEmailMatch && (isApproved || isDenied);
+       const isEmailMatch = r[0].toString().trim().toLowerCase() === targetEmail.trim().toLowerCase();
+       return isEmailMatch; // Return ALL requests for this user, including pending
     })
-    .map(r => ({
-      date: safeDate(r[4]), 
-      period: r[5],
-      subbedFor: r[2],
-      amount: r[7],
-      // Determine type based on columns
-      type: r[10] === true ? 'Denied' : 'Earned' 
-    }));
+    .map(r => {
+      let type = 'Pending';
+      if (r[10] === true) type = 'Denied';
+      else if (r[8] === true) type = 'Earned';
+      
+      return {
+        date: safeDate(r[4]), 
+        period: r[5],
+        subbedFor: r[2],
+        amount: r[7],
+        type: type 
+      };
+    });
 
   // 2. Get Used (Finalized)
   const usedSheet = ss.getSheetByName('TST Usage (New)');
@@ -362,22 +365,45 @@ function submitUsage(formObj) {
  */
 function submitEarned(formObj) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName('Form Responses 1');
   
-  // Columns: A: Timestamp, B: Email, C: I subbed for (Dropdown), D: Other (Manual), 
-  // E: Date Subbed, F: Time Subbed (Period), G: Amount (Text), H: Decimal
-  
+  // 1. Archive to Form Responses 1 (Keep as backup)
+  const formSheet = ss.getSheetByName('Form Responses 1');
   const timestamp = new Date();
   
-  sheet.appendRow([
+  formSheet.appendRow([
     timestamp,
     formObj.email,
     formObj.subbedForType === 'Other' ? 'Other' : formObj.subbedForName, // Col C
     formObj.subbedForType === 'Other' ? formObj.subbedForName : '',      // Col D
     formObj.date,
     formObj.period,
-    formObj.amountType, // "Full Period" or "Half Period"
+    formObj.amountType, 
     formObj.amountDecimal
+  ]);
+
+  // 2. Append to TST Approvals (New) - Decoupled
+  const approvalSheet = ss.getSheetByName('TST Approvals (New)');
+  
+  // Lookup Name from Staff Directory
+  const staffSheet = ss.getSheetByName('Staff Directory');
+  const staffData = staffSheet.getDataRange().getValues();
+  // Col A=Name, Col B=Email. Find row where B matches email.
+  const staffRow = staffData.find(r => r[1].toString().toLowerCase() === formObj.email.toLowerCase());
+  const earnerName = staffRow ? staffRow[0] : formObj.email; // Fallback to email if name not found
+
+  approvalSheet.appendRow([
+    formObj.email,                    // A: Email
+    earnerName,                       // B: Name
+    formObj.subbedForType === 'Other' ? 'Other' : formObj.subbedForName, // C: Subbed For
+    formObj.subbedForType === 'Other' ? formObj.subbedForName : '',      // D: Other Details
+    formObj.date,                     // E: Date
+    formObj.period,                   // F: Period
+    formObj.amountType,               // G: Time Type
+    formObj.amountDecimal,            // H: Hours
+    false,                            // I: Approved (Default False)
+    "",                               // J: Approved TS
+    false,                            // K: Denied (Default False)
+    ""                                // L: Denied TS
   ]);
   
   return true;
@@ -468,4 +494,48 @@ function sendStatusEmail(targetEmail, targetName) {
   });
   
   return true;
+}
+
+/**
+ * Trigger: On Form Submit
+ * Syncs new rows from 'Form Responses 1' to 'TST Approvals (New)'.
+ * Must be manually set up as an Installable Trigger in Apps Script editor.
+ */
+function onFormSubmit(e) {
+  if (!e || !e.values) return; // Safety check
+  
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const approvalSheet = ss.getSheetByName('TST Approvals (New)');
+  const staffSheet = ss.getSheetByName('Staff Directory');
+  
+  // Parse Form Data (Array indices based on Form Responses 1 columns)
+  // [0] Timestamp, [1] Email, [2] SubbedFor, [3] Other, [4] Date, [5] Period, [6] Type, [7] Decimal
+  const email = e.values[1];
+  const subbedFor = e.values[2];
+  const otherText = e.values[3];
+  const dateStr = e.values[4]; // Form might return different date format, beware.
+  const period = e.values[5];
+  const amountType = e.values[6];
+  const amountDecimal = e.values[7];
+  
+  // Lookup Name
+  const staffData = staffSheet.getDataRange().getValues();
+  const staffRow = staffData.find(r => r[1].toString().toLowerCase() === email.toString().toLowerCase());
+  const earnerName = staffRow ? staffRow[0] : email;
+
+  // Append to Approvals
+  approvalSheet.appendRow([
+    email,
+    earnerName,
+    subbedFor,
+    otherText,
+    dateStr,
+    period,
+    amountType,
+    amountDecimal,
+    false, // Approved
+    "",    // TS
+    false, // Denied
+    ""     // TS
+  ]);
 }
