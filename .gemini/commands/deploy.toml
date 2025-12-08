@@ -1,0 +1,7 @@
+description="Push updates to the GAS project using clasp and redeploy the active deployment using the provided deployment ID."
+prompt = """
+You must run the following clasp commands in order to push local changes to Google Apps Script:
+1. clasp push --force
+
+2. clasp deploy -i AKfycbzPvaCCovRLEUVSe05KfRaDlXEs9k64oMCtpcXdOnYzVpP2BW16PaXV5SJVHNk3Ea3TBQ
+"""

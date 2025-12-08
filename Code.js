@@ -266,6 +266,38 @@ function submitEarned(formObj) {
 }
 
 /**
+ * Admin Multi-Submit: Handles creating both Earned and Used records 
+ * based on Admin input.
+ */
+function adminSubmitRequest(data) {
+  // 1. Handle Earner (If staff member is selected)
+  if (data.earner.type === 'Staff' && data.earner.email) {
+    // We treat this like a form submission so it flows into the normal Pending pipeline
+    submitEarned({
+      email: data.earner.email,
+      subbedForType: data.user.type, // 'Staff' or 'Other'
+      subbedForName: data.user.name,
+      date: data.details.date,
+      period: data.details.period,
+      amountType: data.details.amountType,
+      amountDecimal: data.details.amount
+    });
+  }
+
+  // 2. Handle User (If staff member is selected)
+  if (data.user.type === 'Staff' && data.user.email) {
+    submitUsage({
+      email: data.user.email,
+      name: data.user.name,
+      date: data.details.date,
+      amount: data.details.amount
+    });
+  }
+
+  return true;
+}
+
+/**
  * Sends an email report to a staff member.
  */
 function sendStatusEmail(targetEmail, targetName) {
