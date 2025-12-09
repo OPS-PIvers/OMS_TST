@@ -153,7 +153,8 @@ function getTeacherHistory(targetEmail) {
         period: r[5],
         subbedFor: r[2],
         amount: r[7],
-        type: type 
+        type: type,
+        denialReason: r[12]
       };
     });
 
@@ -249,6 +250,18 @@ function denyEarnedRow(rowIndex, emailData) {
   sheet.getRange(rowIndex, 9).setValue(false);  // Set Approved = FALSE (Safety)
   sheet.getRange(rowIndex, 11).setValue(true);  // Set Denied = TRUE
   sheet.getRange(rowIndex, 12).setValue(new Date()); // Set Denied Timestamp
+  
+  // Save Denial Reason (Col M/13)
+  let denialReason = "";
+  if (emailData) {
+    const reasons = emailData.reasons || [];
+    denialReason = reasons.join(", ");
+    if (emailData.note) {
+      if (denialReason) denialReason += ". ";
+      denialReason += emailData.note;
+    }
+  }
+  sheet.getRange(rowIndex, 13).setValue(denialReason);
   
   // Send Email if requested
   if (emailData && emailData.send) {
@@ -600,6 +613,9 @@ function sendStatusEmail(targetEmail, targetName) {
         amountDisplay = `${h.amount}`;
         typeLabel = `<span style="background-color: #f3f4f6; color: #374151; padding: 2px 6px; border-radius: 4px; font-size: 11px;">DENIED</span>`;
         details = 'Request Denied';
+        if (h.denialReason) {
+          details += `: ${h.denialReason}`;
+        }
       }
       
       htmlContent += `
@@ -779,11 +795,11 @@ function sendStyledEmail(recipient, subject, title, contentHtml, buttonText) {
           <h2>${title}</h2>
           ${contentHtml}
           <div class="button-container">
-            <a href="${appUrl}" class="button">${buttonText}</a>
+            <a href="${appUrl}" class="button">Visit the TST Portal</a>
           </div>
         </div>
         <div class="footer">
-          &copy; ${new Date().getFullYear()} Orono Middle School TST Manager<br>
+          In Partnership with Orono Public Schools<br>
           <p style="margin: 5px 0 0 0;">This is an automated message. Please do not reply.</p>
         </div>
       </div>

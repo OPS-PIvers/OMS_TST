@@ -1276,6 +1276,9 @@
                        } else { // Denied
                           typeBadge = '<span class="text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded mr-1">Denied</span>';
                           details = `Request Denied (Subbed: ${h.subbedFor}, Pd ${h.period})`;
+                          if (h.denialReason) {
+                            details += `<div class="text-xs text-red-500 mt-0.5">${h.denialReason}</div>`;
+                          }
                           amountClass = 'text-gray-400 line-through';
                           amountSign = '+';
                           rowClass = 'bg-gray-50 italic opacity-75';
