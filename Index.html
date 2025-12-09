@@ -64,9 +64,28 @@
     .tab-btn {
       transition: all 0.2s ease-in-out;
     }
+    
+    /* Toast Animations */
+    @keyframes slideIn {
+      from { transform: translateX(100%); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+    @keyframes fadeOut {
+      from { opacity: 1; }
+      to { opacity: 0; }
+    }
+    .toast-enter {
+      animation: slideIn 0.3s ease-out forwards;
+    }
+    .toast-exit {
+      animation: fadeOut 0.3s ease-out forwards;
+    }
   </style>
 </head>
 <body class="bg-gray-50 min-h-screen font-sans">
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="fixed top-5 right-5 z-[60] flex flex-col gap-3 pointer-events-none"></div>
 
   <!-- Setup & Loading State -->
   <div id="app-loading" class="fixed inset-0 flex flex-col items-center justify-center bg-white z-50">
@@ -143,6 +162,57 @@
   </div>
 
   <script>
+    // --- Toast Notification System ---
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toast-container');
+      
+      // Icons and Colors based on type
+      let icon, bgClass, textClass, borderClass;
+      
+      if (type === 'success') {
+        icon = 'fa-check-circle';
+        bgClass = 'bg-white';
+        textClass = 'text-green-800';
+        borderClass = 'border-green-500';
+      } else if (type === 'error') {
+        icon = 'fa-exclamation-circle';
+        bgClass = 'bg-white';
+        textClass = 'text-red-800';
+        borderClass = 'border-red-500';
+      } else { // info
+        icon = 'fa-info-circle';
+        bgClass = 'bg-white';
+        textClass = 'text-ops-blue';
+        borderClass = 'border-ops-blue';
+      }
+
+      const toast = document.createElement('div');
+      toast.className = `toast-enter pointer-events-auto transform w-80 max-w-sm rounded-lg shadow-lg border-l-4 \${borderClass} \${bgClass} p-4 flex items-start gap-3`;
+      
+      toast.innerHTML = `
+        <div class="flex-shrink-0 mt-0.5">
+          <i class="fas \${icon} \${textClass} text-lg"></i>
+        </div>
+        <div class="flex-1">
+          <p class="text-sm font-medium \${textClass}">\${message}</p>
+        </div>
+        <button onclick="this.parentElement.remove()" class="text-gray-400 hover:text-gray-600 transition">
+          <i class="fas fa-times"></i>
+        </button>
+      `;
+
+      container.appendChild(toast);
+
+      // Auto remove after 4 seconds
+      setTimeout(() => {
+        if(toast.parentElement) {
+          toast.classList.remove('toast-enter');
+          toast.classList.add('toast-exit');
+          toast.addEventListener('animationend', () => toast.remove());
+        }
+      }, 4000);
+    }
+
     // --- State Management ---
     let STATE = {
       user: null, 
@@ -612,7 +682,7 @@
         google.script.run.withSuccessHandler(() => {
           row.remove();
         }).withFailureHandler(err => {
-          alert("Error approving: " + err);
+          showToast("Error approving: " + err, "error");
           row.classList.remove('opacity-50', 'pointer-events-none', 'bg-gray-100');
         }).approveUsedRow(rowIndex);
       }
@@ -656,7 +726,7 @@
       google.script.run.withSuccessHandler(() => {
         if(row) row.remove();
       }).withFailureHandler(err => {
-        alert("Error approving: " + err);
+        showToast("Error approving: " + err, "error");
         if(row) row.classList.remove('opacity-50', 'pointer-events-none', 'bg-gray-100');
       }).approveEarnedRow(rowIndex, { send: sendEmail });
     }
@@ -719,7 +789,7 @@
       google.script.run.withSuccessHandler(() => {
         if(row) row.remove();
       }).withFailureHandler(err => {
-        alert("Error denying: " + err);
+        showToast("Error denying: " + err, "error");
         if(row) row.classList.remove('opacity-50', 'pointer-events-none', 'bg-red-50');
       }).denyEarnedRow(rowIndex, { 
         send: action === 'send',
@@ -777,7 +847,7 @@
       const amount = parseFloat(form.amount.value);
       
       if(amount > maxHours) {
-        alert("You cannot use more hours than you have earned.");
+        showToast("You cannot use more hours than you have earned.", "error");
         return;
       }
 
@@ -962,7 +1032,7 @@
         const email = teacherSelect.value;
         const teacherName = teacherSelect.options[teacherSelect.selectedIndex].text;
         
-        if (!email) return alert("Please select a teacher.");
+        if (!email) return showToast("Please select a teacher.", "error");
 
         const subType = document.getElementById('earn-subtype').value;
         let subName = "";
@@ -971,15 +1041,15 @@
            if(subSelect.value) {
              subName = subSelect.options[subSelect.selectedIndex].getAttribute('data-name');
            } else {
-             return alert("Please select who they subbed for.");
+             return showToast("Please select who they subbed for.", "error");
            }
         } else {
            subName = document.getElementById('earn-sub-manual-input').value;
-           if(!subName) return alert("Enter manual reason.");
+           if(!subName) return showToast("Enter manual reason.", "error");
         }
 
         const date = document.getElementById('earn-date').value;
-        if(!date) return alert("Select a date.");
+        if(!date) return showToast("Select a date.", "error");
 
         const durationVal = document.querySelector('input[name="earn-duration"]:checked').value;
         const period = document.getElementById('earn-period').value;
@@ -1009,12 +1079,12 @@
         const email = teacherSelect.value;
         const name = teacherSelect.options[teacherSelect.selectedIndex].getAttribute('data-name');
         
-        if (!email) return alert("Please select a teacher.");
+        if (!email) return showToast("Please select a teacher.", "error");
         
         const date = document.getElementById('use-date').value;
         const amount = document.getElementById('use-amount').value;
         
-        if (!date || !amount) return alert("Fill all fields.");
+        if (!date || !amount) return showToast("Fill all fields.", "error");
 
         STATE.requestQueue.push({
           type: 'used',
@@ -1086,9 +1156,9 @@
         loadAdminUsed();
         
         // Simple Toast/Alert
-        alert(`Successfully processed ${queue.length} requests.`);
+        showToast(`Successfully processed ${queue.length} requests.`, "success");
       }).withFailureHandler(err => {
-         alert("Error processing batch: " + err);
+         showToast("Error processing batch: " + err, "error");
          btn.disabled = false;
          renderQueue(); // Restore button state
       }).processBatch(queue);
@@ -1251,7 +1321,7 @@
       showLoading(true);
       google.script.run.withSuccessHandler(() => {
         showLoading(false);
-        alert("Email sent successfully.");
+        showToast("Email sent successfully.", "success");
       }).sendStatusEmail(email, name);
     }
 
@@ -1268,14 +1338,14 @@
         // Update local state if needed, or just reload tab
         // For simplicity, we just remove row from UI
       }).withFailureHandler(err => {
-        alert("Error deleting: " + err);
+        showToast("Error deleting: " + err, "error");
         row.classList.remove('opacity-50', 'pointer-events-none', 'bg-red-50');
       })[handler](rowIndex);
     }
 
     function openEditEarnedModal(rowIndex) {
       const row = STATE.pendingEarned.find(r => r.rowIndex === rowIndex);
-      if(!row) return alert("Error: Row not found in cache.");
+      if(!row) return showToast("Error: Row not found in cache.", "error");
 
       // Format date for input
       const dateVal = new Date(row.date).toISOString().split('T')[0];
@@ -1351,7 +1421,7 @@
 
     function openEditUsedModal(rowIndex) {
       const row = STATE.pendingUsed.find(r => r.rowIndex === rowIndex);
-      if(!row) return alert("Error: Row not found in cache.");
+      if(!row) return showToast("Error: Row not found in cache.", "error");
 
       const dateVal = new Date(row.date).toISOString().split('T')[0];
 
@@ -1423,7 +1493,7 @@
 
     function handleError(err) {
       showLoading(false);
-      alert("System Error: " + err);
+      showToast("System Error: " + err, "error");
     }
     
     function refreshApp() {
