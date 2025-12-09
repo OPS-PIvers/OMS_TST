@@ -374,8 +374,8 @@ function submitEarned(formObj) {
   formSheet.appendRow([
     timestamp,
     formObj.email,
-    formObj.subbedForType === 'Other' ? 'Other' : formObj.subbedForName, // Col C
-    formObj.subbedForType === 'Other' ? formObj.subbedForName : '',      // Col D
+    formObj.subbedForName,                               // Col C: Name or Manual Text
+    formObj.subbedForType === 'Other' ? 'Other' : '',    // Col D: 'Other' flag or empty
     formObj.date,
     formObj.period,
     formObj.amountType, 
@@ -395,8 +395,8 @@ function submitEarned(formObj) {
   approvalSheet.appendRow([
     formObj.email,                    // A: Email
     earnerName,                       // B: Name
-    formObj.subbedForType === 'Other' ? 'Other' : formObj.subbedForName, // C: Subbed For
-    formObj.subbedForType === 'Other' ? formObj.subbedForName : '',      // D: Other Details
+    formObj.subbedForName,            // C: Subbed For (Name or Manual Text)
+    formObj.subbedForType === 'Other' ? 'Other' : '', // D: Other Details ('Other' flag or empty)
     formObj.date,                     // E: Date
     formObj.period,                   // F: Period
     formObj.amountType,               // G: Time Type
