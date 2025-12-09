@@ -555,6 +555,35 @@ function processBatch(queue) {
 }
 
 /**
+ * Batch Process: Sends status emails to a list of staff members.
+ */
+function sendBatchStatusEmails(emails) {
+  if (!emails || !Array.isArray(emails)) throw new Error("Invalid email list.");
+  
+  let successCount = 0;
+  let failCount = 0;
+  
+  const staffDir = getStaffDirectoryData();
+
+  emails.forEach(email => {
+    try {
+      // Find name for this email to pass to sendStatusEmail (optimization: get name from dir if possible)
+      // sendStatusEmail(email, name) expects name.
+      const staff = staffDir.find(s => s.email.toLowerCase() === email.toLowerCase());
+      const name = staff ? staff.name : "Staff Member";
+
+      sendStatusEmail(email, name);
+      successCount++;
+    } catch (e) {
+      console.error(`Failed to send email to ${email}:`, e);
+      failCount++;
+    }
+  });
+
+  return { success: successCount, failed: failCount };
+}
+
+/**
  * Sends an email report to a staff member.
  */
 function sendStatusEmail(targetEmail, targetName) {

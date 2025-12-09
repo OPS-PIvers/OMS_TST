@@ -502,47 +502,162 @@
     }
 
     function loadAdminTotals() {
+      // Reset selection state on load
+      STATE.selectionMode = false;
+      STATE.selectedEmails = new Set();
+      
       google.script.run.withSuccessHandler(staffData => {
         STATE.user.staffData = staffData;
         renderAdminTotalsTable(staffData);
       }).getStaffDirectoryData();
     }
 
+    function toggleSelectionMode() {
+      STATE.selectionMode = !STATE.selectionMode;
+      STATE.selectedEmails = new Set(); // Reset selection
+      renderAdminTotalsTable(STATE.user.staffData);
+    }
+
+    function toggleSelectAll(checkbox) {
+      const isChecked = checkbox.checked;
+      STATE.selectedEmails = new Set();
+      
+      if (isChecked) {
+        // Only select currently visible/filtered rows if possible? 
+        // For simplicity, let's select all in the current rendered list.
+        // We'll rely on the DOM or re-scan the data. 
+        // Better: Use the data passed to render logic if available, but here we just have STATE.user.staffData.
+        // Let's assume we want to select ALL visible in the table (which might be filtered).
+        // Since filtering happens via DOM manipulation in 'filterStaffTable' (likely), we might grab all visible inputs.
+        // But 'filterStaffTable' hides rows.
+        
+        // Actually, let's just select ALL data for now to be safe/consistent, or just what is visible.
+        // The user asked for "select all checkbox in the header row".
+        // Let's assume selecting all relevant to the view.
+        
+        STATE.user.staffData.forEach(s => STATE.selectedEmails.add(s.email));
+      }
+      
+      renderAdminTotalsTable(STATE.user.staffData);
+    }
+
+    function toggleStaffSelection(email) {
+      if (STATE.selectedEmails.has(email)) {
+        STATE.selectedEmails.delete(email);
+      } else {
+        STATE.selectedEmails.add(email);
+      }
+      updateSendButton();
+    }
+    
+    function updateSendButton() {
+       const btn = document.getElementById('btn-send-reports');
+       if(btn) {
+         const count = STATE.selectedEmails.size;
+         btn.innerHTML = `<i class="fas fa-paper-plane mr-2"></i> Send to Selected (${count})`;
+         btn.disabled = count === 0;
+         btn.className = count === 0 
+           ? "bg-gray-300 text-gray-500 px-4 py-2 rounded shadow-sm cursor-not-allowed text-sm font-medium transition-colors"
+           : "bg-ops-blue text-white px-4 py-2 rounded shadow hover:bg-ops-blue-dark text-sm font-medium transition-colors";
+       }
+    }
+
+    function sendSelectedReports() {
+      const count = STATE.selectedEmails.size;
+      if (count === 0) return;
+
+      openConfirmModal(
+        "Send Reports?",
+        `Are you sure you want to send email reports to <strong>${count}</strong> staff members?`,
+        () => {
+           showLoading(true);
+           const emails = Array.from(STATE.selectedEmails);
+           google.script.run.withSuccessHandler(res => {
+             showLoading(false);
+             showToast(`Sent: ${res.success}, Failed: ${res.failed}`, res.failed > 0 ? "warning" : "success");
+             toggleSelectionMode(); // Exit mode
+           }).sendBatchStatusEmails(emails);
+        },
+        "Yes, Send All"
+      );
+    }
+
     function renderAdminTotalsTable(staffList) {
+       // Preserve search query if re-rendering
+       const searchInput = document.querySelector('#view-container input[type="text"]');
+       const currentQuery = searchInput ? searchInput.value : "";
+       
+       const isSel = STATE.selectionMode;
+       
        const html = `
           <div class="bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
-            <div class="px-6 py-4 border-b border-gray-200 bg-gray-50">
-               <div class="relative">
+            <div class="px-6 py-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center gap-4">
+               <div class="relative flex-grow">
                  <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400">
                    <i class="fas fa-search"></i>
                  </span>
-                 <input type="text" placeholder="Search staff directory..." onkeyup="filterStaffTable(this.value)" class="w-full pl-10 px-4 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-ops-blue focus:border-transparent text-sm">
+                 <input type="text" value="${currentQuery}" placeholder="Search staff directory..." onkeyup="filterStaffTable(this.value)" class="w-full pl-10 px-4 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-ops-blue focus:border-transparent text-sm">
+               </div>
+               
+               <div class="flex items-center gap-2">
+                 ${isSel ? `
+                   <button onclick="toggleSelectionMode()" class="bg-white text-gray-600 border border-gray-300 px-4 py-2 rounded shadow-sm hover:bg-gray-50 text-sm font-medium transition-colors">
+                     Cancel
+                   </button>
+                   <button id="btn-send-reports" onclick="sendSelectedReports()" disabled class="bg-gray-300 text-gray-500 px-4 py-2 rounded shadow-sm cursor-not-allowed text-sm font-medium transition-colors">
+                     <i class="fas fa-paper-plane mr-2"></i> Send to Selected (0)
+                   </button>
+                 ` : `
+                   <button onclick="toggleSelectionMode()" class="bg-white text-ops-blue border border-ops-blue px-4 py-2 rounded shadow-sm hover:bg-blue-50 text-sm font-medium transition-colors whitespace-nowrap">
+                     <i class="fas fa-check-square mr-2"></i> Select / Send Reports
+                   </button>
+                 `}
                </div>
             </div>
             <div class="overflow-x-auto max-h-[70vh]">
               <table class="min-w-full divide-y divide-gray-200" id="staff-totals-table">
                 <thead class="bg-gray-50 sticky top-0 z-10 shadow-sm">
                   <tr>
-                    <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Name</th>
-                    <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Earned</th>
-                    <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Used</th>
-                    <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Balance</th>
+                    ${isSel ? `<th class="px-6 py-3 text-left bg-gray-50"><input type="checkbox" onchange="toggleSelectAll(this)" class="rounded text-ops-blue focus:ring-ops-blue border-gray-300"></th>` : ''}
+                    <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50">Name</th>
+                    <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50">Earned</th>
+                    <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50">Used</th>
+                    <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50">Balance</th>
                   </tr>
                 </thead>
                 <tbody class="bg-white divide-y divide-gray-200">
-                  ${staffList.map(s => `
+                  ${staffList.map(s => {
+                    const isChecked = STATE.selectedEmails && STATE.selectedEmails.has(s.email);
+                    return `
                     <tr onclick="openStaffDetail('${s.email}', '${s.name}')" class="cursor-pointer hover:bg-ops-blue-lighter transition-colors group">
+                      ${isSel ? `
+                        <td class="px-6 py-4 whitespace-nowrap" onclick="event.stopPropagation()">
+                          <input type="checkbox" onchange="toggleStaffSelection('${s.email}', this)" ${isChecked ? 'checked' : ''} class="rounded text-ops-blue focus:ring-ops-blue border-gray-300">
+                        </td>
+                      ` : ''}
                       <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-ops-blue-dark group-hover:text-ops-blue">${s.name}</td>
                       <td class="px-6 py-4 whitespace-nowrap text-sm text-ops-blue font-semibold">${Number(s.earned).toFixed(2)}</td>
                       <td class="px-6 py-4 whitespace-nowrap text-sm text-ops-red font-semibold">${Number(s.used).toFixed(2)}</td>
                       <td class="px-6 py-4 whitespace-nowrap text-sm font-bold ${s.total < 0 ? 'text-ops-red' : 'text-ops-gray-dark'} bg-gray-50">${Number(s.total).toFixed(2)}</td>
                     </tr>
-                  `).join('')}
+                  `}).join('')}
                 </tbody>
               </table>
             </div>
           </div>`;
         document.getElementById('view-container').innerHTML = html;
+        
+        // Restore filter and focus
+        if(currentQuery) {
+          filterStaffTable(currentQuery);
+          const newInput = document.querySelector('#view-container input[type="text"]');
+          if(newInput) {
+            newInput.focus();
+            newInput.setSelectionRange(newInput.value.length, newInput.value.length);
+          }
+        }
+        
+        if(isSel) updateSendButton(); 
     }
 
     // --- Teacher Views ---
