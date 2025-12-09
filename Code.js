@@ -288,7 +288,335 @@ function denyEarnedRow(rowIndex, emailData) {
   return true;
 }
 
-// ... existing code ...
+/**
+ * Admin Action: Delete an Earned request.
+ * Deletes from BOTH 'TST Approvals (New)' and 'Form Responses 1'.
+ */
+function deleteEarnedRow(rowIndex) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const approvalSheet = ss.getSheetByName('TST Approvals (New)');
+  const formSheet = ss.getSheetByName('Form Responses 1');
+  
+  // 1. Get details from Approval Sheet to find match
+  // Indexes: 0=Email, 1=Name, 2=SubbedFor, 4=Date, 5=Period
+  const rowValues = approvalSheet.getRange(rowIndex, 1, 1, 6).getValues()[0];
+  const email = rowValues[0];
+  const date = new Date(rowValues[4]);
+  const period = rowValues[5];
+  
+  // 2. Find and Delete in Form Responses 1
+  const formData = formSheet.getDataRange().getValues();
+  // Form Responses: Col B=Email (1), E=Date (4), F=Period (5)
+  // Loop backwards to safely delete
+  for (let i = formData.length - 1; i >= 1; i--) { // Skip header
+    const r = formData[i];
+    const rDate = new Date(r[4]);
+    
+    // Loose date comparison (checking year, month, day)
+    const isDateMatch = rDate.getFullYear() === date.getFullYear() &&
+                        rDate.getMonth() === date.getMonth() &&
+                        rDate.getDate() === date.getDate();
+                        
+    if (r[1] === email && isDateMatch && r[5] == period) {
+       formSheet.deleteRow(i + 1);
+       // We stop after first match? Or continue? usually one entry.
+       // Let's break to be safe/efficient, assuming duplicates aren't common or handled elsewhere.
+       break; 
+    }
+  }
+
+  // 3. Delete from TST Approvals (New)
+  approvalSheet.deleteRow(rowIndex);
+  
+  return true;
+}
+
+/**
+ * Admin Action: Edit an Earned request.
+ * Updates BOTH 'TST Approvals (New)' and 'Form Responses 1'.
+ */
+function updateEarnedRow(rowIndex, newData) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const approvalSheet = ss.getSheetByName('TST Approvals (New)');
+  const formSheet = ss.getSheetByName('Form Responses 1');
+  
+  // 1. Get OLD details to find match in Form Responses
+  const rowValues = approvalSheet.getRange(rowIndex, 1, 1, 6).getValues()[0];
+  const oldEmail = rowValues[0];
+  const oldDate = new Date(rowValues[4]);
+  const oldPeriod = rowValues[5];
+  
+  // 2. Update Form Responses 1
+  const formData = formSheet.getDataRange().getValues();
+  let foundInForm = false;
+  
+  for (let i = formData.length - 1; i >= 1; i--) {
+    const r = formData[i];
+    const rDate = new Date(r[4]);
+    const isDateMatch = rDate.getFullYear() === oldDate.getFullYear() &&
+                        rDate.getMonth() === oldDate.getMonth() &&
+                        rDate.getDate() === oldDate.getDate();
+
+    if (r[1] === oldEmail && isDateMatch && r[5] == oldPeriod) {
+       // Found match. Update columns.
+       // Form Responses: C=SubbedFor (2), E=Date (4), F=Period (5), G=AmountType (6), H=Decimal (7)
+       // We don't update Timestamp or Email usually, but we could.
+       
+       formSheet.getRange(i + 1, 3).setValue(newData.subbedFor);
+       formSheet.getRange(i + 1, 5).setValue(new Date(newData.date));
+       formSheet.getRange(i + 1, 6).setValue(newData.period);
+       formSheet.getRange(i + 1, 7).setValue(newData.amountType);
+       formSheet.getRange(i + 1, 8).setValue(newData.amountDecimal);
+       foundInForm = true;
+       break;
+    }
+  }
+
+  // 3. Update TST Approvals (New) directly to reflect changes immediately
+  // Cols: C=SubbedFor (3/idx 2), E=Date (5/idx 4), F=Period (6/idx 5), G=Type (7/idx 6), H=Hours (8/idx 7)
+  approvalSheet.getRange(rowIndex, 3).setValue(newData.subbedFor);
+  approvalSheet.getRange(rowIndex, 5).setValue(new Date(newData.date));
+  approvalSheet.getRange(rowIndex, 6).setValue(newData.period);
+  approvalSheet.getRange(rowIndex, 7).setValue(newData.amountType);
+  approvalSheet.getRange(rowIndex, 8).setValue(newData.amountDecimal);
+
+  return true;
+}
+
+
+/**
+ * Admin Action: Approve a Used request.
+ */
+function approveUsedRow(rowIndex) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('TST Usage (New)');
+  // Col E (5) is status, Col F (6) is timestamp
+  sheet.getRange(rowIndex, 5).setValue(true);
+  sheet.getRange(rowIndex, 6).setValue(new Date());
+  return true;
+}
+
+/**
+ * Admin Action: Delete a Used request.
+ */
+function deleteUsedRow(rowIndex) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('TST Usage (New)');
+  sheet.deleteRow(rowIndex);
+  return true;
+}
+
+/**
+ * Admin Action: Edit a Used request.
+ */
+function updateUsedRow(rowIndex, newData) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('TST Usage (New)');
+  // Cols: C=Date (3), D=Amount (4)
+  sheet.getRange(rowIndex, 3).setValue(new Date(newData.date));
+  sheet.getRange(rowIndex, 4).setValue(newData.amount);
+  return true;
+}
+
+/**
+ * Create a new Usage entry (Admin or Teacher).
+ */
+function submitUsage(formObj) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('TST Usage (New)');
+  
+  // Columns: A: Email, B: Name, C: Date, D: TST Used, E: Status, F: Timestamp
+  sheet.appendRow([
+    formObj.email,
+    formObj.name,
+    formObj.date,
+    formObj.amount,
+    false, // Default unchecked
+    ""     // No timestamp yet
+  ]);
+  return true;
+}
+
+/**
+ * Create a new Earned entry (Teacher subbing).
+ * Writes to Form Responses 1.
+ */
+function submitEarned(formObj) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  // 1. Archive to Form Responses 1 (Keep as backup)
+  const formSheet = ss.getSheetByName('Form Responses 1');
+  const timestamp = new Date();
+  
+  formSheet.appendRow([
+    timestamp,
+    formObj.email,
+    formObj.subbedForName,                               // Col C: Name or Manual Text
+    formObj.subbedForType === 'Other' ? 'Other' : '',    // Col D: 'Other' flag or empty
+    formObj.date,
+    formObj.period,
+    formObj.amountType, 
+    formObj.amountDecimal
+  ]);
+
+  // 2. Append to TST Approvals (New) - Decoupled
+  const approvalSheet = ss.getSheetByName('TST Approvals (New)');
+  
+  // Lookup Name from Staff Directory
+  const staffSheet = ss.getSheetByName('Staff Directory');
+  const staffData = staffSheet.getDataRange().getValues();
+  // Col A=Name, Col B=Email. Find row where B matches email.
+  const staffRow = staffData.find(r => r[1].toString().toLowerCase() === formObj.email.toLowerCase());
+  const earnerName = staffRow ? staffRow[0] : formObj.email; // Fallback to email if name not found
+
+  approvalSheet.appendRow([
+    formObj.email,                    // A: Email
+    earnerName,                       // B: Name
+    formObj.subbedForName,            // C: Subbed For (Name or Manual Text)
+    '',                               // D: Other Details (Always empty now)
+    formObj.date,                     // E: Date
+    formObj.period,                   // F: Period
+    formObj.amountType,               // G: Time Type
+    formObj.amountDecimal,            // H: Hours
+    false,                            // I: Approved (Default False)
+    "",                               // J: Approved TS
+    false,                            // K: Denied (Default False)
+    ""                                // L: Denied TS
+  ]);
+  
+  return true;
+}
+
+/**
+ * Admin Multi-Submit: Handles creating both Earned and Used records 
+ * based on Admin input.
+ */
+function adminSubmitRequest(data) {
+  // 1. Handle Earner (If staff member is selected)
+  if (data.earner.type === 'Staff' && data.earner.email) {
+    // We treat this like a form submission so it flows into the normal Pending pipeline
+    submitEarned({
+      email: data.earner.email,
+      subbedForType: data.user.type, // 'Staff' or 'Other'
+      subbedForName: data.user.name,
+      date: data.details.date,
+      period: data.details.period,
+      amountType: data.details.amountType,
+      amountDecimal: data.details.amount
+    });
+  }
+
+  // 2. Handle User (If staff member is selected)
+  if (data.user.type === 'Staff' && data.user.email) {
+    submitUsage({
+      email: data.user.email,
+      name: data.user.name,
+      date: data.details.date,
+      amount: data.details.amount
+    });
+  }
+
+  return true;
+}
+
+/**
+ * Sends an email report to a staff member.
+ */
+function sendStatusEmail(targetEmail, targetName) {
+  const history = getTeacherHistory(targetEmail);
+  const staff = getStaffDirectoryData().find(s => s.email.toLowerCase() === targetEmail.toLowerCase());
+  
+  if (!staff) throw new Error("Staff member not found.");
+  
+  let htmlBody = `
+    <h2>TST Hours Report for ${targetName}</h2>
+    <p><strong>Current Balance:</strong> ${Number(staff.total).toFixed(2)} hours</p>
+    <hr>
+    <h3>History</h3>
+    <table border="1" cellpadding="5" style="border-collapse:collapse; width:100%;">
+      <tr style="background-color:#f3f4f6;">
+        <th>Date</th>
+        <th>Type</th>
+        <th>Details</th>
+        <th>Hours</th>
+      </tr>`;
+      
+  history.forEach(h => {
+    // Skip formatting for Denied if you want, or just include them
+    if(h.type === 'Denied') return; // Optional: Don't email denied ones? Or include them. 
+    // Let's include them for clarity
+    
+    const dateStr = new Date(h.date).toLocaleDateString();
+    let color = 'black';
+    let sign = '';
+    
+    if (h.type === 'Earned') { color = 'green'; sign = '+'; }
+    else if (h.type === 'Used') { color = 'red'; sign = '-'; }
+    else { color = 'gray'; sign = ''; } // Denied
+    
+    htmlBody += `
+      <tr>
+        <td>${dateStr}</td>
+        <td>${h.type}</td>
+        <td>${h.type === 'Earned' ? 'Subbed for: ' + h.subbedFor : (h.type === 'Used' ? 'Redeemed' : 'Request Denied')}</td>
+        <td style="color:${color}; font-weight:bold;">${sign}${h.amount}</td>
+      </tr>`;
+  });
+  
+  htmlBody += `</table>`;
+  
+  MailApp.sendEmail({
+    to: targetEmail,
+    subject: "Your TST Hours Report",
+    htmlBody: htmlBody
+  });
+  
+  return true;
+}
+
+/**
+ * Trigger: On Form Submit
+ * Syncs new rows from 'Form Responses 1' to 'TST Approvals (New)'.
+ * Must be manually set up as an Installable Trigger in Apps Script editor.
+ */
+function onFormSubmit(e) {
+  if (!e || !e.values) return; // Safety check
+  
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const approvalSheet = ss.getSheetByName('TST Approvals (New)');
+  const staffSheet = ss.getSheetByName('Staff Directory');
+  
+  // Parse Form Data (Array indices based on Form Responses 1 columns)
+  // [0] Timestamp, [1] Email, [2] SubbedFor, [3] Other, [4] Date, [5] Period, [6] Type, [7] Decimal
+  const email = e.values[1];
+  const subbedFor = e.values[2];
+  const otherText = e.values[3];
+  const dateStr = e.values[4]; // Form might return different date format, beware.
+  const period = e.values[5];
+  const amountType = e.values[6];
+  const amountDecimal = e.values[7];
+  
+  // Lookup Name
+  const staffData = staffSheet.getDataRange().getValues();
+  const staffRow = staffData.find(r => r[1].toString().toLowerCase() === email.toString().toLowerCase());
+  const earnerName = staffRow ? staffRow[0] : email;
+
+  // Append to Approvals
+  approvalSheet.appendRow([
+    email,
+    earnerName,
+    subbedFor,
+    otherText,
+    dateStr,
+    period,
+    amountType,
+    amountDecimal,
+    false, // Approved
+    "",    // TS
+    false, // Denied
+    ""     // TS
+  ]);
+}
 
 /**
  * Helper to send a styled HTML email.
