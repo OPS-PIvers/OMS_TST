@@ -94,6 +94,9 @@
             </div>
           </div>
           <div class="flex items-center space-x-6">
+             <button id="admin-add-btn" onclick="openAdminCreateRequestModal()" class="hidden bg-white text-ops-blue hover:bg-blue-50 transition px-3 py-2 rounded font-bold text-xs uppercase tracking-wide shadow-sm">
+              <i class="fas fa-plus-circle mr-1"></i> Add Request
+            </button>
             <div id="user-info" class="text-sm font-light text-blue-100 hidden md:block"></div>
             <button onclick="refreshApp()" class="text-xs bg-ops-blue-dark hover:bg-opacity-80 transition px-4 py-2 rounded text-white font-medium uppercase tracking-wide">
               Refresh
@@ -146,6 +149,30 @@
       currentTab: null,
       dataCache: {}
     };
+    
+    // --- Constants & Helpers ---
+    function getPeriodOptions(selectedVal) {
+      const periods = [
+        "Period 1 - 8:10 - 8:57",
+        "Period 2 - 9:01 - 9:48",
+        "Period 3 - 9:52 - 10:39",
+        "Period 4 - 10:43 - 11:09",
+        "Period 5 - 11:11 - 11:37",
+        "Period 4/5 - 10:30 - 11:37",
+        "Period 6 - 11:40 - 12:06",
+        "Period 7 - 12:08 - 12:34",
+        "Period 6/7 - 11:40 - 12:34",
+        "Period 8 - 12:37 - 1:08",
+        "Period 9 - 1:12 - 1:59",
+        "Period 10 - 2:03 - 2:50"
+      ];
+      return periods.map(p => {
+        // Attempt to match exact string OR legacy short number (e.g. "1" matches "Period 1...")
+        // We look for "Period {selectedVal} " at the start.
+        const isSelected = selectedVal === p || (selectedVal && p.startsWith(`Period ${selectedVal} `));
+        return `<option value="${p}" ${isSelected ? 'selected' : ''}>${p}</option>`;
+      }).join('');
+    }
 
     // --- Initialization ---
     window.onload = function() {
@@ -168,6 +195,7 @@
       renderNav();
       
       if (data.role === 'Admin') {
+        document.getElementById('admin-add-btn').classList.remove('hidden');
         switchTab('admin-earned');
       } else if (data.role === 'Teacher') {
         switchTab('teacher-totals');
@@ -298,9 +326,6 @@
               </div>
               <div class="flex items-center gap-3">
                  <span class="text-sm font-bold bg-white text-ops-blue px-3 py-1 rounded-full shadow-sm border border-blue-100">${data.length} Requests</span>
-                 <button onclick="openAdminCreateRequestModal()" class="text-xs font-bold bg-ops-blue hover:bg-ops-blue-dark text-white px-4 py-2 rounded shadow transition uppercase tracking-wide">
-                    <i class="fas fa-plus mr-1"></i> Add TST Request
-                 </button>
               </div>
             </div>
             ${data.length === 0 ? '<div class="p-12 text-center"><i class="fas fa-check-circle text-4xl text-gray-300 mb-4"></i><p class="text-ops-gray">All caught up! No pending approvals.</p></div>' : 
@@ -363,9 +388,6 @@
                 <h2 class="text-xl font-bold text-ops-red-dark">Pending Usage Requests</h2>
                 <p class="text-xs text-ops-red-dark opacity-75 uppercase tracking-wider mt-1">Deduct from Balance</p>
               </div>
-              <button onclick="openCreateUsageModal()" class="text-xs font-bold bg-ops-red hover:bg-ops-red-dark text-white px-4 py-2 rounded shadow transition uppercase tracking-wide">
-                <i class="fas fa-plus mr-1"></i> Create New
-              </button>
             </div>
             ${data.length === 0 ? '<div class="p-12 text-center"><i class="fas fa-mug-hot text-4xl text-gray-300 mb-4"></i><p class="text-ops-gray">No usage requests pending.</p></div>' : 
               `<div class="overflow-x-auto">
@@ -497,17 +519,9 @@
                 </div>
                 <div>
                   <label class="block text-sm font-bold text-ops-gray-dark mb-2">Period</label>
-                  <div class="flex flex-wrap gap-2">
-                    <!-- Period Badges (Radio Group) -->
-                    ${[1,2,3,4,5,6,7,8].map(p => `
-                      <label class="cursor-pointer">
-                        <input type="radio" name="period" value="${p}" ${p===1 ? 'checked' : ''} class="peer sr-only">
-                        <div class="bg-gray-100 px-3 py-1 rounded text-sm font-medium hover:bg-gray-200 peer-checked:bg-ops-blue peer-checked:text-white transition">
-                          ${p}
-                        </div>
-                      </label>
-                    `).join('')}
-                  </div>
+                  <select name="period" class="block w-full rounded border-gray-300 p-2 border bg-gray-50 focus:border-ops-blue focus:ring focus:ring-ops-blue focus:ring-opacity-50">
+                    ${getPeriodOptions('1')}
+                  </select>
                 </div>
               </div>
 
@@ -770,7 +784,7 @@
             <div>
                <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Period</label>
                <select id="req-period" class="block w-full rounded border-gray-300 p-2 border bg-white focus:ring-ops-blue focus:border-ops-blue">
-                 <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option>
+                 ${getPeriodOptions()}
                </select>
             </div>
           </div>
@@ -948,7 +962,11 @@
         
         const html = `
           <div class="space-y-6">
-            <div class="grid grid-cols-3 gap-4 text-center">
+            <div class="grid grid-cols-4 gap-4 text-center">
+               <div class="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                <div class="text-xs text-ops-gray uppercase tracking-wide mb-1">Carry Over</div>
+                <div class="text-2xl font-bold text-ops-gray-dark">${Number(staff.carryOver || 0).toFixed(2)}</div>
+              </div>
               <div class="bg-ops-blue-lighter p-4 rounded-lg border border-blue-100">
                 <div class="text-xs text-ops-gray uppercase tracking-wide mb-1">Earned</div>
                 <div class="text-2xl font-bold text-ops-blue">${Number(staff.earned).toFixed(2)}</div>
@@ -1090,7 +1108,7 @@
             <div>
                <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Period</label>
                <select name="period" class="block w-full rounded border-gray-300 p-2 border bg-white">
-                 ${[1,2,3,4,5,6,7,8].map(p => `<option ${row.period == p ? 'selected' : ''}>${p}</option>`).join('')}
+                 ${getPeriodOptions(row.period)}
                </select>
             </div>
           </div>

@@ -58,7 +58,8 @@ function getStaffDirectoryData() {
     role: r[2],
     earned: r[3],
     used: r[4],
-    total: r[5],
+    carryOver: r[6],
+    total: (Number(r[6]) || 0) + (Number(r[3]) || 0) - (Number(r[4]) || 0),
     rowIndex: i + 2 // 1-based index + header offset
   })).filter(r => r.email !== "");
 }
