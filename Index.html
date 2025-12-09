@@ -1317,30 +1317,41 @@
     }
 
     function sendEmailReport(email, name) {
-      if(!confirm(`Send TST report email to ${name}?`)) return;
-      showLoading(true);
-      google.script.run.withSuccessHandler(() => {
-        showLoading(false);
-        showToast("Email sent successfully.", "success");
-      }).sendStatusEmail(email, name);
+      openConfirmModal(
+        "Send Report?",
+        `Send TST report email to <strong>\${name}</strong>?`,
+        () => {
+          showLoading(true);
+          google.script.run.withSuccessHandler(() => {
+            showLoading(false);
+            showToast("Email sent successfully.", "success");
+          }).sendStatusEmail(email, name);
+        },
+        "Send Email"
+      );
     }
 
     function deleteItem(type, rowIndex) {
-      if(!confirm("Are you sure you want to DELETE this request? This action cannot be undone.")) return;
+      openConfirmModal(
+        "Confirm Deletion", 
+        "Are you sure you want to DELETE this request? This action cannot be undone.",
+        () => {
+          const row = document.getElementById(`row-\${rowIndex}`);
+          if(row) row.classList.add('opacity-50', 'pointer-events-none', 'bg-red-50');
 
-      const row = document.getElementById(`row-${rowIndex}`);
-      row.classList.add('opacity-50', 'pointer-events-none', 'bg-red-50');
+          const handler = type === 'earned' ? 'deleteEarnedRow' : 'deleteUsedRow';
 
-      const handler = type === 'earned' ? 'deleteEarnedRow' : 'deleteUsedRow';
-
-      google.script.run.withSuccessHandler(() => {
-        row.remove();
-        // Update local state if needed, or just reload tab
-        // For simplicity, we just remove row from UI
-      }).withFailureHandler(err => {
-        showToast("Error deleting: " + err, "error");
-        row.classList.remove('opacity-50', 'pointer-events-none', 'bg-red-50');
-      })[handler](rowIndex);
+          google.script.run.withSuccessHandler(() => {
+            if(row) row.remove();
+            showToast("Request deleted successfully.", "success");
+          }).withFailureHandler(err => {
+            showToast("Error deleting: " + err, "error");
+            if(row) row.classList.remove('opacity-50', 'pointer-events-none', 'bg-red-50');
+          })[handler](rowIndex);
+        },
+        "Delete Forever",
+        "bg-ops-red hover:bg-ops-red-dark focus:ring-ops-red"
+      );
     }
 
     function openEditEarnedModal(rowIndex) {
@@ -1465,6 +1476,38 @@
     }
 
     // --- Utilities ---
+
+    function openConfirmModal(title, message, callback, btnText = "Confirm", btnClass = "bg-ops-blue hover:bg-ops-blue-dark") {
+      STATE.confirmCallback = callback;
+      const html = `
+        <div class="text-center">
+          <div class="mb-6">
+            <div class="mx-auto flex items-center justify-center h-16 w-16 rounded-full bg-gray-100 mb-4">
+               <i class="fas fa-question text-2xl text-gray-500"></i>
+            </div>
+            <h3 class="text-lg font-bold text-gray-900">\${title}</h3>
+            <p class="text-sm text-gray-500 mt-2">\${message}</p>
+          </div>
+          <div class="flex flex-col gap-3 sm:flex-row-reverse justify-center">
+            <button onclick="executeConfirmCallback()" class="w-full sm:w-auto inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 text-base font-medium text-white focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-ops-blue sm:text-sm \${btnClass}">
+              \${btnText}
+            </button>
+            <button onclick="closeModal()" class="w-full sm:w-auto inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:text-sm">
+              Cancel
+            </button>
+          </div>
+        </div>
+      `;
+      showModal(title, html);
+    }
+
+    function executeConfirmCallback() {
+      closeModal();
+      if (STATE.confirmCallback) {
+         STATE.confirmCallback();
+         STATE.confirmCallback = null;
+      }
+    }
     
     function showModal(title, content) {
       document.getElementById('modal-title').textContent = title;
