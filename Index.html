@@ -187,14 +187,14 @@
       }
 
       const toast = document.createElement('div');
-      toast.className = `toast-enter pointer-events-auto transform w-80 max-w-sm rounded-lg shadow-lg border-l-4 \${borderClass} \${bgClass} p-4 flex items-start gap-3`;
+      toast.className = `toast-enter pointer-events-auto transform w-80 max-w-sm rounded-lg shadow-lg border-l-4 ${borderClass} ${bgClass} p-4 flex items-start gap-3`;
       
       toast.innerHTML = `
         <div class="flex-shrink-0 mt-0.5">
-          <i class="fas \${icon} \${textClass} text-lg"></i>
+          <i class="fas ${icon} ${textClass} text-lg"></i>
         </div>
         <div class="flex-1">
-          <p class="text-sm font-medium \${textClass}">\${message}</p>
+          <p class="text-sm font-medium ${textClass}">${message}</p>
         </div>
         <button onclick="this.parentElement.remove()" class="text-gray-400 hover:text-gray-600 transition">
           <i class="fas fa-times"></i>
@@ -1319,7 +1319,7 @@
     function sendEmailReport(email, name) {
       openConfirmModal(
         "Send Report?",
-        `Send TST report email to <strong>\${name}</strong>?`,
+        `Send TST report email to <strong>${name}</strong>?`,
         () => {
           showLoading(true);
           google.script.run.withSuccessHandler(() => {
@@ -1336,7 +1336,7 @@
         "Confirm Deletion", 
         "Are you sure you want to DELETE this request? This action cannot be undone.",
         () => {
-          const row = document.getElementById(`row-\${rowIndex}`);
+          const row = document.getElementById(`row-${rowIndex}`);
           if(row) row.classList.add('opacity-50', 'pointer-events-none', 'bg-red-50');
 
           const handler = type === 'earned' ? 'deleteEarnedRow' : 'deleteUsedRow';
@@ -1485,12 +1485,12 @@
             <div class="mx-auto flex items-center justify-center h-16 w-16 rounded-full bg-gray-100 mb-4">
                <i class="fas fa-question text-2xl text-gray-500"></i>
             </div>
-            <h3 class="text-lg font-bold text-gray-900">\${title}</h3>
-            <p class="text-sm text-gray-500 mt-2">\${message}</p>
+            <h3 class="text-lg font-bold text-gray-900">${title}</h3>
+            <p class="text-sm text-gray-500 mt-2">${message}</p>
           </div>
           <div class="flex flex-col gap-3 sm:flex-row-reverse justify-center">
-            <button onclick="executeConfirmCallback()" class="w-full sm:w-auto inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 text-base font-medium text-white focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-ops-blue sm:text-sm \${btnClass}">
-              \${btnText}
+            <button onclick="executeConfirmCallback()" class="w-full sm:w-auto inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 text-base font-medium text-white focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-ops-blue sm:text-sm ${btnClass}">
+              ${btnText}
             </button>
             <button onclick="closeModal()" class="w-full sm:w-auto inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:text-sm">
               Cancel
