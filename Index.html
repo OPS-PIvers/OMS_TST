@@ -806,9 +806,11 @@
 
     // --- Modal Logic ---
     
-    // --- Tabbed Admin Modal Logic ---
+    // --- Tabbed Admin Modal Logic (Batch) ---
 
     function openAdminCreateRequestModal() {
+      STATE.requestQueue = []; // Reset Queue
+      
       const staffList = STATE.user.staffData.sort((a,b) => a.name.localeCompare(b.name));
       const staffOptions = staffList.map(s => `<option value="${s.email}" data-name="${s.name}" data-max="${s.total}">${s.name}</option>`).join('');
       
@@ -816,117 +818,280 @@
         <!-- Modal Tabs -->
         <div class="flex border-b border-gray-200 mb-6">
           <button onclick="switchAdminModalTab('earn')" id="tab-admin-earn" class="flex-1 py-3 text-sm font-bold uppercase tracking-wide border-b-2 text-ops-blue border-ops-blue bg-blue-50 focus:outline-none transition-colors">
-            <i class="fas fa-plus-circle mr-2"></i> Record Earned Time
+            <i class="fas fa-plus-circle mr-2"></i> Earned Time
           </button>
           <button onclick="switchAdminModalTab('use')" id="tab-admin-use" class="flex-1 py-3 text-sm font-bold uppercase tracking-wide border-b-2 border-transparent text-gray-500 hover:text-ops-red focus:outline-none transition-colors">
-            <i class="fas fa-minus-circle mr-2"></i> Record Usage
+            <i class="fas fa-minus-circle mr-2"></i> Usage
           </button>
         </div>
 
-        <!-- TAB 1: EARN (Blue) -->
-        <div id="content-admin-earn" class="block">
-           <form onsubmit="submitAdminEarnedOnly(event)">
-             
-             <!-- Who Earned It? -->
-             <div class="mb-4 bg-blue-50 p-4 rounded-lg border border-blue-100">
-                <label class="block text-xs font-bold text-ops-blue-dark uppercase tracking-wider mb-2">Teacher Earning Hours</label>
-                <div class="mb-2">
-                   <select id="earn-teacher-select" required class="block w-full rounded border-gray-300 p-2 border bg-white focus:ring-ops-blue focus:border-ops-blue">
+        <div class="h-96 overflow-y-auto pr-2"> <!-- Scrollable Content Area -->
+        
+          <!-- TAB 1: EARN (Blue) -->
+          <div id="content-admin-earn" class="block">
+             <form id="form-admin-earn">
+               
+               <!-- Who Earned It? -->
+               <div class="mb-4 bg-blue-50 p-4 rounded-lg border border-blue-100">
+                  <label class="block text-xs font-bold text-ops-blue-dark uppercase tracking-wider mb-2">Teacher Earning Hours</label>
+                  <div class="mb-2">
+                     <select id="earn-teacher-select" class="block w-full rounded border-gray-300 p-2 border bg-white focus:ring-ops-blue focus:border-ops-blue">
+                       <option value="">-- Select Staff Member --</option>
+                       ${staffOptions}
+                     </select>
+                  </div>
+               </div>
+
+               <!-- Who did they sub for? -->
+               <div class="mb-4">
+                  <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Reason / Subbed For</label>
+                  <div class="flex gap-2 mb-2">
+                     <select id="earn-subtype" onchange="toggleEarnSubInput(this.value)" class="w-1/3 rounded border-gray-300 p-2 border bg-gray-50 text-sm">
+                       <option value="Staff">Staff Member</option>
+                       <option value="Other">Other / Manual</option>
+                     </select>
+                     <div id="earn-sub-staff-container" class="w-2/3">
+                        <select id="earn-sub-staff-select" class="block w-full rounded border-gray-300 p-2 border">
+                          <option value="">-- Select Staff --</option>
+                          ${staffOptions}
+                        </select>
+                     </div>
+                     <div id="earn-sub-manual-container" class="w-2/3 hidden">
+                        <input type="text" id="earn-sub-manual-input" placeholder="e.g. Field Trip" class="block w-full rounded border-gray-300 p-2 border">
+                     </div>
+                  </div>
+               </div>
+
+               <!-- Details -->
+               <div class="grid grid-cols-2 gap-4 mb-4">
+                  <div>
+                     <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Date</label>
+                     <input type="date" id="earn-date" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+                  </div>
+                  <div>
+                     <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Period</label>
+                     <select id="earn-period" class="block w-full rounded border-gray-300 p-2 border bg-white focus:ring-ops-blue focus:border-ops-blue">
+                       ${getPeriodOptions()}
+                     </select>
+                  </div>
+               </div>
+                
+               <div class="mb-6">
+                  <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Duration</label>
+                  <div class="flex gap-3">
+                    <label class="flex-1 cursor-pointer">
+                      <input type="radio" name="earn-duration" value="1" checked class="peer sr-only">
+                      <div class="rounded-lg border border-gray-300 p-3 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
+                        <div class="font-bold text-sm">Full Period</div>
+                      </div>
+                    </label>
+                    <label class="flex-1 cursor-pointer">
+                      <input type="radio" name="earn-duration" value="0.5" class="peer sr-only">
+                      <div class="rounded-lg border border-gray-300 p-3 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
+                        <div class="font-bold text-sm">Half Period</div>
+                      </div>
+                    </label>
+                  </div>
+               </div>
+
+               <button type="button" onclick="addToQueue('earn')" class="w-full bg-white border-2 border-ops-blue text-ops-blue font-bold py-3 px-4 rounded shadow-sm hover:bg-blue-50 transition uppercase tracking-wide">
+                 <i class="fas fa-plus mr-2"></i> Add to Queue
+               </button>
+             </form>
+          </div>
+
+          <!-- TAB 2: USE (Red) -->
+          <div id="content-admin-use" class="hidden">
+             <form id="form-admin-use">
+               
+               <div class="mb-6 bg-red-50 p-4 rounded-lg border border-red-100">
+                  <label class="block text-xs font-bold text-ops-red-dark uppercase tracking-wider mb-2">Teacher Using Hours</label>
+                  <select id="use-teacher-select" onchange="updateUseBalanceHint(this)" class="block w-full rounded border-gray-300 p-2 border bg-white focus:ring-ops-red focus:border-ops-red">
                      <option value="">-- Select Staff Member --</option>
-                     ${staffOptions}
-                   </select>
-                </div>
-             </div>
+                     ${staffOptions.replace(/data-max="/g, 'data-max="')} <!-- Reusing options -->
+                  </select>
+                  <div id="use-balance-hint" class="text-xs text-right mt-2 text-ops-red h-4"></div>
+               </div>
 
-             <!-- Who did they sub for? (Context only) -->
-             <div class="mb-4">
-                <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Reason / Subbed For</label>
-                <div class="flex gap-2 mb-2">
-                   <select id="earn-subtype" onchange="toggleEarnSubInput(this.value)" class="w-1/3 rounded border-gray-300 p-2 border bg-gray-50 text-sm">
-                     <option value="Staff">Staff Member</option>
-                     <option value="Other">Other / Manual</option>
-                   </select>
-                   <div id="earn-sub-staff-container" class="w-2/3">
-                      <select id="earn-sub-staff-select" class="block w-full rounded border-gray-300 p-2 border">
-                        <option value="">-- Select Staff --</option>
-                        ${staffOptions}
-                      </select>
-                   </div>
-                   <div id="earn-sub-manual-container" class="w-2/3 hidden">
-                      <input type="text" id="earn-sub-manual-input" placeholder="e.g. Field Trip" class="block w-full rounded border-gray-300 p-2 border">
-                   </div>
-                </div>
-             </div>
+               <div class="grid grid-cols-2 gap-4 mb-6">
+                  <div>
+                     <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Date</label>
+                     <input type="date" id="use-date" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-red focus:border-ops-red">
+                  </div>
+                  <div>
+                     <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Hours Amount</label>
+                     <input type="number" id="use-amount" step="0.5" min="0.5" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-red focus:border-ops-red">
+                  </div>
+               </div>
 
-             <!-- Details -->
-             <div class="grid grid-cols-2 gap-4 mb-4">
-                <div>
-                   <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Date</label>
-                   <input type="date" name="date" required class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
-                </div>
-                <div>
-                   <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Period</label>
-                   <select name="period" class="block w-full rounded border-gray-300 p-2 border bg-white focus:ring-ops-blue focus:border-ops-blue">
-                     ${getPeriodOptions()}
-                   </select>
-                </div>
-             </div>
-              
-             <div class="mb-6">
-                <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Duration</label>
-                <div class="flex gap-3">
-                  <label class="flex-1 cursor-pointer">
-                    <input type="radio" name="duration" value="1" checked class="peer sr-only">
-                    <div class="rounded-lg border border-gray-300 p-3 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
-                      <div class="font-bold text-sm">Full Period</div>
-                    </div>
-                  </label>
-                  <label class="flex-1 cursor-pointer">
-                    <input type="radio" name="duration" value="0.5" class="peer sr-only">
-                    <div class="rounded-lg border border-gray-300 p-3 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
-                      <div class="font-bold text-sm">Half Period</div>
-                    </div>
-                  </label>
-                </div>
-             </div>
+               <button type="button" onclick="addToQueue('use')" class="w-full bg-white border-2 border-ops-red text-ops-red font-bold py-3 px-4 rounded shadow-sm hover:bg-red-50 transition uppercase tracking-wide">
+                  <i class="fas fa-plus mr-2"></i> Add to Queue
+               </button>
+             </form>
+          </div>
+          
+        </div> <!-- End Scrollable -->
 
-             <button type="submit" class="w-full bg-ops-blue text-white font-bold py-3 px-4 rounded shadow hover:bg-ops-blue-dark transition uppercase tracking-wide">
-               <i class="fas fa-check mr-2"></i> Submit Earned Record
-             </button>
-           </form>
-        </div>
-
-        <!-- TAB 2: USE (Red) -->
-        <div id="content-admin-use" class="hidden">
-           <form onsubmit="submitAdminUsedOnly(event)">
-             
-             <div class="mb-6 bg-red-50 p-4 rounded-lg border border-red-100">
-                <label class="block text-xs font-bold text-ops-red-dark uppercase tracking-wider mb-2">Teacher Using Hours</label>
-                <select id="use-teacher-select" onchange="updateUseBalanceHint(this)" required class="block w-full rounded border-gray-300 p-2 border bg-white focus:ring-ops-red focus:border-ops-red">
-                   <option value="">-- Select Staff Member --</option>
-                   ${staffOptions.replace(/data-max="/g, 'data-max="')} <!-- Reusing options -->
-                </select>
-                <div id="use-balance-hint" class="text-xs text-right mt-2 text-ops-red h-4"></div>
-             </div>
-
-             <div class="grid grid-cols-2 gap-4 mb-6">
-                <div>
-                   <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Date</label>
-                   <input type="date" name="date" required class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-red focus:border-ops-red">
-                </div>
-                <div>
-                   <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Hours Amount</label>
-                   <input type="number" name="amount" step="0.5" min="0.5" required class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-red focus:border-ops-red">
-                </div>
-             </div>
-
-             <button type="submit" class="w-full bg-ops-red text-white font-bold py-3 px-4 rounded shadow hover:bg-ops-red-dark transition uppercase tracking-wide">
-                <i class="fas fa-check mr-2"></i> Submit Usage Record
-             </button>
-           </form>
+        <!-- Queue Footer (Always Visible) -->
+        <div class="mt-6 pt-6 border-t border-gray-200">
+           <div class="flex justify-between items-center mb-3">
+              <h4 class="font-bold text-ops-gray-dark uppercase tracking-wide text-sm">Submission Queue</h4>
+              <button onclick="submitBatch()" id="btn-submit-batch" disabled class="bg-gray-400 text-white font-bold py-2 px-6 rounded shadow transition uppercase tracking-wide text-xs">
+                Submit All (0)
+              </button>
+           </div>
+           
+           <div id="queue-list" class="bg-gray-50 border border-gray-200 rounded h-32 overflow-y-auto p-2 text-sm text-gray-500 italic text-center">
+              No items in queue.
+           </div>
         </div>
       `;
-      showModal("Add TST Request", html);
+      showModal("Add TST Requests (Batch)", html);
+      
+      // Set default date to today for convenience
+      const today = new Date().toISOString().split('T')[0];
+      setTimeout(() => {
+          if(document.getElementById('earn-date')) document.getElementById('earn-date').value = today;
+          if(document.getElementById('use-date')) document.getElementById('use-date').value = today;
+      }, 100);
+    }
+
+    function addToQueue(type) {
+      if (type === 'earn') {
+        const teacherSelect = document.getElementById('earn-teacher-select');
+        const email = teacherSelect.value;
+        const teacherName = teacherSelect.options[teacherSelect.selectedIndex].text;
+        
+        if (!email) return alert("Please select a teacher.");
+
+        const subType = document.getElementById('earn-subtype').value;
+        let subName = "";
+        if (subType === 'Staff') {
+           const subSelect = document.getElementById('earn-sub-staff-select');
+           if(subSelect.value) {
+             subName = subSelect.options[subSelect.selectedIndex].getAttribute('data-name');
+           } else {
+             return alert("Please select who they subbed for.");
+           }
+        } else {
+           subName = document.getElementById('earn-sub-manual-input').value;
+           if(!subName) return alert("Enter manual reason.");
+        }
+
+        const date = document.getElementById('earn-date').value;
+        if(!date) return alert("Select a date.");
+
+        const durationVal = document.querySelector('input[name="earn-duration"]:checked').value;
+        const period = document.getElementById('earn-period').value;
+
+        STATE.requestQueue.push({
+          type: 'earned',
+          summary: `<strong class="text-ops-blue">Earned</strong>: ${teacherName} (Sub: ${subName}) - ${date}`,
+          payload: {
+            email: email,
+            subbedForType: subType,
+            subbedForName: subName,
+            date: date,
+            period: period,
+            amountType: durationVal == "1" ? "Full Period" : "Half Period",
+            amountDecimal: parseFloat(durationVal)
+          }
+        });
+        
+        // Reset specific fields (keep Date)
+        teacherSelect.value = "";
+        document.getElementById('earn-sub-staff-select').value = "";
+        document.getElementById('earn-sub-manual-input').value = "";
+
+      } else {
+        // USE
+        const teacherSelect = document.getElementById('use-teacher-select');
+        const email = teacherSelect.value;
+        const name = teacherSelect.options[teacherSelect.selectedIndex].getAttribute('data-name');
+        
+        if (!email) return alert("Please select a teacher.");
+        
+        const date = document.getElementById('use-date').value;
+        const amount = document.getElementById('use-amount').value;
+        
+        if (!date || !amount) return alert("Fill all fields.");
+
+        STATE.requestQueue.push({
+          type: 'used',
+          summary: `<strong class="text-ops-red">Used</strong>: ${name} (${amount} hrs) - ${date}`,
+          payload: {
+            email: email,
+            name: name,
+            date: date,
+            amount: parseFloat(amount)
+          }
+        });
+
+        // Reset fields (Keep Date)
+        teacherSelect.value = "";
+        document.getElementById('use-amount').value = "";
+        document.getElementById('use-balance-hint').innerHTML = "";
+      }
+
+      renderQueue();
+    }
+
+    function renderQueue() {
+      const list = document.getElementById('queue-list');
+      const btn = document.getElementById('btn-submit-batch');
+      
+      if (STATE.requestQueue.length === 0) {
+        list.innerHTML = 'No items in queue.';
+        list.classList.add('italic', 'text-center', 'text-gray-500');
+        btn.disabled = true;
+        btn.innerHTML = 'Submit All (0)';
+        btn.classList.add('bg-gray-400');
+        btn.classList.remove('bg-ops-blue-dark', 'hover:bg-opacity-90');
+      } else {
+        list.classList.remove('italic', 'text-center', 'text-gray-500');
+        list.innerHTML = STATE.requestQueue.map((item, idx) => `
+          <div class="flex justify-between items-center bg-white p-2 mb-2 rounded border border-gray-200 text-xs shadow-sm">
+             <div>${item.summary}</div>
+             <button onclick="removeFromQueue(${idx})" class="text-red-400 hover:text-red-600 ml-2">
+               <i class="fas fa-times-circle"></i>
+             </button>
+          </div>
+        `).join('');
+        
+        btn.disabled = false;
+        btn.innerHTML = `Submit All (${STATE.requestQueue.length})`;
+        btn.classList.remove('bg-gray-400');
+        btn.classList.add('bg-ops-blue-dark', 'hover:bg-opacity-90');
+      }
+    }
+
+    function removeFromQueue(index) {
+      STATE.requestQueue.splice(index, 1);
+      renderQueue();
+    }
+
+    function submitBatch() {
+      if (STATE.requestQueue.length === 0) return;
+      
+      const queue = [...STATE.requestQueue]; // Copy
+      const btn = document.getElementById('btn-submit-batch');
+      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+      btn.disabled = true;
+
+      google.script.run.withSuccessHandler(() => {
+        STATE.requestQueue = [];
+        closeModal();
+        // Refresh both views
+        loadAdminEarned();
+        loadAdminUsed();
+        
+        // Simple Toast/Alert
+        alert(`Successfully processed ${queue.length} requests.`);
+      }).withFailureHandler(err => {
+         alert("Error processing batch: " + err);
+         btn.disabled = false;
+         renderQueue(); // Restore button state
+      }).processBatch(queue);
     }
 
     function switchAdminModalTab(tab) {
@@ -977,71 +1142,8 @@
        }
     }
 
-    function submitAdminEarnedOnly(e) {
-      e.preventDefault();
-      const form = e.target;
-      
-      const teacherSelect = document.getElementById('earn-teacher-select');
-      const email = teacherSelect.value;
-      if (!email) return alert("Please select the teacher earning hours.");
+    // Deprecated single-submit functions removed in place of addToQueue/submitBatch
 
-      const subType = document.getElementById('earn-subtype').value;
-      let subName = "";
-      if (subType === 'Staff') {
-         const subSelect = document.getElementById('earn-sub-staff-select');
-         if(subSelect.value) {
-           subName = subSelect.options[subSelect.selectedIndex].getAttribute('data-name');
-         } else {
-           return alert("Please select who they subbed for.");
-         }
-      } else {
-         subName = document.getElementById('earn-sub-manual-input').value || "Other";
-      }
-
-      const durationVal = form.duration.value;
-      
-      const payload = {
-        email: email,
-        subbedForType: subType,
-        subbedForName: subName,
-        date: form.date.value,
-        period: form.period.value,
-        amountType: durationVal == "1" ? "Full Period" : "Half Period",
-        amountDecimal: parseFloat(durationVal)
-      };
-
-      showLoading(true);
-      google.script.run.withSuccessHandler(() => {
-         showLoading(false);
-         closeModal();
-         loadAdminEarned();
-      }).submitEarned(payload);
-    }
-
-    function submitAdminUsedOnly(e) {
-      e.preventDefault();
-      const form = e.target;
-      
-      const teacherSelect = document.getElementById('use-teacher-select');
-      const email = teacherSelect.value;
-      const name = teacherSelect.options[teacherSelect.selectedIndex].getAttribute('data-name');
-      
-      if (!email) return alert("Please select a teacher.");
-
-      const payload = {
-        email: email,
-        name: name,
-        date: form.date.value,
-        amount: parseFloat(form.amount.value)
-      };
-
-      showLoading(true);
-      google.script.run.withSuccessHandler(() => {
-         showLoading(false);
-         closeModal();
-         loadAdminUsed();
-      }).submitUsage(payload);
-    }
 
     function openStaffDetail(email, name, isEmbedded = false) {
       showLoading(true);

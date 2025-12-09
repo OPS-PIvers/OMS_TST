@@ -520,6 +520,28 @@ function adminSubmitRequest(data) {
 }
 
 /**
+ * Batch Process: Handles a queue of mixed requests.
+ */
+function processBatch(queue) {
+  if (!Array.isArray(queue) || queue.length === 0) return;
+  
+  queue.forEach(item => {
+    try {
+      if (item.type === 'earned') {
+        submitEarned(item.payload);
+      } else if (item.type === 'used') {
+        submitUsage(item.payload);
+      }
+    } catch (e) {
+      console.error("Error processing batch item:", item, e);
+      // We continue processing others even if one fails
+    }
+  });
+  
+  return true;
+}
+
+/**
  * Sends an email report to a staff member.
  */
 function sendStatusEmail(targetEmail, targetName) {
