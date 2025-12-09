@@ -179,17 +179,46 @@ function getTeacherHistory(targetEmail) {
 /**
  * Admin Action: Approve an Earned request.
  */
-function approveEarnedRow(rowIndex) {
+function approveEarnedRow(rowIndex, emailData) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Approvals (New)');
   
+  // Get data for email BEFORE updating
+  // Row Index is 1-based. 
+  // Cols: A=Email(1), B=Name(2), C=SubbedFor(3), E=Date(5), F=Period(6), H=Hours(8)
+  const range = sheet.getRange(rowIndex, 1, 1, 8);
+  const values = range.getValues()[0];
+  const rowData = {
+    email: values[0],
+    name: values[1],
+    subbedFor: values[2],
+    date: values[4],
+    period: values[5],
+    hours: values[7]
+  };
+
   // Col I (9) is Approved Status, Col J (10) is Timestamp
   // Col K (11) is Denied Status. 
-  // Safety: Ensure Denied is FALSE if we are Approving.
+  // Safety: Ensure Denied is FALSE if we are Approving. 
   
   sheet.getRange(rowIndex, 9).setValue(true);   // Set Approved = TRUE
   sheet.getRange(rowIndex, 10).setValue(new Date()); // Set Approved Timestamp
   sheet.getRange(rowIndex, 11).setValue(false); // Set Denied = FALSE (Safety)
+  
+  // Send Email if requested
+  if (emailData && emailData.send) {
+    const subject = "TST Request Approved";
+    const body = `
+      <p>Your request has been approved and added to your balance.</p>
+      <div style="background-color: #f8fafc; border-left: 4px solid #2d3f89; padding: 15px; margin: 15px 0;">
+        <p style="margin: 0; color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;">Request Details</p>
+        <p style="margin: 5px 0 0 0; color: #1e293b; font-weight: bold;">Subbed for ${rowData.subbedFor}</p>
+        <p style="margin: 0; color: #334155;">${new Date(rowData.date).toLocaleDateString()} &bull; Period ${rowData.period} &bull; +${rowData.hours} hrs</p>
+      </div>
+      <p>You can check your up-to-date balance on the TST Portal.</p>
+    `;
+    sendStyledEmail(rowData.email, subject, "Your TST Request was Approved!", body, "View My Balance");
+  }
   
   return true;
 }
@@ -197,16 +226,62 @@ function approveEarnedRow(rowIndex) {
 /**
  * Admin Action: Deny an Earned request.
  */
-function denyEarnedRow(rowIndex) {
+function denyEarnedRow(rowIndex, emailData) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Approvals (New)');
   
+  // Get data for email
+  const range = sheet.getRange(rowIndex, 1, 1, 8);
+  const values = range.getValues()[0];
+  const rowData = {
+    email: values[0],
+    name: values[1],
+    subbedFor: values[2],
+    date: values[4],
+    period: values[5],
+    hours: values[7]
+  };
+
   // Col I (9) is Approved Status
   // Col K (11) is Denied Status, Col L (12) is Denied Timestamp
   
   sheet.getRange(rowIndex, 9).setValue(false);  // Set Approved = FALSE (Safety)
   sheet.getRange(rowIndex, 11).setValue(true);  // Set Denied = TRUE
   sheet.getRange(rowIndex, 12).setValue(new Date()); // Set Denied Timestamp
+  
+  // Send Email if requested
+  if (emailData && emailData.send) {
+    const subject = "TST Request Denied";
+    
+    let reasonsHtml = "";
+    if (emailData.reasons && emailData.reasons.length > 0) {
+      reasonsHtml = `<ul style="margin: 10px 0; padding-left: 20px; color: #b91c1c;">` + 
+        emailData.reasons.map(r => `<li>${r}</li>`).join('') + 
+        `</ul>`;
+    }
+
+    const noteHtml = emailData.note ? `<p style="margin-top: 10px;"><em>" ${emailData.note} "</em></p>` : "";
+
+    const body = `
+      <p>Your request could not be processed at this time.</p>
+      
+      <div style="background-color: #fef2f2; border-left: 4px solid #ef4444; padding: 15px; margin: 15px 0;">
+        <p style="margin: 0; color: #991b1b; font-weight: bold;">Reason for Denial:</p>
+        ${reasonsHtml}
+        ${noteHtml}
+      </div>
+
+      <div style="background-color: #f8fafc; padding: 15px; margin: 15px 0; border: 1px solid #e2e8f0; border-radius: 4px;">
+        <p style="margin: 0; color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;">Request Details</p>
+        <p style="margin: 5px 0 0 0; color: #1e293b; font-weight: bold;">Subbed for ${rowData.subbedFor}</p>
+        <p style="margin: 0; color: #334155;">${new Date(rowData.date).toLocaleDateString()} &bull; Period ${rowData.period}</p>
+      </div>
+
+      <p>Please review the details and resubmit if necessary, or contact the TST administrator.</p>
+    `;
+    
+    sendStyledEmail(rowData.email, subject, "TST Request Update", body, "Go to TST Portal");
+  }
   
   return true;
 }
@@ -539,4 +614,52 @@ function onFormSubmit(e) {
     false, // Denied
     ""     // TS
   ]);
+}
+
+/**
+ * Helper to send a styled HTML email.
+ */
+function sendStyledEmail(recipient, subject, title, contentHtml, buttonText) {
+  const appUrl = ScriptApp.getService().getUrl();
+  
+  const htmlTemplate = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f3f4f6; margin: 0; padding: 0; }
+        .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; }
+        .header { background-color: #2d3f89; padding: 20px; text-align: center; }
+        .header h1 { color: #ffffff; margin: 0; font-size: 24px; }
+        .content { padding: 30px; color: #333333; line-height: 1.6; }
+        .button { display: inline-block; background-color: #2d3f89; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold; margin-top: 20px; }
+        .footer { background-color: #f3f4f6; padding: 20px; text-align: center; font-size: 12px; color: #6b7280; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>Orono Middle School</h1>
+        </div>
+        <div class="content">
+          <h2 style="color: #2d3f89; margin-top: 0;">${title}</h2>
+          ${contentHtml}
+          <div style="text-align: center;">
+            <a href="${appUrl}" class="button" style="color: #ffffff;">${buttonText}</a>
+          </div>
+        </div>
+        <div class="footer">
+          &copy; ${new Date().getFullYear()} Orono Middle School TST Manager<br>
+          This is an automated message. Please do not reply.
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+  
+  MailApp.sendEmail({
+    to: recipient,
+    subject: `[TST] ${subject}`,
+    htmlBody: htmlTemplate
+  });
 }

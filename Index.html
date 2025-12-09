@@ -532,14 +532,12 @@
                     <input type="radio" name="duration" value="1" checked class="peer sr-only">
                     <div class="rounded-lg border border-gray-300 p-4 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
                       <div class="font-bold">Full Period</div>
-                      <div class="text-xs">1.0 Hour</div>
                     </div>
                   </label>
                   <label class="flex-1 cursor-pointer">
                     <input type="radio" name="duration" value="0.5" class="peer sr-only">
                     <div class="rounded-lg border border-gray-300 p-4 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
                       <div class="font-bold">Half Period</div>
-                      <div class="text-xs">0.5 Hour</div>
                     </div>
                   </label>
                 </div>
@@ -604,31 +602,130 @@
     // --- Actions & Handlers ---
 
     function approveItem(type, rowIndex) {
-      const row = document.getElementById(`row-${rowIndex}`);
-      row.classList.add('opacity-50', 'pointer-events-none', 'bg-gray-100');
-      
-      const handler = type === 'earned' ? 'approveEarnedRow' : 'approveUsedRow';
-      
-      google.script.run.withSuccessHandler(() => {
-        row.remove();
-      }).withFailureHandler(err => {
-        alert("Error approving: " + err);
-        row.classList.remove('opacity-50', 'pointer-events-none', 'bg-gray-100');
-      })[handler](rowIndex);
+      // For now, we only have email logic for 'earned' requests
+      if (type === 'earned') {
+        openApproveEmailModal(rowIndex);
+      } else {
+        // Fallback for Used (no email needed yet per request)
+        const row = document.getElementById(`row-${rowIndex}`);
+        row.classList.add('opacity-50', 'pointer-events-none', 'bg-gray-100');
+        google.script.run.withSuccessHandler(() => {
+          row.remove();
+        }).withFailureHandler(err => {
+          alert("Error approving: " + err);
+          row.classList.remove('opacity-50', 'pointer-events-none', 'bg-gray-100');
+        }).approveUsedRow(rowIndex);
+      }
     }
 
     function denyEarned(rowIndex) {
-      if(!confirm("Are you sure you want to DENY this request?")) return;
+      openDenyEmailModal(rowIndex);
+    }
 
+    // --- New Email Modals ---
+
+    function openApproveEmailModal(rowIndex) {
+      const html = `
+        <div class="text-center">
+          <div class="mb-6">
+            <div class="mx-auto flex items-center justify-center h-16 w-16 rounded-full bg-blue-100 mb-4">
+              <i class="fas fa-check text-2xl text-ops-blue"></i>
+            </div>
+            <h3 class="text-lg font-bold text-gray-900">Approve Request</h3>
+            <p class="text-sm text-gray-500 mt-2">You are about to approve this earned time request.</p>
+            <p class="text-sm text-gray-500">Would you like to send a notification email to the teacher?</p>
+          </div>
+          <div class="flex flex-col gap-3 sm:flex-row-reverse justify-center">
+            <button onclick="submitApproveWithEmail(${rowIndex}, true)" class="w-full sm:w-auto inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-ops-blue text-base font-medium text-white hover:bg-ops-blue-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-ops-blue sm:text-sm">
+              <i class="fas fa-paper-plane mr-2"></i> Approve & Send Email
+            </button>
+            <button onclick="submitApproveWithEmail(${rowIndex}, false)" class="w-full sm:w-auto inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:text-sm">
+              Approve (Skip Email)
+            </button>
+          </div>
+        </div>
+      `;
+      showModal("Confirm Approval", html);
+    }
+
+    function submitApproveWithEmail(rowIndex, sendEmail) {
+      closeModal();
       const row = document.getElementById(`row-${rowIndex}`);
-      row.classList.add('opacity-50', 'pointer-events-none', 'bg-red-50');
+      if(row) row.classList.add('opacity-50', 'pointer-events-none', 'bg-gray-100');
+      
+      google.script.run.withSuccessHandler(() => {
+        if(row) row.remove();
+      }).withFailureHandler(err => {
+        alert("Error approving: " + err);
+        if(row) row.classList.remove('opacity-50', 'pointer-events-none', 'bg-gray-100');
+      }).approveEarnedRow(rowIndex, { send: sendEmail });
+    }
+
+    function openDenyEmailModal(rowIndex) {
+      const html = `
+        <form onsubmit="submitDenyWithEmail(event, ${rowIndex})">
+          <div class="mb-4">
+            <label class="block text-sm font-bold text-ops-gray-dark mb-2">Reason(s) for Denial</label>
+            <div class="space-y-2 bg-gray-50 p-4 rounded border border-gray-200">
+              <label class="flex items-center space-x-3">
+                <input type="checkbox" name="reasons" value="Incomplete Request" class="h-4 w-4 text-ops-red focus:ring-ops-red border-gray-300 rounded">
+                <span class="text-sm text-gray-700">Incomplete Request</span>
+              </label>
+              <label class="flex items-center space-x-3">
+                <input type="checkbox" name="reasons" value="Incorrect Information" class="h-4 w-4 text-ops-red focus:ring-ops-red border-gray-300 rounded">
+                <span class="text-sm text-gray-700">Incorrect Information</span>
+              </label>
+              <label class="flex items-center space-x-3">
+                <input type="checkbox" name="reasons" value="Duplicate Entry" class="h-4 w-4 text-ops-red focus:ring-ops-red border-gray-300 rounded">
+                <span class="text-sm text-gray-700">Duplicate Entry</span>
+              </label>
+              <label class="flex items-center space-x-3">
+                <input type="checkbox" name="reasons" value="Not Eligible" class="h-4 w-4 text-ops-red focus:ring-ops-red border-gray-300 rounded">
+                <span class="text-sm text-gray-700">Not Eligible for TST</span>
+              </label>
+            </div>
+          </div>
+          
+          <div class="mb-6">
+            <label class="block text-sm font-bold text-ops-gray-dark mb-2">Additional Note (Optional)</label>
+            <textarea name="note" rows="3" class="shadow-sm focus:ring-ops-red focus:border-ops-red mt-1 block w-full sm:text-sm border border-gray-300 rounded-md" placeholder="Add a personal message or clarification..."></textarea>
+          </div>
+
+          <div class="flex flex-col gap-3 sm:flex-row-reverse">
+            <button type="submit" onclick="this.form.dataset.action='send'" class="w-full sm:w-auto inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-ops-red text-base font-medium text-white hover:bg-ops-red-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-ops-red sm:text-sm">
+              <i class="fas fa-envelope mr-2"></i> Deny & Send Email
+            </button>
+            <button type="submit" onclick="this.form.dataset.action='skip'" class="w-full sm:w-auto inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 sm:text-sm">
+              Deny (Skip Email)
+            </button>
+          </div>
+        </form>
+      `;
+      showModal("Deny Request", html);
+    }
+
+    function submitDenyWithEmail(e, rowIndex) {
+      e.preventDefault();
+      const form = e.target;
+      const action = form.dataset.action; // 'send' or 'skip'
+      
+      const reasons = Array.from(form.querySelectorAll('input[name="reasons"]:checked')).map(cb => cb.value);
+      const note = form.note.value;
+
+      closeModal();
+      const row = document.getElementById(`row-${rowIndex}`);
+      if(row) row.classList.add('opacity-50', 'pointer-events-none', 'bg-red-50');
 
       google.script.run.withSuccessHandler(() => {
-        row.remove();
+        if(row) row.remove();
       }).withFailureHandler(err => {
         alert("Error denying: " + err);
-        row.classList.remove('opacity-50', 'pointer-events-none', 'bg-red-50');
-      }).denyEarnedRow(rowIndex);
+        if(row) row.classList.remove('opacity-50', 'pointer-events-none', 'bg-red-50');
+      }).denyEarnedRow(rowIndex, { 
+        send: action === 'send',
+        reasons: reasons,
+        note: note
+      });
     }
 
     function toggleOther(val) {
@@ -795,13 +892,13 @@
               <label class="flex-1 cursor-pointer">
                 <input type="radio" name="req-duration" value="1" checked class="peer sr-only">
                 <div class="rounded-lg border border-gray-300 p-3 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
-                  <div class="font-bold text-sm">Full Period (1.0)</div>
+                  <div class="font-bold text-sm">Full Period</div>
                 </div>
               </label>
               <label class="flex-1 cursor-pointer">
                 <input type="radio" name="req-duration" value="0.5" class="peer sr-only">
                 <div class="rounded-lg border border-gray-300 p-3 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
-                  <div class="font-bold text-sm">Half Period (0.5)</div>
+                  <div class="font-bold text-sm">Half Period</div>
                 </div>
               </label>
             </div>
@@ -1118,13 +1215,13 @@
               <label class="flex-1 cursor-pointer">
                 <input type="radio" name="duration" value="1" ${!isHalf ? 'checked' : ''} class="peer sr-only">
                 <div class="rounded border border-gray-200 p-2 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue peer-checked:text-white transition">
-                  <span class="text-sm font-bold">Full (1.0)</span>
+                  <span class="text-sm font-bold">Full</span>
                 </div>
               </label>
               <label class="flex-1 cursor-pointer">
                 <input type="radio" name="duration" value="0.5" ${isHalf ? 'checked' : ''} class="peer sr-only">
                 <div class="rounded border border-gray-200 p-2 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue peer-checked:text-white transition">
-                  <span class="text-sm font-bold">Half (0.5)</span>
+                  <span class="text-sm font-bold">Half</span>
                 </div>
               </label>
             </div>
