@@ -357,9 +357,9 @@
                            <button onclick="openEditEarnedModal(${row.rowIndex})" class="text-ops-gray-dark bg-white border border-gray-300 hover:bg-gray-50 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Edit">
                             <i class="fas fa-pencil-alt"></i>
                           </button>
-                           <button onclick="deleteItem('earned', ${row.rowIndex})" class="text-white bg-ops-red hover:bg-ops-red-dark px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Delete">
+                           <!-- <button onclick="deleteItem('earned', ${row.rowIndex})" class="text-white bg-ops-red hover:bg-ops-red-dark px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Delete">
                             <i class="fas fa-trash"></i>
-                          </button>
+                          </button> -->
                            <button onclick="denyEarned(${row.rowIndex})" class="text-ops-red bg-white border border-ops-red hover:bg-red-50 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95">
                             Deny
                           </button>
@@ -806,248 +806,240 @@
 
     // --- Modal Logic ---
     
-    // NEW: Open Admin Manual Request Modal
+    // --- Tabbed Admin Modal Logic ---
+
     function openAdminCreateRequestModal() {
       const staffList = STATE.user.staffData.sort((a,b) => a.name.localeCompare(b.name));
-      const staffOptions = staffList.map(s => `<option value="${s.email}" data-name="${s.name}">${s.name}</option>`).join('');
+      const staffOptions = staffList.map(s => `<option value="${s.email}" data-name="${s.name}" data-max="${s.total}">${s.name}</option>`).join('');
       
       const html = `
-        <form id="admin-manual-request-form" onsubmit="submitAdminRequest(event)">
-          
-          <!-- Section 1: Who is Using TST? (Teacher needing coverage) -->
-          <div class="mb-6 bg-red-50 p-4 rounded-lg border border-red-100">
-             <div class="flex items-center mb-3 text-ops-red-dark">
-                <i class="fas fa-user-minus mr-2"></i>
-                <h4 class="font-bold text-sm uppercase tracking-wide">Teacher Absent (Using TST)</h4>
-             </div>
-             
-             <div class="mb-3">
-               <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-1">Type</label>
-               <select id="user-type" onchange="toggleAdminRequestInputs('user')" class="block w-full rounded border-gray-300 p-2 border bg-white focus:ring-ops-red focus:border-ops-red text-sm">
-                 <option value="Staff">Staff Member (Deduct Balance)</option>
-                 <option value="Other">Other / No Deduction</option>
-               </select>
-             </div>
-             
-             <div id="user-staff-container">
-                <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-1">Select Staff</label>
-                <select id="user-select" class="block w-full rounded border-gray-300 p-2 border bg-white focus:ring-ops-red focus:border-ops-red text-sm">
-                  <option value="">-- Select Staff Member --</option>
-                  ${staffOptions}
-                </select>
-             </div>
-             
-             <div id="user-other-container" class="hidden">
-                <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-1">Description</label>
-                <input type="text" id="user-other-input" placeholder="e.g. Field Trip / Admin Request" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-red focus:border-ops-red text-sm">
-             </div>
-          </div>
-
-          <!-- Section 2: Who is Earning TST? (Covering Teacher) -->
-          <div class="mb-6 bg-blue-50 p-4 rounded-lg border border-blue-100">
-             <div class="flex items-center mb-3 text-ops-blue-dark">
-                <i class="fas fa-user-plus mr-2"></i>
-                <h4 class="font-bold text-sm uppercase tracking-wide">Teacher Covering (Earning TST)</h4>
-             </div>
-             
-             <div class="mb-3">
-               <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-1">Type</label>
-               <select id="earner-type" onchange="toggleAdminRequestInputs('earner')" class="block w-full rounded border-gray-300 p-2 border bg-white focus:ring-ops-blue focus:border-ops-blue text-sm">
-                 <option value="Staff">Staff Member (Add Pending)</option>
-                 <option value="Other">External / Other</option>
-               </select>
-             </div>
-             
-             <div id="earner-staff-container">
-                <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-1">Select Staff</label>
-                <select id="earner-select" class="block w-full rounded border-gray-300 p-2 border bg-white focus:ring-ops-blue focus:border-ops-blue text-sm">
-                  <option value="">-- Select Staff Member --</option>
-                  ${staffOptions}
-                </select>
-             </div>
-             
-             <div id="earner-other-container" class="hidden">
-                <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-1">Description</label>
-                <input type="text" id="earner-other-input" placeholder="e.g. External Sub" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue text-sm">
-             </div>
-          </div>
-
-          <!-- Section 3: Details -->
-          <div class="grid grid-cols-2 gap-4 mb-4">
-            <div>
-               <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Date</label>
-               <input type="date" id="req-date" required class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
-            </div>
-            <div>
-               <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Period</label>
-               <select id="req-period" class="block w-full rounded border-gray-300 p-2 border bg-white focus:ring-ops-blue focus:border-ops-blue">
-                 ${getPeriodOptions()}
-               </select>
-            </div>
-          </div>
-          
-          <div class="mb-6">
-            <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Duration</label>
-            <div class="flex gap-3">
-              <label class="flex-1 cursor-pointer">
-                <input type="radio" name="req-duration" value="1" checked class="peer sr-only">
-                <div class="rounded-lg border border-gray-300 p-3 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
-                  <div class="font-bold text-sm">Full Period</div>
-                </div>
-              </label>
-              <label class="flex-1 cursor-pointer">
-                <input type="radio" name="req-duration" value="0.5" class="peer sr-only">
-                <div class="rounded-lg border border-gray-300 p-3 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
-                  <div class="font-bold text-sm">Half Period</div>
-                </div>
-              </label>
-            </div>
-          </div>
-
-          <button type="submit" class="w-full bg-ops-blue text-white font-bold py-3 px-4 rounded shadow hover:bg-ops-blue-dark transition uppercase tracking-wide">
-             Create Request
+        <!-- Modal Tabs -->
+        <div class="flex border-b border-gray-200 mb-6">
+          <button onclick="switchAdminModalTab('earn')" id="tab-admin-earn" class="flex-1 py-3 text-sm font-bold uppercase tracking-wide border-b-2 text-ops-blue border-ops-blue bg-blue-50 focus:outline-none transition-colors">
+            <i class="fas fa-plus-circle mr-2"></i> Record Earned Time
           </button>
+          <button onclick="switchAdminModalTab('use')" id="tab-admin-use" class="flex-1 py-3 text-sm font-bold uppercase tracking-wide border-b-2 border-transparent text-gray-500 hover:text-ops-red focus:outline-none transition-colors">
+            <i class="fas fa-minus-circle mr-2"></i> Record Usage
+          </button>
+        </div>
 
-        </form>
+        <!-- TAB 1: EARN (Blue) -->
+        <div id="content-admin-earn" class="block">
+           <form onsubmit="submitAdminEarnedOnly(event)">
+             
+             <!-- Who Earned It? -->
+             <div class="mb-4 bg-blue-50 p-4 rounded-lg border border-blue-100">
+                <label class="block text-xs font-bold text-ops-blue-dark uppercase tracking-wider mb-2">Teacher Earning Hours</label>
+                <div class="mb-2">
+                   <select id="earn-teacher-select" required class="block w-full rounded border-gray-300 p-2 border bg-white focus:ring-ops-blue focus:border-ops-blue">
+                     <option value="">-- Select Staff Member --</option>
+                     ${staffOptions}
+                   </select>
+                </div>
+             </div>
+
+             <!-- Who did they sub for? (Context only) -->
+             <div class="mb-4">
+                <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Reason / Subbed For</label>
+                <div class="flex gap-2 mb-2">
+                   <select id="earn-subtype" onchange="toggleEarnSubInput(this.value)" class="w-1/3 rounded border-gray-300 p-2 border bg-gray-50 text-sm">
+                     <option value="Staff">Staff Member</option>
+                     <option value="Other">Other / Manual</option>
+                   </select>
+                   <div id="earn-sub-staff-container" class="w-2/3">
+                      <select id="earn-sub-staff-select" class="block w-full rounded border-gray-300 p-2 border">
+                        <option value="">-- Select Staff --</option>
+                        ${staffOptions}
+                      </select>
+                   </div>
+                   <div id="earn-sub-manual-container" class="w-2/3 hidden">
+                      <input type="text" id="earn-sub-manual-input" placeholder="e.g. Field Trip" class="block w-full rounded border-gray-300 p-2 border">
+                   </div>
+                </div>
+             </div>
+
+             <!-- Details -->
+             <div class="grid grid-cols-2 gap-4 mb-4">
+                <div>
+                   <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Date</label>
+                   <input type="date" name="date" required class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+                </div>
+                <div>
+                   <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Period</label>
+                   <select name="period" class="block w-full rounded border-gray-300 p-2 border bg-white focus:ring-ops-blue focus:border-ops-blue">
+                     ${getPeriodOptions()}
+                   </select>
+                </div>
+             </div>
+              
+             <div class="mb-6">
+                <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Duration</label>
+                <div class="flex gap-3">
+                  <label class="flex-1 cursor-pointer">
+                    <input type="radio" name="duration" value="1" checked class="peer sr-only">
+                    <div class="rounded-lg border border-gray-300 p-3 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
+                      <div class="font-bold text-sm">Full Period</div>
+                    </div>
+                  </label>
+                  <label class="flex-1 cursor-pointer">
+                    <input type="radio" name="duration" value="0.5" class="peer sr-only">
+                    <div class="rounded-lg border border-gray-300 p-3 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
+                      <div class="font-bold text-sm">Half Period</div>
+                    </div>
+                  </label>
+                </div>
+             </div>
+
+             <button type="submit" class="w-full bg-ops-blue text-white font-bold py-3 px-4 rounded shadow hover:bg-ops-blue-dark transition uppercase tracking-wide">
+               <i class="fas fa-check mr-2"></i> Submit Earned Record
+             </button>
+           </form>
+        </div>
+
+        <!-- TAB 2: USE (Red) -->
+        <div id="content-admin-use" class="hidden">
+           <form onsubmit="submitAdminUsedOnly(event)">
+             
+             <div class="mb-6 bg-red-50 p-4 rounded-lg border border-red-100">
+                <label class="block text-xs font-bold text-ops-red-dark uppercase tracking-wider mb-2">Teacher Using Hours</label>
+                <select id="use-teacher-select" onchange="updateUseBalanceHint(this)" required class="block w-full rounded border-gray-300 p-2 border bg-white focus:ring-ops-red focus:border-ops-red">
+                   <option value="">-- Select Staff Member --</option>
+                   ${staffOptions.replace(/data-max="/g, 'data-max="')} <!-- Reusing options -->
+                </select>
+                <div id="use-balance-hint" class="text-xs text-right mt-2 text-ops-red h-4"></div>
+             </div>
+
+             <div class="grid grid-cols-2 gap-4 mb-6">
+                <div>
+                   <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Date</label>
+                   <input type="date" name="date" required class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-red focus:border-ops-red">
+                </div>
+                <div>
+                   <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Hours Amount</label>
+                   <input type="number" name="amount" step="0.5" min="0.5" required class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-red focus:border-ops-red">
+                </div>
+             </div>
+
+             <button type="submit" class="w-full bg-ops-red text-white font-bold py-3 px-4 rounded shadow hover:bg-ops-red-dark transition uppercase tracking-wide">
+                <i class="fas fa-check mr-2"></i> Submit Usage Record
+             </button>
+           </form>
+        </div>
       `;
       showModal("Add TST Request", html);
     }
 
-    function toggleAdminRequestInputs(prefix) {
-       const type = document.getElementById(`${prefix}-type`).value;
-       if (type === 'Staff') {
-         document.getElementById(`${prefix}-staff-container`).classList.remove('hidden');
-         document.getElementById(`${prefix}-other-container`).classList.add('hidden');
+    function switchAdminModalTab(tab) {
+      const earnTab = document.getElementById('tab-admin-earn');
+      const useTab = document.getElementById('tab-admin-use');
+      const earnContent = document.getElementById('content-admin-earn');
+      const useContent = document.getElementById('content-admin-use');
+
+      if (tab === 'earn') {
+        earnTab.classList.add('border-ops-blue', 'text-ops-blue', 'bg-blue-50');
+        earnTab.classList.remove('border-transparent', 'text-gray-500', 'hover:text-ops-red');
+        
+        useTab.classList.remove('border-ops-red', 'text-ops-red', 'bg-red-50');
+        useTab.classList.add('border-transparent', 'text-gray-500', 'hover:text-ops-red');
+
+        earnContent.classList.remove('hidden');
+        useContent.classList.add('hidden');
+      } else {
+        useTab.classList.add('border-ops-red', 'text-ops-red', 'bg-red-50');
+        useTab.classList.remove('border-transparent', 'text-gray-500', 'hover:text-ops-red');
+
+        earnTab.classList.remove('border-ops-blue', 'text-ops-blue', 'bg-blue-50');
+        earnTab.classList.add('border-transparent', 'text-gray-500', 'hover:text-ops-red');
+
+        useContent.classList.remove('hidden');
+        earnContent.classList.add('hidden');
+      }
+    }
+
+    function toggleEarnSubInput(val) {
+      if(val === 'Other') {
+        document.getElementById('earn-sub-staff-container').classList.add('hidden');
+        document.getElementById('earn-sub-manual-container').classList.remove('hidden');
+      } else {
+        document.getElementById('earn-sub-staff-container').classList.remove('hidden');
+        document.getElementById('earn-sub-manual-container').classList.add('hidden');
+      }
+    }
+
+    function updateUseBalanceHint(select) {
+       const option = select.options[select.selectedIndex];
+       const max = option.getAttribute('data-max');
+       const hintDiv = document.getElementById('use-balance-hint');
+       if (max) {
+         hintDiv.innerHTML = `Current Balance: <span class="font-bold">${Number(max).toFixed(2)}</span>`;
        } else {
-         document.getElementById(`${prefix}-staff-container`).classList.add('hidden');
-         document.getElementById(`${prefix}-other-container`).classList.remove('hidden');
+         hintDiv.innerHTML = '';
        }
     }
 
-    function submitAdminRequest(e) {
+    function submitAdminEarnedOnly(e) {
       e.preventDefault();
+      const form = e.target;
       
-      // Gather User Data (Absent Teacher)
-      const userType = document.getElementById('user-type').value;
-      let userData = { type: userType, email: null, name: null };
-      
-      if (userType === 'Staff') {
-         const sel = document.getElementById('user-select');
-         if (sel.value) {
-           userData.email = sel.value;
-           userData.name = sel.options[sel.selectedIndex].getAttribute('data-name');
+      const teacherSelect = document.getElementById('earn-teacher-select');
+      const email = teacherSelect.value;
+      if (!email) return alert("Please select the teacher earning hours.");
+
+      const subType = document.getElementById('earn-subtype').value;
+      let subName = "";
+      if (subType === 'Staff') {
+         const subSelect = document.getElementById('earn-sub-staff-select');
+         if(subSelect.value) {
+           subName = subSelect.options[subSelect.selectedIndex].getAttribute('data-name');
+         } else {
+           return alert("Please select who they subbed for.");
          }
       } else {
-         userData.name = document.getElementById('user-other-input').value || "Other";
+         subName = document.getElementById('earn-sub-manual-input').value || "Other";
       }
 
-      // Gather Earner Data (Covering Teacher)
-      const earnerType = document.getElementById('earner-type').value;
-      let earnerData = { type: earnerType, email: null, name: null };
-
-      if (earnerType === 'Staff') {
-         const sel = document.getElementById('earner-select');
-         if (sel.value) {
-            earnerData.email = sel.value;
-            earnerData.name = sel.options[sel.selectedIndex].getAttribute('data-name');
-         }
-      } else {
-         earnerData.name = document.getElementById('earner-other-input').value || "Other";
-      }
-
-      // Validation: At least one side must be a staff member to be useful
-      if (!userData.email && !earnerData.email) {
-        alert("Please select at least one Staff Member to process a request.");
-        return;
-      }
+      const durationVal = form.duration.value;
       
-      // If Staff selected, ensure they are actually picked
-      if (userType === 'Staff' && !userData.email) return alert("Select a teacher for the Absent User.");
-      if (earnerType === 'Staff' && !earnerData.email) return alert("Select a teacher for the Covering Earner.");
-
-      const durationVal = document.querySelector('input[name="req-duration"]:checked').value;
-      const details = {
-         date: document.getElementById('req-date').value,
-         period: document.getElementById('req-period').value,
-         amount: parseFloat(durationVal),
-         amountType: durationVal == "1" ? "Full Period" : "Half Period"
+      const payload = {
+        email: email,
+        subbedForType: subType,
+        subbedForName: subName,
+        date: form.date.value,
+        period: form.period.value,
+        amountType: durationVal == "1" ? "Full Period" : "Half Period",
+        amountDecimal: parseFloat(durationVal)
       };
-
-      if (!details.date) return alert("Please select a date.");
-
-      const payload = { user: userData, earner: earnerData, details: details };
 
       showLoading(true);
       google.script.run.withSuccessHandler(() => {
          showLoading(false);
          closeModal();
-         // Refresh both views as either could have changed
-         loadAdminEarned(); 
-         // Optional: Notify
-         // alert("Request created successfully.");
-      }).adminSubmitRequest(payload);
+         loadAdminEarned();
+      }).submitEarned(payload);
     }
 
-
-    function openCreateUsageModal() {
-      const staffList = STATE.user.staffData.sort((a,b) => a.name.localeCompare(b.name));
-      const html = `
-        <form id="admin-usage-form">
-          <div class="mb-4">
-            <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Select Teacher</label>
-            <select id="usage-teacher-select" onchange="updateMaxUsage(this)" class="block w-full rounded border-gray-300 p-2 border">
-              <option value="">-- Select --</option>
-              ${staffList.map(s => `<option value="${s.email}" data-name="${s.name}" data-max="${s.total}">${s.name} (Bal: ${Number(s.total).toFixed(2)})</option>`).join('')}
-            </select>
-          </div>
-           <div class="mb-4">
-              <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Date of Usage</label>
-              <input type="date" id="usage-date" required class="block w-full rounded border-gray-300 p-2 border">
-            </div>
-            <div class="mb-6">
-              <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Hours Used</label>
-              <input type="number" id="usage-amount" step="0.5" min="0.5" required class="block w-full rounded border-gray-300 p-2 border">
-              <p id="usage-hint" class="text-xs text-ops-gray mt-1">Select a teacher to see limits.</p>
-            </div>
-            <button type="button" onclick="submitAdminUsage()" class="w-full bg-ops-red text-white font-bold py-3 px-4 rounded shadow hover:bg-ops-red-dark transition uppercase tracking-wide">Create Request</button>
-        </form>
-      `;
-      showModal("Create TST Usage", html);
-    }
-
-    function updateMaxUsage(select) {
-      const option = select.options[select.selectedIndex];
-      const max = option.getAttribute('data-max');
-      const hint = document.getElementById('usage-hint');
-      const input = document.getElementById('usage-amount');
+    function submitAdminUsedOnly(e) {
+      e.preventDefault();
+      const form = e.target;
       
-      if(max) {
-        input.max = max;
-        hint.innerHTML = `Max available: <strong class="${max < 0 ? 'text-ops-red' : 'text-ops-blue'}">${Number(max).toFixed(2)}</strong>`;
-      }
-    }
-
-    function submitAdminUsage() {
-      const select = document.getElementById('usage-teacher-select');
-      if(!select.value) return alert("Select a teacher");
+      const teacherSelect = document.getElementById('use-teacher-select');
+      const email = teacherSelect.value;
+      const name = teacherSelect.options[teacherSelect.selectedIndex].getAttribute('data-name');
       
-      const email = select.value;
-      const name = select.options[select.selectedIndex].getAttribute('data-name');
-      const max = parseFloat(select.options[select.selectedIndex].getAttribute('data-max'));
-      const amount = parseFloat(document.getElementById('usage-amount').value);
-      const date = document.getElementById('usage-date').value;
+      if (!email) return alert("Please select a teacher.");
 
-      if(!date || !amount) return alert("Fill all fields");
-      // Admin override allowed? If not, uncomment next line
-      // if(amount > max) return alert("Exceeds balance");
+      const payload = {
+        email: email,
+        name: name,
+        date: form.date.value,
+        amount: parseFloat(form.amount.value)
+      };
 
-      const payload = { email, name, date, amount };
-      
       showLoading(true);
       google.script.run.withSuccessHandler(() => {
-        showLoading(false);
-        closeModal();
-        loadAdminUsed();
+         showLoading(false);
+         closeModal();
+         loadAdminUsed();
       }).submitUsage(payload);
     }
 
