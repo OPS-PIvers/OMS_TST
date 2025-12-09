@@ -396,7 +396,7 @@ function submitEarned(formObj) {
     formObj.email,                    // A: Email
     earnerName,                       // B: Name
     formObj.subbedForName,            // C: Subbed For (Name or Manual Text)
-    formObj.subbedForType === 'Other' ? 'Other' : '', // D: Other Details ('Other' flag or empty)
+    '',                               // D: Other Details (Always empty now)
     formObj.date,                     // E: Date
     formObj.period,                   // F: Period
     formObj.amountType,               // G: Time Type
