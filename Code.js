@@ -550,48 +550,90 @@ function sendStatusEmail(targetEmail, targetName) {
   
   if (!staff) throw new Error("Staff member not found.");
   
-  let htmlBody = `
-    <h2>TST Hours Report for ${targetName}</h2>
-    <p><strong>Current Balance:</strong> ${Number(staff.total).toFixed(2)} hours</p>
-    <hr>
-    <h3>History</h3>
-    <table border="1" cellpadding="5" style="border-collapse:collapse; width:100%;">
-      <tr style="background-color:#f3f4f6;">
-        <th>Date</th>
-        <th>Type</th>
-        <th>Details</th>
-        <th>Hours</th>
-      </tr>`;
+  const balance = Number(staff.total).toFixed(2);
+  
+  // Summary Section
+  let htmlContent = `
+    <div style="background-color: #eff6ff; border-radius: 6px; padding: 20px; margin-bottom: 25px; border-left: 4px solid #3b82f6;">
+      <p style="margin: 0; color: #1e40af; font-size: 14px; text-transform: uppercase; font-weight: 600;">Current Balance</p>
+      <p style="margin: 5px 0 0 0; color: #1e3a8a; font-size: 32px; font-weight: 700;">${balance} <span style="font-size: 16px; font-weight: 500;">hours</span></p>
+    </div>
+    
+    <h3 style="color: #374151; font-size: 18px; margin-bottom: 15px; border-bottom: 1px solid #e5e7eb; padding-bottom: 10px;">Activity History</h3>
+    
+    <table cellpadding="0" cellspacing="0" style="width: 100%; border-collapse: collapse; font-size: 14px;">
+      <thead>
+        <tr style="background-color: #f9fafb;">
+          <th style="text-align: left; padding: 12px 10px; border-bottom: 1px solid #e5e7eb; color: #6b7280; font-weight: 600; text-transform: uppercase; font-size: 12px;">Date</th>
+          <th style="text-align: left; padding: 12px 10px; border-bottom: 1px solid #e5e7eb; color: #6b7280; font-weight: 600; text-transform: uppercase; font-size: 12px;">Details</th>
+          <th style="text-align: right; padding: 12px 10px; border-bottom: 1px solid #e5e7eb; color: #6b7280; font-weight: 600; text-transform: uppercase; font-size: 12px;">Hours</th>
+        </tr>
+      </thead>
+      <tbody>`;
       
-  history.forEach(h => {
-    // Skip formatting for Denied if you want, or just include them
-    if(h.type === 'Denied') return; // Optional: Don't email denied ones? Or include them. 
-    // Let's include them for clarity
-    
-    const dateStr = new Date(h.date).toLocaleDateString();
-    let color = 'black';
-    let sign = '';
-    
-    if (h.type === 'Earned') { color = 'green'; sign = '+'; }
-    else if (h.type === 'Used') { color = 'red'; sign = '-'; }
-    else { color = 'gray'; sign = ''; } // Denied
-    
-    htmlBody += `
+  if (history.length === 0) {
+    htmlContent += `
       <tr>
-        <td>${dateStr}</td>
-        <td>${h.type}</td>
-        <td>${h.type === 'Earned' ? 'Subbed for: ' + h.subbedFor : (h.type === 'Used' ? 'Redeemed' : 'Request Denied')}</td>
-        <td style="color:${color}; font-weight:bold;">${sign}${h.amount}</td>
+        <td colspan="3" style="padding: 20px; text-align: center; color: #9ca3af; font-style: italic;">No history found.</td>
       </tr>`;
-  });
+  } else {
+    history.forEach(h => {
+      const dateStr = new Date(h.date).toLocaleDateString();
+      let amountStyle = 'font-weight: 600;';
+      let rowBg = '#ffffff';
+      let typeLabel = '';
+      let details = '';
+      let amountDisplay = '';
+      
+      if (h.type === 'Earned') {
+        amountStyle += 'color: #059669;'; // Green
+        amountDisplay = `+${h.amount}`;
+        typeLabel = `<span style="background-color: #d1fae5; color: #065f46; padding: 2px 6px; border-radius: 4px; font-size: 11px;">EARNED</span>`;
+        details = `Subbed for: <strong>${h.subbedFor}</strong>`;
+      } else if (h.type === 'Used') {
+        amountStyle += 'color: #dc2626;'; // Red
+        amountDisplay = `-${h.amount}`;
+        typeLabel = `<span style="background-color: #fee2e2; color: #991b1b; padding: 2px 6px; border-radius: 4px; font-size: 11px;">USED</span>`;
+        details = 'Hours Redeemed';
+      } else { // Denied
+        amountStyle += 'color: #9ca3af; text-decoration: line-through;'; // Gray
+        amountDisplay = `${h.amount}`;
+        typeLabel = `<span style="background-color: #f3f4f6; color: #374151; padding: 2px 6px; border-radius: 4px; font-size: 11px;">DENIED</span>`;
+        details = 'Request Denied';
+      }
+      
+      htmlContent += `
+        <tr>
+          <td style="padding: 12px 10px; border-bottom: 1px solid #f3f4f6; vertical-align: top; color: #4b5563;">
+            <div style="margin-bottom: 4px;">${dateStr}</div>
+            ${typeLabel}
+          </td>
+          <td style="padding: 12px 10px; border-bottom: 1px solid #f3f4f6; vertical-align: top; color: #374151;">
+            ${details}
+          </td>
+          <td style="padding: 12px 10px; border-bottom: 1px solid #f3f4f6; vertical-align: top; text-align: right; ${amountStyle}">
+            ${amountDisplay}
+          </td>
+        </tr>`;
+    });
+  }
   
-  htmlBody += `</table>`;
+  htmlContent += `
+      </tbody>
+    </table>
+    
+    <p style="margin-top: 25px; font-size: 13px; color: #6b7280; text-align: center;">
+      This report was generated automatically on ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}.
+    </p>
+  `;
   
-  MailApp.sendEmail({
-    to: targetEmail,
-    subject: "Your TST Hours Report",
-    htmlBody: htmlBody
-  });
+  sendStyledEmail(
+    targetEmail,
+    "Your TST Hours Report",
+    `TST Report for ${targetName}`,
+    htmlContent,
+    "View Dashboard"
+  );
   
   return true;
 }
