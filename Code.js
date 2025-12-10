@@ -438,14 +438,15 @@ function submitUsage(formObj) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Usage (New)');
   
-  // Columns: A: Email, B: Name, C: Date, D: TST Used, E: Status, F: Timestamp
+  // Columns: A: Email, B: Name, C: Date, D: TST Used, E: Status, F: Timestamp, G: Notes
   sheet.appendRow([
     formObj.email,
     formObj.name,
     formObj.date,
     formObj.amount,
     false, // Default unchecked
-    ""     // No timestamp yet
+    "",    // No timestamp yet
+    formObj.notes || "" // Notes (Optional)
   ]);
   return true;
 }

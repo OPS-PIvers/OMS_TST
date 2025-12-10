@@ -1010,7 +1010,7 @@
           </button>
         </div>
 
-        <div class="h-96 overflow-y-auto pr-2"> <!-- Scrollable Content Area -->
+        <div class=""> <!-- Content Area (Auto Height) -->
         
           <!-- TAB 1: EARN (Blue) -->
           <div id="content-admin-earn" class="block">
@@ -1079,9 +1079,14 @@
                   </div>
                </div>
 
-               <button type="button" onclick="addToQueue('earn')" class="w-full bg-white border-2 border-ops-blue text-ops-blue font-bold py-3 px-4 rounded shadow-sm hover:bg-blue-50 transition uppercase tracking-wide">
-                 <i class="fas fa-plus mr-2"></i> Add to Queue
-               </button>
+               <div class="flex gap-3">
+                 <button type="button" onclick="addToQueue('earn')" class="flex-1 bg-white border-2 border-ops-blue text-ops-blue font-bold py-3 px-4 rounded shadow-sm hover:bg-blue-50 transition uppercase tracking-wide">
+                   <i class="fas fa-plus mr-2"></i> Add Another
+                 </button>
+                 <button type="button" onclick="submitImmediate('earn')" class="flex-1 bg-ops-blue text-white font-bold py-3 px-4 rounded shadow-sm hover:bg-ops-blue-dark transition uppercase tracking-wide">
+                   <i class="fas fa-paper-plane mr-2"></i> Submit All
+                 </button>
+               </div>
              </form>
           </div>
 
@@ -1109,25 +1114,31 @@
                   </div>
                </div>
 
-               <button type="button" onclick="addToQueue('use')" class="w-full bg-white border-2 border-ops-red text-ops-red font-bold py-3 px-4 rounded shadow-sm hover:bg-red-50 transition uppercase tracking-wide">
-                  <i class="fas fa-plus mr-2"></i> Add to Queue
-               </button>
+               <div class="mb-6">
+                 <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Notes (Optional)</label>
+                 <textarea id="use-notes" rows="2" placeholder="Admin notes..." class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-red focus:border-ops-red"></textarea>
+               </div>
+
+               <div class="flex gap-3">
+                 <button type="button" onclick="addToQueue('use')" class="flex-1 bg-white border-2 border-ops-red text-ops-red font-bold py-3 px-4 rounded shadow-sm hover:bg-red-50 transition uppercase tracking-wide">
+                    <i class="fas fa-plus mr-2"></i> Add Another
+                 </button>
+                 <button type="button" onclick="submitImmediate('use')" class="flex-1 bg-ops-red text-white font-bold py-3 px-4 rounded shadow-sm hover:bg-ops-red-dark transition uppercase tracking-wide">
+                    <i class="fas fa-paper-plane mr-2"></i> Submit All
+                 </button>
+               </div>
              </form>
           </div>
           
-        </div> <!-- End Scrollable -->
+        </div>
 
-        <!-- Queue Footer (Always Visible) -->
-        <div class="mt-6 pt-6 border-t border-gray-200">
+        <!-- Queue Section (Hidden by default) -->
+        <div id="queue-container" class="hidden mt-6 pt-6 border-t border-gray-200">
            <div class="flex justify-between items-center mb-3">
               <h4 class="font-bold text-ops-gray-dark uppercase tracking-wide text-sm">Submission Queue</h4>
-              <button onclick="submitBatch()" id="btn-submit-batch" disabled class="bg-gray-400 text-white font-bold py-2 px-6 rounded shadow transition uppercase tracking-wide text-xs">
-                Submit All (0)
-              </button>
            </div>
-           
-           <div id="queue-list" class="bg-gray-50 border border-gray-200 rounded h-32 overflow-y-auto p-2 text-sm text-gray-500 italic text-center">
-              No items in queue.
+           <div id="queue-list" class="bg-gray-50 border border-gray-200 rounded h-32 overflow-y-auto p-2 text-sm text-gray-500">
+              <!-- Items go here -->
            </div>
         </div>
       `;
@@ -1142,12 +1153,14 @@
     }
 
     function addToQueue(type) {
+      const initialLength = STATE.requestQueue.length;
+      
       if (type === 'earn') {
         const teacherSelect = document.getElementById('earn-teacher-select');
         const email = teacherSelect.value;
         const teacherName = teacherSelect.options[teacherSelect.selectedIndex].text;
         
-        if (!email) return showToast("Please select a teacher.", "error");
+        if (!email) { showToast("Please select a teacher.", "error"); return false; }
 
         const subType = document.getElementById('earn-subtype').value;
         let subName = "";
@@ -1156,15 +1169,15 @@
            if(subSelect.value) {
              subName = subSelect.options[subSelect.selectedIndex].getAttribute('data-name');
            } else {
-             return showToast("Please select who they subbed for.", "error");
+             showToast("Please select who they subbed for.", "error"); return false;
            }
         } else {
            subName = document.getElementById('earn-sub-manual-input').value;
-           if(!subName) return showToast("Enter manual reason.", "error");
+           if(!subName) { showToast("Enter manual reason.", "error"); return false; }
         }
 
         const date = document.getElementById('earn-date').value;
-        if(!date) return showToast("Select a date.", "error");
+        if(!date) { showToast("Select a date.", "error"); return false; }
 
         const durationVal = document.querySelector('input[name="earn-duration"]:checked').value;
         const period = document.getElementById('earn-period').value;
@@ -1194,12 +1207,13 @@
         const email = teacherSelect.value;
         const name = teacherSelect.options[teacherSelect.selectedIndex].getAttribute('data-name');
         
-        if (!email) return showToast("Please select a teacher.", "error");
+        if (!email) { showToast("Please select a teacher.", "error"); return false; }
         
         const date = document.getElementById('use-date').value;
         const amount = document.getElementById('use-amount').value;
+        const notes = document.getElementById('use-notes').value;
         
-        if (!date || !amount) return showToast("Fill all fields.", "error");
+        if (!date || !amount) { showToast("Fill all fields.", "error"); return false; }
 
         STATE.requestQueue.push({
           type: 'used',
@@ -1208,32 +1222,43 @@
             email: email,
             name: name,
             date: date,
-            amount: parseFloat(amount)
+            amount: parseFloat(amount),
+            notes: notes
           }
         });
 
         // Reset fields (Keep Date)
         teacherSelect.value = "";
         document.getElementById('use-amount').value = "";
+        document.getElementById('use-notes').value = "";
         document.getElementById('use-balance-hint').innerHTML = "";
       }
 
       renderQueue();
+      return true;
+    }
+    
+    function submitImmediate(type) {
+      // 1. Try to add current form to queue
+      // Note: We check if form has data. If user clicks "Submit All" but hasn't filled the form, 
+      // but there are items in the queue, we should probably just submit the queue?
+      // Or assume "Submit All" includes the current form.
+      // Let's assume standard behavior: validate and add current form, then submit batch.
+      
+      if (addToQueue(type)) {
+         submitBatch();
+      }
     }
 
     function renderQueue() {
       const list = document.getElementById('queue-list');
-      const btn = document.getElementById('btn-submit-batch');
+      const container = document.getElementById('queue-container');
       
       if (STATE.requestQueue.length === 0) {
-        list.innerHTML = 'No items in queue.';
-        list.classList.add('italic', 'text-center', 'text-gray-500');
-        btn.disabled = true;
-        btn.innerHTML = 'Submit All (0)';
-        btn.classList.add('bg-gray-400');
-        btn.classList.remove('bg-ops-blue-dark', 'hover:bg-opacity-90');
+        container.classList.add('hidden');
+        list.innerHTML = '';
       } else {
-        list.classList.remove('italic', 'text-center', 'text-gray-500');
+        container.classList.remove('hidden');
         list.innerHTML = STATE.requestQueue.map((item, idx) => `
           <div class="flex justify-between items-center bg-white p-2 mb-2 rounded border border-gray-200 text-xs shadow-sm">
              <div>${item.summary}</div>
@@ -1242,11 +1267,6 @@
              </button>
           </div>
         `).join('');
-        
-        btn.disabled = false;
-        btn.innerHTML = `Submit All (${STATE.requestQueue.length})`;
-        btn.classList.remove('bg-gray-400');
-        btn.classList.add('bg-ops-blue-dark', 'hover:bg-opacity-90');
       }
     }
 
@@ -1259,11 +1279,10 @@
       if (STATE.requestQueue.length === 0) return;
       
       const queue = [...STATE.requestQueue]; // Copy
-      const btn = document.getElementById('btn-submit-batch');
-      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
-      btn.disabled = true;
+      showLoading(true);
 
       google.script.run.withSuccessHandler(() => {
+        showLoading(false);
         STATE.requestQueue = [];
         closeModal();
         // Refresh both views
@@ -1273,9 +1292,8 @@
         // Simple Toast/Alert
         showToast(`Successfully processed ${queue.length} requests.`, "success");
       }).withFailureHandler(err => {
+         showLoading(false);
          showToast("Error processing batch: " + err, "error");
-         btn.disabled = false;
-         renderQueue(); // Restore button state
       }).processBatch(queue);
     }
 
