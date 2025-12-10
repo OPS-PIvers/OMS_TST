@@ -44,6 +44,61 @@ function getInitialData() {
 }
 
 /**
+ * Batch Action: Approve multiple Earned requests.
+ */
+function batchApproveEarned(indices) {
+  if (!indices || !Array.isArray(indices)) return;
+  // Sort descending just in case, though for updates it matters less than deletes
+  indices.sort((a, b) => b - a);
+  
+  indices.forEach(idx => {
+    approveEarnedRow(idx, { send: false }); // No email for batch
+  });
+  return true;
+}
+
+/**
+ * Batch Action: Deny multiple Earned requests.
+ */
+function batchDenyEarned(indices) {
+  if (!indices || !Array.isArray(indices)) return;
+  indices.sort((a, b) => b - a);
+  
+  indices.forEach(idx => {
+    denyEarnedRow(idx, { send: false }); // No email, no specific reason
+  });
+  return true;
+}
+
+/**
+ * Batch Action: Approve multiple Used requests.
+ */
+function batchApproveUsed(indices) {
+  if (!indices || !Array.isArray(indices)) return;
+  indices.sort((a, b) => b - a);
+  
+  indices.forEach(idx => {
+    approveUsedRow(idx);
+  });
+  return true;
+}
+
+/**
+ * Batch Action: Delete multiple Used requests.
+ * MUST process descending to preserve indices.
+ */
+function batchDeleteUsed(indices) {
+  if (!indices || !Array.isArray(indices)) return;
+  // Critical: Sort descending
+  indices.sort((a, b) => b - a);
+  
+  indices.forEach(idx => {
+    deleteUsedRow(idx);
+  });
+  return true;
+}
+
+/**
  * Helper to get clean object array of Staff Directory
  */
 function getStaffDirectoryData() {

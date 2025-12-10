@@ -385,8 +385,30 @@
     // --- Admin Views ---
 
     function loadAdminEarned() {
+      // Initialize selection state if needed
+      if (!STATE.selectedEarned) STATE.selectedEarned = new Set();
+      const isSel = STATE.earnedSelectionMode;
+
       google.script.run.withSuccessHandler(data => {
         STATE.pendingEarned = data; // Store for Edit lookup
+        
+        // Batch Action Bar
+        const batchActions = isSel ? `
+          <div class="bg-blue-50 px-6 py-3 border-b border-blue-100 flex justify-between items-center animate-pulse-once">
+            <span class="text-sm font-bold text-ops-blue-dark">
+              ${STATE.selectedEarned.size} Selected
+            </span>
+            <div class="flex gap-2">
+              <button onclick="batchAction('earned', 'deny')" class="bg-white text-ops-red border border-ops-red hover:bg-red-50 px-4 py-1.5 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition">
+                Deny Selected
+              </button>
+              <button onclick="batchAction('earned', 'approve')" class="bg-ops-blue text-white hover:bg-ops-blue-dark px-4 py-1.5 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition">
+                Approve Selected
+              </button>
+            </div>
+          </div>
+        ` : '';
+
         const html = `
           <div class="bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
             <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-ops-blue-lighter">
@@ -395,14 +417,25 @@
                 <p class="text-xs text-ops-gray uppercase tracking-wider mt-1">Review & Release to Directory</p>
               </div>
               <div class="flex items-center gap-3">
+                 ${isSel ? `
+                   <button onclick="toggleEarnedSelectionMode()" class="bg-white text-gray-600 border border-gray-300 px-3 py-1 rounded shadow-sm hover:bg-gray-50 text-xs font-bold uppercase tracking-wide transition">
+                     Cancel
+                   </button>
+                 ` : `
+                   <button onclick="toggleEarnedSelectionMode()" class="bg-white text-ops-blue border border-ops-blue px-3 py-1 rounded shadow-sm hover:bg-blue-50 text-xs font-bold uppercase tracking-wide transition">
+                     <i class="fas fa-check-square mr-1"></i> Select
+                   </button>
+                 `}
                  <span class="text-sm font-bold bg-white text-ops-blue px-3 py-1 rounded-full shadow-sm border border-blue-100">${data.length} Requests</span>
               </div>
             </div>
+            ${batchActions}
             ${data.length === 0 ? '<div class="p-12 text-center"><i class="fas fa-check-circle text-4xl text-gray-300 mb-4"></i><p class="text-ops-gray">All caught up! No pending approvals.</p></div>' : 
               `<div class="overflow-x-auto">
                 <table class="min-w-full divide-y divide-gray-200">
                   <thead class="bg-gray-50">
                     <tr>
+                      ${isSel ? `<th class="px-6 py-3 text-left bg-gray-50 w-10"><input type="checkbox" onchange="toggleSelectAll('earned', this)" class="rounded text-ops-blue focus:ring-ops-blue border-gray-300"></th>` : ''}
                       <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Teacher</th>
                       <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Subbed For</th>
                       <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Details</th>
@@ -411,8 +444,15 @@
                     </tr>
                   </thead>
                   <tbody class="bg-white divide-y divide-gray-200">
-                    ${data.map(row => `
-                      <tr id="row-${row.rowIndex}" class="hover:bg-gray-50 transition">
+                    ${data.map(row => {
+                      const isChecked = STATE.selectedEarned.has(row.rowIndex);
+                      return `
+                      <tr id="row-${row.rowIndex}" class="hover:bg-gray-50 transition ${isChecked ? 'bg-blue-50' : ''}" onclick="toggleRowSelection('earned', ${row.rowIndex}, event)">
+                        ${isSel ? `
+                          <td class="px-6 py-4 whitespace-nowrap">
+                            <input type="checkbox" ${isChecked ? 'checked' : ''} class="rounded text-ops-blue focus:ring-ops-blue border-gray-300 pointer-events-none">
+                          </td>
+                        ` : ''}
                         <td class="px-6 py-4 whitespace-nowrap">
                           <div class="text-sm font-bold text-ops-blue-dark">${row.name}</div>
                           <div class="text-xs text-ops-gray">${row.email}</div>
@@ -423,7 +463,7 @@
                           <div class="text-xs mt-1"><span class="bg-gray-100 px-1 rounded">${row.period}</span></div>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm font-bold text-ops-blue">+${row.hours}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm flex gap-2">
+                        <td class="px-6 py-4 whitespace-nowrap text-sm flex gap-2" onclick="event.stopPropagation()">
                            <button onclick="openEditEarnedModal(${row.rowIndex})" class="text-ops-gray-dark bg-white border border-gray-300 hover:bg-gray-50 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Edit">
                             <i class="fas fa-pencil-alt"></i>
                           </button>
@@ -438,7 +478,7 @@
                           </button>
                         </td>
                       </tr>
-                    `).join('')}
+                    `}).join('')}
                   </tbody>
                 </table>
               </div>`
@@ -449,8 +489,30 @@
     }
 
     function loadAdminUsed() {
+      // Initialize selection state
+      if (!STATE.selectedUsed) STATE.selectedUsed = new Set();
+      const isSel = STATE.usedSelectionMode;
+
       google.script.run.withSuccessHandler(data => {
         STATE.pendingUsed = data; // Store for Edit lookup
+        
+        // Batch Action Bar
+        const batchActions = isSel ? `
+          <div class="bg-red-50 px-6 py-3 border-b border-red-100 flex justify-between items-center animate-pulse-once">
+            <span class="text-sm font-bold text-ops-red-dark">
+              ${STATE.selectedUsed.size} Selected
+            </span>
+            <div class="flex gap-2">
+              <button onclick="batchAction('used', 'delete')" class="bg-white text-ops-red border border-ops-red hover:bg-red-50 px-4 py-1.5 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition">
+                Delete Selected
+              </button>
+              <button onclick="batchAction('used', 'approve')" class="bg-ops-red text-white hover:bg-ops-red-dark px-4 py-1.5 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition">
+                Approve Selected
+              </button>
+            </div>
+          </div>
+        ` : '';
+
         const html = `
           <div class="bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
             <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-ops-red-lighter">
@@ -458,12 +520,25 @@
                 <h2 class="text-xl font-bold text-ops-red-dark">Pending Usage Requests</h2>
                 <p class="text-xs text-ops-red-dark opacity-75 uppercase tracking-wider mt-1">Deduct from Balance</p>
               </div>
+              <div class="flex items-center gap-3">
+                 ${isSel ? `
+                   <button onclick="toggleUsedSelectionMode()" class="bg-white text-gray-600 border border-gray-300 px-3 py-1 rounded shadow-sm hover:bg-gray-50 text-xs font-bold uppercase tracking-wide transition">
+                     Cancel
+                   </button>
+                 ` : `
+                   <button onclick="toggleUsedSelectionMode()" class="bg-white text-ops-red border border-ops-red px-3 py-1 rounded shadow-sm hover:bg-red-50 text-xs font-bold uppercase tracking-wide transition">
+                     <i class="fas fa-check-square mr-1"></i> Select
+                   </button>
+                 `}
+              </div>
             </div>
+            ${batchActions}
             ${data.length === 0 ? '<div class="p-12 text-center"><i class="fas fa-mug-hot text-4xl text-gray-300 mb-4"></i><p class="text-ops-gray">No usage requests pending.</p></div>' : 
               `<div class="overflow-x-auto">
                 <table class="min-w-full divide-y divide-gray-200">
                   <thead class="bg-gray-50">
                     <tr>
+                      ${isSel ? `<th class="px-6 py-3 text-left bg-gray-50 w-10"><input type="checkbox" onchange="toggleSelectAll('used', this)" class="rounded text-ops-blue focus:ring-ops-blue border-gray-300"></th>` : ''}
                       <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Teacher</th>
                       <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Date Used</th>
                       <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Amount</th>
@@ -471,15 +546,22 @@
                     </tr>
                   </thead>
                   <tbody class="bg-white divide-y divide-gray-200">
-                    ${data.map(row => `
-                      <tr id="row-${row.rowIndex}" class="hover:bg-gray-50 transition">
+                    ${data.map(row => {
+                      const isChecked = STATE.selectedUsed.has(row.rowIndex);
+                      return `
+                      <tr id="row-${row.rowIndex}" class="hover:bg-gray-50 transition ${isChecked ? 'bg-red-50' : ''}" onclick="toggleRowSelection('used', ${row.rowIndex}, event)">
+                         ${isSel ? `
+                          <td class="px-6 py-4 whitespace-nowrap">
+                            <input type="checkbox" ${isChecked ? 'checked' : ''} class="rounded text-ops-red focus:ring-ops-red border-gray-300 pointer-events-none">
+                          </td>
+                        ` : ''}
                         <td class="px-6 py-4 whitespace-nowrap">
                           <div class="text-sm font-bold text-ops-blue-dark">${row.name}</div>
                           <div class="text-xs text-ops-gray">${row.email}</div>
                         </td>
                         <td class="px-6 py-4 text-sm text-ops-gray-dark">${new Date(row.date).toLocaleDateString()}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-ops-red font-bold">-${row.used}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm flex gap-2">
+                        <td class="px-6 py-4 whitespace-nowrap text-sm flex gap-2" onclick="event.stopPropagation()">
                            <button onclick="openEditUsedModal(${row.rowIndex})" class="text-ops-gray-dark bg-white border border-gray-300 hover:bg-gray-50 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Edit">
                             <i class="fas fa-pencil-alt"></i>
                           </button>
@@ -491,7 +573,7 @@
                           </button>
                         </td>
                       </tr>
-                    `).join('')}
+                    `}).join('')}
                   </tbody>
                 </table>
               </div>`
@@ -579,6 +661,86 @@
            }).sendBatchStatusEmails(emails);
         },
         "Yes, Send All"
+      );
+    }
+
+    // --- Batch Selection Logic ---
+    
+    function toggleEarnedSelectionMode() {
+      STATE.earnedSelectionMode = !STATE.earnedSelectionMode;
+      STATE.selectedEarned = new Set(); // Reset
+      loadAdminEarned(); // Re-render
+    }
+
+    function toggleUsedSelectionMode() {
+      STATE.usedSelectionMode = !STATE.usedSelectionMode;
+      STATE.selectedUsed = new Set(); // Reset
+      loadAdminUsed(); // Re-render
+    }
+
+    function toggleRowSelection(type, id, event) {
+      if(event && event.target.tagName === 'BUTTON') return; // Ignore button clicks
+
+      const set = type === 'earned' ? STATE.selectedEarned : STATE.selectedUsed;
+      if (set.has(id)) set.delete(id);
+      else set.add(id);
+      
+      // Re-render to update UI (could be optimized to just toggle classes but full render is safer for now)
+      if (type === 'earned') loadAdminEarned();
+      else loadAdminUsed();
+    }
+
+    function toggleSelectAll(type, checkbox) {
+      const isChecked = checkbox.checked;
+      const set = type === 'earned' ? STATE.selectedEarned : STATE.selectedUsed;
+      const data = type === 'earned' ? STATE.pendingEarned : STATE.pendingUsed;
+      
+      set.clear();
+      if (isChecked) {
+        data.forEach(r => set.add(r.rowIndex));
+      }
+      
+      if (type === 'earned') loadAdminEarned();
+      else loadAdminUsed();
+    }
+
+    function batchAction(type, action) {
+      const set = type === 'earned' ? STATE.selectedEarned : STATE.selectedUsed;
+      const indices = Array.from(set);
+      
+      if (indices.length === 0) return showToast("No items selected.", "error");
+
+      const actionName = action === 'approve' ? 'Approve' : (type === 'used' ? 'Delete' : 'Deny');
+      
+      let warning = `Are you sure you want to <strong>${actionName}</strong> ${indices.length} requests?`;
+      
+      // Specific warning for Denying Earned Requests (No Email)
+      if (type === 'earned' && action === 'deny') {
+        warning += `<div class="mt-4 bg-red-50 border-l-4 border-red-500 p-3 text-left">
+           <p class="font-bold text-red-700 text-xs uppercase mb-1">Warning</p>
+           <p class="text-sm text-red-900">Denying multiple requests will <strong>NOT</strong> send notification emails to teachers because you cannot provide specific reasons for each denial.</p>
+        </div>`;
+      }
+
+      openConfirmModal(
+        `Batch ${actionName}`,
+        warning,
+        () => {
+           showLoading(true);
+           const handler = `batch${action.charAt(0).toUpperCase() + action.slice(1)}${type.charAt(0).toUpperCase() + type.slice(1)}`; // e.g. batchApproveEarned
+           
+           google.script.run.withSuccessHandler(() => {
+             showLoading(false);
+             showToast(`Batch ${actionName} successful.`, "success");
+             if(type === 'earned') toggleEarnedSelectionMode();
+             else toggleUsedSelectionMode();
+           }).withFailureHandler(err => {
+             showLoading(false);
+             showToast("Batch Error: " + err, "error");
+           })[handler](indices);
+        },
+        `Confirm ${actionName}`,
+        action === 'deny' || action === 'delete' ? 'bg-ops-red hover:bg-ops-red-dark' : 'bg-ops-blue hover:bg-ops-blue-dark'
       );
     }
 
