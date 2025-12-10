@@ -1567,10 +1567,13 @@
 
     function openStaffDetail(email, name, isEmbedded = false) {
       showLoading(true);
+      const isAdmin = STATE.user.role === 'Admin';
+      const apiCall = isAdmin && !isEmbedded ? 'getStaffHistoryWithActions' : 'getTeacherHistory';
+
       google.script.run.withSuccessHandler(history => {
         showLoading(false);
         const staff = STATE.user.staffData.find(s => s.email === email);
-        
+
         const html = `
           <div class="space-y-6">
             <div class="grid grid-cols-4 gap-4 text-center">
@@ -1591,13 +1594,18 @@
                 <div class="text-2xl font-bold text-ops-gray-dark">${Number(staff.total).toFixed(2)}</div>
               </div>
             </div>
-            
+
             <div>
-              <h4 class="font-bold text-ops-blue-dark border-b pb-2 mb-3">Activity Log (Finalized)</h4>
-              <div class="max-h-64 overflow-y-auto border rounded bg-gray-50">
+              <h4 class="font-bold text-ops-blue-dark border-b pb-2 mb-3">Activity Log ${isAdmin && !isEmbedded ? '(Admin View)' : '(Finalized)'}</h4>
+              <div class="max-h-96 overflow-y-auto border rounded bg-gray-50">
                 <table class="min-w-full text-sm">
                   <thead class="bg-white sticky top-0">
-                    <tr><th class="py-2 px-3 text-left">Date</th><th class="py-2 px-3 text-left">Details</th><th class="py-2 px-3 text-right">Hours</th></tr>
+                    <tr>
+                      <th class="py-2 px-3 text-left w-24">Date</th>
+                      <th class="py-2 px-3 text-left">Details</th>
+                      <th class="py-2 px-3 text-center w-16">Hours</th>
+                      ${isAdmin && !isEmbedded ? '<th class="py-2 px-3 text-center w-28">Actions</th>' : ''}
+                    </tr>
                   </thead>
                   <tbody class="divide-y divide-gray-200">
                     ${history.map(h => {
@@ -1606,39 +1614,90 @@
                        let amountClass = '';
                        let amountSign = '';
                        let rowClass = '';
+                       let actions = '';
 
                        if(h.type === 'Earned') {
                           typeBadge = '<span class="text-xs bg-blue-100 text-ops-blue px-1.5 py-0.5 rounded mr-1">Earned</span>';
-                          details = `Subbed: ${h.subbedFor} <span class="text-xs text-gray-400 mx-1">|</span> <span class="text-xs font-semibold text-gray-500">Period ${h.period}</span>`;
+                          details = `Subbed: ${h.subbedFor}<br><span class="text-xs font-semibold text-gray-500">${h.period}</span>`;
                           amountClass = 'text-ops-blue';
                           amountSign = '+';
+                          if (isAdmin && !isEmbedded) {
+                            actions = `
+                              <button onclick="revertTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount})" class="text-yellow-600 hover:text-yellow-800 mx-1 p-1" title="Revert to Pending">
+                                <i class="fas fa-undo"></i>
+                              </button>
+                              <button onclick="openEditModal('earned', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-blue-600 hover:text-blue-800 mx-1 p-1" title="Edit">
+                                <i class="fas fa-edit"></i>
+                              </button>
+                              <button onclick="deleteTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, true)" class="text-red-600 hover:text-red-800 mx-1 p-1" title="Delete">
+                                <i class="fas fa-trash"></i>
+                              </button>
+                            `;
+                          }
                        } else if(h.type === 'Pending') {
                           typeBadge = '<span class="text-xs bg-yellow-100 text-yellow-800 px-1.5 py-0.5 rounded mr-1">Pending</span>';
-                          details = `Subbed: ${h.subbedFor} <span class="text-xs text-gray-400 mx-1">|</span> <span class="text-xs font-semibold text-gray-500">Period ${h.period}</span>`;
+                          details = `Subbed: ${h.subbedFor}<br><span class="text-xs font-semibold text-gray-500">${h.period}</span>`;
                           amountClass = 'text-yellow-600';
                           amountSign = '+';
                           rowClass = 'bg-yellow-50';
+                          if (isAdmin && !isEmbedded) {
+                            actions = `
+                              <button onclick="openEditModal('earned', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-blue-600 hover:text-blue-800 mx-1 p-1" title="Edit">
+                                <i class="fas fa-edit"></i>
+                              </button>
+                              <button onclick="deleteTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, false)" class="text-red-600 hover:text-red-800 mx-1 p-1" title="Delete">
+                                <i class="fas fa-trash"></i>
+                              </button>
+                            `;
+                          }
                        } else if(h.type === 'Used') {
                           typeBadge = '<span class="text-xs bg-red-100 text-ops-red px-1.5 py-0.5 rounded mr-1">Used</span>';
                           details = 'Redeemed';
                           amountClass = 'text-ops-red';
                           amountSign = '-';
+                          if (isAdmin && !isEmbedded) {
+                            actions = `
+                              <button onclick="revertTransaction('used', ${h.rowIndex}, '${email}', '${name}', ${h.amount})" class="text-yellow-600 hover:text-yellow-800 mx-1 p-1" title="Revert to Pending">
+                                <i class="fas fa-undo"></i>
+                              </button>
+                              <button onclick="openEditModal('used', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-blue-600 hover:text-blue-800 mx-1 p-1" title="Edit">
+                                <i class="fas fa-edit"></i>
+                              </button>
+                              <button onclick="deleteTransaction('used', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, true)" class="text-red-600 hover:text-red-800 mx-1 p-1" title="Delete">
+                                <i class="fas fa-trash"></i>
+                              </button>
+                            `;
+                          }
                        } else { // Denied
                           typeBadge = '<span class="text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded mr-1">Denied</span>';
-                          details = `Request Denied (Subbed: ${h.subbedFor}, Pd ${h.period})`;
+                          details = `Request Denied (Subbed: ${h.subbedFor})<br><span class="text-xs font-semibold text-gray-500">${h.period}</span>`;
                           if (h.denialReason) {
                             details += `<div class="text-xs text-red-500 mt-0.5">${h.denialReason}</div>`;
                           }
                           amountClass = 'text-gray-400 line-through';
                           amountSign = '+';
                           rowClass = 'bg-gray-50 italic opacity-75';
+                          if (isAdmin && !isEmbedded) {
+                            actions = `
+                              <button onclick="revertTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount})" class="text-yellow-600 hover:text-yellow-800 mx-1 p-1" title="Revert to Pending">
+                                <i class="fas fa-undo"></i>
+                              </button>
+                              <button onclick="openEditModal('earned', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-blue-600 hover:text-blue-800 mx-1 p-1" title="Edit">
+                                <i class="fas fa-edit"></i>
+                              </button>
+                              <button onclick="deleteTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, false)" class="text-red-600 hover:text-red-800 mx-1 p-1" title="Delete">
+                                <i class="fas fa-trash"></i>
+                              </button>
+                            `;
+                          }
                        }
 
                       return `
                       <tr class="${rowClass}">
-                        <td class="py-2 px-3 text-ops-gray-dark font-medium">${new Date(h.date).toLocaleDateString()}</td>
-                        <td class="py-2 px-3 text-ops-gray">${typeBadge} ${details}</td>
-                        <td class="py-2 px-3 text-right font-bold ${amountClass}">${amountSign}${h.amount}</td>
+                        <td class="py-3 px-3 text-ops-gray-dark font-medium align-top">${new Date(h.date).toLocaleDateString()}</td>
+                        <td class="py-3 px-3 text-ops-gray align-top">${typeBadge} ${details}</td>
+                        <td class="py-3 px-3 text-center font-bold ${amountClass} align-top">${amountSign}${h.amount}</td>
+                        ${isAdmin && !isEmbedded ? `<td class="py-3 px-3 text-center align-top whitespace-nowrap">${actions}</td>` : ''}
                       </tr>`;
                     }).join('')}
                   </tbody>
@@ -1655,7 +1714,7 @@
             ` : ''}
           </div>
         `;
-        
+
         if (isEmbedded) {
           document.getElementById('view-container').innerHTML = `
             <div class="bg-white p-8 shadow-lg rounded-lg max-w-4xl mx-auto border border-gray-200">
@@ -1666,7 +1725,7 @@
           showModal(name, html);
         }
 
-      }).getTeacherHistory(email);
+      })[apiCall](email);
     }
 
     function sendEmailReport(email, name) {
@@ -1682,6 +1741,235 @@
         },
         "Send Email"
       );
+    }
+
+    // Admin History Management Functions
+
+    function revertTransaction(type, rowIndex, email, name, hours) {
+      const typeLabel = type === 'earned' ? 'Earned' : 'Used';
+      const balanceType = type === 'earned' ? 'earned' : 'used';
+
+      openConfirmModal(
+        "Revert to Pending?",
+        `This will deduct <strong>${hours} hours</strong> from ${name}'s ${balanceType} balance and return this request to the pending queue.<br><br>Continue?`,
+        () => {
+          showLoading(true);
+          const handler = type === 'earned' ? 'revertEarnedToPending' : 'revertUsedToPending';
+
+          google.script.run
+            .withSuccessHandler((result) => {
+              showLoading(false);
+              showToast(`${typeLabel} request reverted to pending. Balance adjusted: -${result.hoursAdjusted} hrs`, "success");
+
+              // Refresh staff data and reopen modal
+              google.script.run.withSuccessHandler(staffData => {
+                STATE.user.staffData = staffData;
+                openStaffDetail(email, name, false);
+              }).getStaffDirectoryData();
+            })
+            .withFailureHandler(err => {
+              showLoading(false);
+              showToast("Error reverting: " + err, "error");
+            })[handler](rowIndex);
+        },
+        "Revert to Pending",
+        "bg-yellow-600 hover:bg-yellow-700"
+      );
+    }
+
+    function deleteTransaction(type, rowIndex, email, name, hours, wasApproved) {
+      const typeLabel = type === 'earned' ? 'Earned' : 'Used';
+      const balanceType = type === 'earned' ? 'earned' : 'used';
+      const balanceWarning = wasApproved
+        ? `<br><br><strong>Note:</strong> This will deduct <strong>${hours} hours</strong> from ${name}'s ${balanceType} balance.`
+        : '';
+
+      openConfirmModal(
+        "Delete Transaction?",
+        `Are you sure you want to permanently DELETE this ${typeLabel} transaction?${balanceWarning}<br><br>This action cannot be undone.`,
+        () => {
+          showLoading(true);
+          const handler = type === 'earned' ? 'deleteApprovedEarned' : 'deleteApprovedUsed';
+
+          google.script.run
+            .withSuccessHandler((result) => {
+              showLoading(false);
+              const msg = wasApproved
+                ? `Transaction deleted. Balance adjusted: -${result.hoursAdjusted} hrs`
+                : 'Transaction deleted successfully.';
+              showToast(msg, "success");
+
+              // Refresh staff data and reopen modal
+              google.script.run.withSuccessHandler(staffData => {
+                STATE.user.staffData = staffData;
+                openStaffDetail(email, name, false);
+              }).getStaffDirectoryData();
+            })
+            .withFailureHandler(err => {
+              showLoading(false);
+              showToast("Error deleting: " + err, "error");
+            })[handler](rowIndex);
+        },
+        "Delete Forever",
+        "bg-ops-red hover:bg-ops-red-dark"
+      );
+    }
+
+    function openEditModal(type, rowIndex, email, name, historyItem) {
+      const item = typeof historyItem === 'string' ? JSON.parse(historyItem) : historyItem;
+
+      if (type === 'earned') {
+        openEditEarnedModal(rowIndex, email, name, item);
+      } else {
+        openEditUsedModal(rowIndex, email, name, item);
+      }
+    }
+
+    function openEditEarnedModal(rowIndex, email, name, item) {
+      const staffOptions = STATE.user.staffData.map(s =>
+        `<option value="${s.name}" ${s.name === item.subbedFor ? 'selected' : ''}>${s.name}</option>`
+      ).join('');
+
+      const dateValue = new Date(item.date).toISOString().split('T')[0];
+
+      const modalContent = `
+        <form id="edit-earned-form" onsubmit="handleEditEarnedSubmit(event, ${rowIndex}, '${email}', '${name}')">
+          <div class="mb-4">
+            <label class="block text-sm font-bold text-ops-gray-dark mb-2">Subbed For</label>
+            <input type="text" name="subbedFor" value="${item.subbedFor}" required class="block w-full rounded border-gray-300 p-2 border">
+          </div>
+
+          <div class="grid grid-cols-2 gap-4 mb-4">
+            <div>
+              <label class="block text-sm font-bold text-ops-gray-dark mb-2">Date</label>
+              <input type="date" name="date" value="${dateValue}" required class="block w-full rounded border-gray-300 p-2 border">
+            </div>
+            <div>
+              <label class="block text-sm font-bold text-ops-gray-dark mb-2">Period</label>
+              <select name="period" class="block w-full rounded border-gray-300 p-2 border">
+                ${getPeriodOptions(item.period)}
+              </select>
+            </div>
+          </div>
+
+          <div class="mb-6">
+            <label class="block text-sm font-bold text-ops-gray-dark mb-2">Duration</label>
+            <div class="flex gap-4">
+              <label class="flex-1 cursor-pointer">
+                <input type="radio" name="duration" value="1" ${item.amount == 1 ? 'checked' : ''} class="peer sr-only">
+                <div class="rounded-lg border border-gray-300 p-3 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
+                  <div class="font-bold">Full Period</div>
+                </div>
+              </label>
+              <label class="flex-1 cursor-pointer">
+                <input type="radio" name="duration" value="0.5" ${item.amount == 0.5 ? 'checked' : ''} class="peer sr-only">
+                <div class="rounded-lg border border-gray-300 p-3 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
+                  <div class="font-bold">Half Period</div>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <div class="flex justify-end gap-3">
+            <button type="button" onclick="closeModal()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300">
+              Cancel
+            </button>
+            <button type="submit" class="px-4 py-2 bg-ops-blue text-white rounded hover:bg-ops-blue-dark">
+              Save Changes
+            </button>
+          </div>
+        </form>
+      `;
+
+      showModal(`Edit Earned Request - ${name}`, modalContent);
+    }
+
+    function openEditUsedModal(rowIndex, email, name, item) {
+      const dateValue = new Date(item.date).toISOString().split('T')[0];
+
+      const modalContent = `
+        <form id="edit-used-form" onsubmit="handleEditUsedSubmit(event, ${rowIndex}, '${email}', '${name}')">
+          <div class="mb-4">
+            <label class="block text-sm font-bold text-ops-gray-dark mb-2">Date of Usage</label>
+            <input type="date" name="date" value="${dateValue}" required class="block w-full rounded border-gray-300 p-2 border">
+          </div>
+
+          <div class="mb-6">
+            <label class="block text-sm font-bold text-ops-gray-dark mb-2">Hours Used</label>
+            <input type="number" name="amount" step="0.5" min="0.5" value="${item.amount}" required class="block w-full rounded border-gray-300 p-2 border">
+          </div>
+
+          <div class="flex justify-end gap-3">
+            <button type="button" onclick="closeModal()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300">
+              Cancel
+            </button>
+            <button type="submit" class="px-4 py-2 bg-ops-red text-white rounded hover:bg-ops-red-dark">
+              Save Changes
+            </button>
+          </div>
+        </form>
+      `;
+
+      showModal(`Edit Used Request - ${name}`, modalContent);
+    }
+
+    function handleEditEarnedSubmit(event, rowIndex, email, name) {
+      event.preventDefault();
+      const form = event.target;
+      const formData = new FormData(form);
+
+      const newData = {
+        subbedFor: formData.get('subbedFor'),
+        date: formData.get('date'),
+        period: formData.get('period'),
+        amountType: formData.get('duration') == '1' ? 'Full Period' : 'Half Period',
+        amountDecimal: Number(formData.get('duration'))
+      };
+
+      showLoading(true);
+      closeModal();
+
+      google.script.run
+        .withSuccessHandler(() => {
+          showLoading(false);
+          showToast("Earned request updated successfully.", "success");
+
+          // Reopen the staff detail modal to show updated data
+          openStaffDetail(email, name, false);
+        })
+        .withFailureHandler(err => {
+          showLoading(false);
+          showToast("Error updating: " + err, "error");
+        })
+        .updateEarnedRow(rowIndex, newData);
+    }
+
+    function handleEditUsedSubmit(event, rowIndex, email, name) {
+      event.preventDefault();
+      const form = event.target;
+      const formData = new FormData(form);
+
+      const newData = {
+        date: formData.get('date'),
+        amount: Number(formData.get('amount'))
+      };
+
+      showLoading(true);
+      closeModal();
+
+      google.script.run
+        .withSuccessHandler(() => {
+          showLoading(false);
+          showToast("Used request updated successfully.", "success");
+
+          // Reopen the staff detail modal to show updated data
+          openStaffDetail(email, name, false);
+        })
+        .withFailureHandler(err => {
+          showLoading(false);
+          showToast("Error updating: " + err, "error");
+        })
+        .updateUsedRow(rowIndex, newData);
     }
 
     function deleteItem(type, rowIndex) {

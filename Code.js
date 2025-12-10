@@ -210,12 +210,12 @@ function getPendingUsed() {
  */
 function getTeacherHistory(targetEmail) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  
+
   // 1. Get Earned (Approved OR Denied)
   const earnedSheet = ss.getSheetByName('TST Approvals (New)');
   const earnedData = earnedSheet.getDataRange().getValues();
   earnedData.shift();
-  
+
   const earned = earnedData
     .filter(r => {
        const isEmailMatch = r[0].toString().trim().toLowerCase() === targetEmail.trim().toLowerCase();
@@ -225,9 +225,9 @@ function getTeacherHistory(targetEmail) {
       let type = 'Pending';
       if (r[10] === true) type = 'Denied';
       else if (r[8] === true) type = 'Earned';
-      
+
       return {
-        date: safeDate(r[4]), 
+        date: safeDate(r[4]),
         period: r[5],
         subbedFor: r[2],
         amount: r[7],
@@ -240,20 +240,246 @@ function getTeacherHistory(targetEmail) {
   const usedSheet = ss.getSheetByName('TST Usage (New)');
   const usedData = usedSheet.getDataRange().getValues();
   usedData.shift();
-  
+
   const used = usedData
     .filter(r => r[0].toString().toLowerCase() === targetEmail.toLowerCase() && r[4] === true)
     .map(r => ({
-      date: safeDate(r[2]), 
+      date: safeDate(r[2]),
       period: 'N/A',
       subbedFor: 'N/A',
       amount: r[3],
       type: 'Used'
     }));
-    
+
   return [...earned, ...used].sort((a, b) => new Date(b.date) - new Date(a.date));
 }
 
+/**
+ * Gets history for a specific teacher with row indices and sheet info for admin actions.
+ * Used by admin to manage approved/denied items.
+ */
+function getStaffHistoryWithActions(targetEmail) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // 1. Get Earned (ALL - Pending, Approved, Denied)
+  const earnedSheet = ss.getSheetByName('TST Approvals (New)');
+  const earnedData = earnedSheet.getDataRange().getValues();
+  earnedData.shift();
+
+  const earned = earnedData
+    .map((r, i) => {
+      // Only process rows matching this email
+      if (r[0].toString().trim().toLowerCase() !== targetEmail.trim().toLowerCase()) {
+        return null;
+      }
+
+      let type = 'Pending';
+      if (r[10] === true) type = 'Denied';
+      else if (r[8] === true) type = 'Earned';
+
+      return {
+        date: safeDate(r[4]),
+        period: r[5],
+        subbedFor: r[2],
+        amount: r[7],
+        type: type,
+        denialReason: r[12],
+        rowIndex: i + 2, // 1-based index + header (correct sheet position)
+        sheetType: 'earned',
+        amountType: r[6] // Time Type (Full/Half)
+      };
+    })
+    .filter(item => item !== null);
+
+  // 2. Get Used (ALL - Pending and Approved)
+  const usedSheet = ss.getSheetByName('TST Usage (New)');
+  const usedData = usedSheet.getDataRange().getValues();
+  usedData.shift();
+
+  const used = usedData
+    .map((r, i) => {
+      // Only process rows matching this email
+      if (r[0].toString().toLowerCase() !== targetEmail.toLowerCase()) {
+        return null;
+      }
+
+      const isApproved = r[4] === true;
+      return {
+        date: safeDate(r[2]),
+        period: 'N/A',
+        subbedFor: 'N/A',
+        amount: r[3],
+        type: isApproved ? 'Used' : 'Pending',
+        denialReason: '',
+        rowIndex: i + 2, // 1-based index + header (correct sheet position)
+        sheetType: 'used',
+        amountType: 'N/A'
+      };
+    })
+    .filter(item => item !== null);
+
+  return [...earned, ...used].sort((a, b) => new Date(b.date) - new Date(a.date));
+}
+
+
+/**
+ * Admin Action: Revert an Earned request back to Pending.
+ * Clears Approved/Denied flags and adjusts staff balance.
+ */
+function revertEarnedToPending(rowIndex) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('TST Approvals (New)');
+  const staffSheet = ss.getSheetByName('Staff Directory');
+
+  // Get row data
+  const rowData = sheet.getRange(rowIndex, 1, 1, 13).getValues()[0];
+  const email = rowData[0];
+  const hours = rowData[7];
+  const wasApproved = rowData[8] === true;
+
+  // If it was approved, we need to reverse the balance change
+  if (wasApproved) {
+    const staffData = staffSheet.getDataRange().getValues();
+    const staffRowIndex = staffData.findIndex(r => r[1].toString().toLowerCase() === email.toLowerCase());
+
+    if (staffRowIndex > 0) {
+      // Decrement Earned balance (Col D / Index 4)
+      const currentEarned = Number(staffData[staffRowIndex][3]) || 0;
+      const newEarned = currentEarned - Number(hours);
+      staffSheet.getRange(staffRowIndex + 1, 4).setValue(newEarned);
+    }
+  }
+
+  // Clear approval/denial flags and timestamps
+  sheet.getRange(rowIndex, 9).setValue(false);   // Clear Approved (Col I)
+  sheet.getRange(rowIndex, 10).setValue('');     // Clear Approved TS (Col J)
+  sheet.getRange(rowIndex, 11).setValue(false);  // Clear Denied (Col K)
+  sheet.getRange(rowIndex, 12).setValue('');     // Clear Denied TS (Col L)
+  sheet.getRange(rowIndex, 13).setValue('');     // Clear Denial Reason (Col M)
+
+  return { success: true, hoursAdjusted: wasApproved ? hours : 0 };
+}
+
+/**
+ * Admin Action: Revert a Used request back to Pending.
+ * Clears Approved flag and adjusts staff balance.
+ */
+function revertUsedToPending(rowIndex) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('TST Usage (New)');
+  const staffSheet = ss.getSheetByName('Staff Directory');
+
+  // Get row data
+  const rowData = sheet.getRange(rowIndex, 1, 1, 6).getValues()[0];
+  const email = rowData[0];
+  const hours = rowData[3];
+  const wasApproved = rowData[4] === true;
+
+  // If it was approved, we need to reverse the balance change
+  if (wasApproved) {
+    const staffData = staffSheet.getDataRange().getValues();
+    const staffRowIndex = staffData.findIndex(r => r[1].toString().toLowerCase() === email.toLowerCase());
+
+    if (staffRowIndex > 0) {
+      // Decrement Used balance (Col E / Index 5)
+      const currentUsed = Number(staffData[staffRowIndex][4]) || 0;
+      const newUsed = currentUsed - Number(hours);
+      staffSheet.getRange(staffRowIndex + 1, 5).setValue(newUsed);
+    }
+  }
+
+  // Clear approval flag and timestamp
+  sheet.getRange(rowIndex, 5).setValue(false);  // Clear Status (Col E)
+  sheet.getRange(rowIndex, 6).setValue('');     // Clear Timestamp (Col F)
+
+  return { success: true, hoursAdjusted: wasApproved ? hours : 0 };
+}
+
+/**
+ * Admin Action: Delete an Approved Earned request.
+ * Removes from sheets and adjusts staff balance.
+ */
+function deleteApprovedEarned(rowIndex) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const approvalSheet = ss.getSheetByName('TST Approvals (New)');
+  const formSheet = ss.getSheetByName('Form Responses 1');
+  const staffSheet = ss.getSheetByName('Staff Directory');
+
+  // Get row data
+  const rowData = approvalSheet.getRange(rowIndex, 1, 1, 13).getValues()[0];
+  const email = rowData[0];
+  const date = new Date(rowData[4]);
+  const period = rowData[5];
+  const hours = rowData[7];
+  const wasApproved = rowData[8] === true;
+
+  // If it was approved, reverse the balance change
+  if (wasApproved) {
+    const staffData = staffSheet.getDataRange().getValues();
+    const staffRowIndex = staffData.findIndex(r => r[1].toString().toLowerCase() === email.toLowerCase());
+
+    if (staffRowIndex > 0) {
+      // Decrement Earned balance (Col D / Index 4)
+      const currentEarned = Number(staffData[staffRowIndex][3]) || 0;
+      const newEarned = currentEarned - Number(hours);
+      staffSheet.getRange(staffRowIndex + 1, 4).setValue(newEarned);
+    }
+  }
+
+  // Delete from Form Responses 1
+  const formData = formSheet.getDataRange().getValues();
+  for (let i = formData.length - 1; i >= 1; i--) {
+    const r = formData[i];
+    const rDate = new Date(r[4]);
+    const isDateMatch = rDate.getFullYear() === date.getFullYear() &&
+                        rDate.getMonth() === date.getMonth() &&
+                        rDate.getDate() === date.getDate();
+
+    if (r[1] === email && isDateMatch && r[5] == period) {
+      formSheet.deleteRow(i + 1);
+      break;
+    }
+  }
+
+  // Delete from TST Approvals (New)
+  approvalSheet.deleteRow(rowIndex);
+
+  return { success: true, hoursAdjusted: wasApproved ? hours : 0 };
+}
+
+/**
+ * Admin Action: Delete an Approved Used request.
+ * Removes from sheet and adjusts staff balance.
+ */
+function deleteApprovedUsed(rowIndex) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('TST Usage (New)');
+  const staffSheet = ss.getSheetByName('Staff Directory');
+
+  // Get row data
+  const rowData = sheet.getRange(rowIndex, 1, 1, 6).getValues()[0];
+  const email = rowData[0];
+  const hours = rowData[3];
+  const wasApproved = rowData[4] === true;
+
+  // If it was approved, reverse the balance change
+  if (wasApproved) {
+    const staffData = staffSheet.getDataRange().getValues();
+    const staffRowIndex = staffData.findIndex(r => r[1].toString().toLowerCase() === email.toLowerCase());
+
+    if (staffRowIndex > 0) {
+      // Decrement Used balance (Col E / Index 5)
+      const currentUsed = Number(staffData[staffRowIndex][4]) || 0;
+      const newUsed = currentUsed - Number(hours);
+      staffSheet.getRange(staffRowIndex + 1, 5).setValue(newUsed);
+    }
+  }
+
+  // Delete row
+  sheet.deleteRow(rowIndex);
+
+  return { success: true, hoursAdjusted: wasApproved ? hours : 0 };
+}
 
 /**
  * Admin Action: Approve an Earned request.
