@@ -267,6 +267,7 @@
       if (data.role === 'Admin') {
         document.getElementById('admin-add-btn').classList.remove('hidden');
         switchTab('admin-earned');
+        updateBadges(); // Fetch initial counts
       } else if (data.role === 'Teacher') {
         switchTab('teacher-totals');
       } else {
@@ -276,6 +277,32 @@
             <p>Your email is not listed in the Staff Directory.</p>
           </div>`;
       }
+    }
+
+    function updateBadges() {
+      if (STATE.user.role !== 'Admin') return;
+      google.script.run.withSuccessHandler(counts => {
+        const eBadge = document.getElementById('badge-earned');
+        const uBadge = document.getElementById('badge-used');
+        
+        if (eBadge) {
+           if (counts.earned > 0) {
+             eBadge.textContent = counts.earned;
+             eBadge.classList.remove('hidden');
+           } else {
+             eBadge.classList.add('hidden');
+           }
+        }
+        
+        if (uBadge) {
+           if (counts.used > 0) {
+             uBadge.textContent = counts.used;
+             uBadge.classList.remove('hidden');
+           } else {
+             uBadge.classList.add('hidden');
+           }
+        }
+      }).getDashboardCounts();
     }
 
     // --- Navigation Logic ---
@@ -297,18 +324,28 @@
         ];
       }
 
-      navContainer.innerHTML = tabs.map(t => `
+      navContainer.innerHTML = tabs.map(t => {
+        // Badge ID logic
+        const badgeId = t.id === 'admin-earned' ? 'badge-earned' : (t.id === 'admin-used' ? 'badge-used' : '');
+        const badgeHtml = badgeId ? `<span id="${badgeId}" class="hidden ml-2 bg-ops-red text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-sm"></span>` : '';
+        
+        return `
         <button 
           onclick="switchTab('${t.id}')"
           id="btn-${t.id}"
           class="tab-btn group flex items-center px-5 py-3 rounded-t-lg border-b-4 border-transparent hover:bg-ops-blue-light">
-          <i class="fas ${t.icon} text-lg mr-3 group-hover:text-white transition-colors"></i>
+          <div class="relative flex items-center">
+            <i class="fas ${t.icon} text-lg mr-3 group-hover:text-white transition-colors"></i>
+          </div>
           <div class="text-left leading-tight">
-            <div class="font-bold text-sm transition-colors">${t.label}</div>
+            <div class="flex items-center">
+               <span class="font-bold text-sm transition-colors">${t.label}</span>
+               ${badgeHtml}
+            </div>
             <div class="text-[10px] uppercase tracking-wider font-medium transition-colors">${t.sub}</div>
           </div>
         </button>
-      `).join('');
+      `}).join('');
     }
 
     function switchTab(tabId) {
@@ -385,15 +422,22 @@
     // --- Admin Views ---
 
     function loadAdminEarned() {
-      // Initialize selection state if needed
+      // Fetch data first, then render
       if (!STATE.selectedEarned) STATE.selectedEarned = new Set();
-      const isSel = STATE.earnedSelectionMode;
 
       google.script.run.withSuccessHandler(data => {
-        STATE.pendingEarned = data; // Store for Edit lookup
-        
-        // Batch Action Bar
-        const batchActions = isSel ? `
+        STATE.pendingEarned = data; 
+        updateBadges(); 
+        renderEarnedTable();
+      }).getPendingEarned();
+    }
+    
+    function renderEarnedTable() {
+       const data = STATE.pendingEarned || [];
+       const isSel = STATE.earnedSelectionMode;
+       
+       // Batch Action Bar
+       const batchActions = isSel ? `
           <div class="bg-blue-50 px-6 py-3 border-b border-blue-100 flex justify-between items-center animate-pulse-once">
             <span class="text-sm font-bold text-ops-blue-dark">
               ${STATE.selectedEarned.size} Selected
@@ -426,7 +470,6 @@
                      <i class="fas fa-check-square mr-1"></i> Select
                    </button>
                  `}
-                 <span class="text-sm font-bold bg-white text-ops-blue px-3 py-1 rounded-full shadow-sm border border-blue-100">${data.length} Requests</span>
               </div>
             </div>
             ${batchActions}
@@ -484,20 +527,24 @@
               </div>`
             }
           </div>`;
-        document.getElementById('view-container').innerHTML = html;
-      }).getPendingEarned();
+       document.getElementById('view-container').innerHTML = html;
     }
 
     function loadAdminUsed() {
-      // Initialize selection state
       if (!STATE.selectedUsed) STATE.selectedUsed = new Set();
-      const isSel = STATE.usedSelectionMode;
 
       google.script.run.withSuccessHandler(data => {
-        STATE.pendingUsed = data; // Store for Edit lookup
-        
-        // Batch Action Bar
-        const batchActions = isSel ? `
+        STATE.pendingUsed = data; 
+        updateBadges(); 
+        renderUsedTable();
+      }).getPendingUsed();
+    }
+    
+    function renderUsedTable() {
+       const data = STATE.pendingUsed || [];
+       const isSel = STATE.usedSelectionMode;
+       
+       const batchActions = isSel ? `
           <div class="bg-red-50 px-6 py-3 border-b border-red-100 flex justify-between items-center animate-pulse-once">
             <span class="text-sm font-bold text-ops-red-dark">
               ${STATE.selectedUsed.size} Selected
@@ -579,8 +626,7 @@
               </div>`
             }
           </div>`;
-        document.getElementById('view-container').innerHTML = html;
-      }).getPendingUsed();
+       document.getElementById('view-container').innerHTML = html;
     }
 
     function loadAdminTotals() {
@@ -669,13 +715,13 @@
     function toggleEarnedSelectionMode() {
       STATE.earnedSelectionMode = !STATE.earnedSelectionMode;
       STATE.selectedEarned = new Set(); // Reset
-      loadAdminEarned(); // Re-render
+      renderEarnedTable(); // Re-render instantly
     }
 
     function toggleUsedSelectionMode() {
       STATE.usedSelectionMode = !STATE.usedSelectionMode;
       STATE.selectedUsed = new Set(); // Reset
-      loadAdminUsed(); // Re-render
+      renderUsedTable(); // Re-render instantly
     }
 
     function toggleRowSelection(type, id, event) {
@@ -685,9 +731,9 @@
       if (set.has(id)) set.delete(id);
       else set.add(id);
       
-      // Re-render to update UI (could be optimized to just toggle classes but full render is safer for now)
-      if (type === 'earned') loadAdminEarned();
-      else loadAdminUsed();
+      // Re-render to update UI instantly
+      if (type === 'earned') renderEarnedTable();
+      else renderUsedTable();
     }
 
     function toggleSelectAll(type, checkbox) {
@@ -700,8 +746,8 @@
         data.forEach(r => set.add(r.rowIndex));
       }
       
-      if (type === 'earned') loadAdminEarned();
-      else loadAdminUsed();
+      if (type === 'earned') renderEarnedTable();
+      else renderUsedTable();
     }
 
     function batchAction(type, action) {
@@ -732,8 +778,17 @@
            google.script.run.withSuccessHandler(() => {
              showLoading(false);
              showToast(`Batch ${actionName} successful.`, "success");
-             if(type === 'earned') toggleEarnedSelectionMode();
-             else toggleUsedSelectionMode();
+             
+             // Force full reload to ensure data freshness
+             if(type === 'earned') {
+               STATE.earnedSelectionMode = false;
+               STATE.selectedEarned = new Set();
+               loadAdminEarned();
+             } else {
+               STATE.usedSelectionMode = false;
+               STATE.selectedUsed = new Set();
+               loadAdminUsed();
+             }
            }).withFailureHandler(err => {
              showLoading(false);
              showToast("Batch Error: " + err, "error");
@@ -1642,6 +1697,15 @@
           google.script.run.withSuccessHandler(() => {
             if(row) row.remove();
             showToast("Request deleted successfully.", "success");
+            
+            // Update Cache
+            if (type === 'earned') {
+               STATE.pendingEarned = STATE.pendingEarned.filter(r => r.rowIndex !== rowIndex);
+            } else {
+               STATE.pendingUsed = STATE.pendingUsed.filter(r => r.rowIndex !== rowIndex);
+            }
+            updateBadges();
+
           }).withFailureHandler(err => {
             showToast("Error deleting: " + err, "error");
             if(row) row.classList.remove('opacity-50', 'pointer-events-none', 'bg-red-50');

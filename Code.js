@@ -44,7 +44,30 @@ function getInitialData() {
 }
 
 /**
- * Batch Action: Approve multiple Earned requests.
+ * Lightweight helper to get pending counts for badges
+ */
+function getDashboardCounts() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  // Earned
+  const earnedSheet = ss.getSheetByName('TST Approvals (New)');
+  const earnedData = earnedSheet.getDataRange().getValues();
+  earnedData.shift(); // Remove header
+  // Filter: Not Approved (8/I=false) AND Not Denied (10/K=false)
+  const earnedCount = earnedData.filter(r => r[8] !== true && r[8] !== "TRUE" && r[10] !== true && r[10] !== "TRUE" && r[0] !== "").length;
+  
+  // Used
+  const usedSheet = ss.getSheetByName('TST Usage (New)');
+  const usedData = usedSheet.getDataRange().getValues();
+  usedData.shift();
+  // Filter: Not Approved (4/E=false)
+  const usedCount = usedData.filter(r => (r[4] === false || r[4] === "" || r[4] === "FALSE") && r[0] !== "").length;
+  
+  return { earned: earnedCount, used: usedCount };
+}
+
+/**
+ * Helper to get clean object array of Staff Directory
  */
 function batchApproveEarned(indices) {
   if (!indices || !Array.isArray(indices)) return;
@@ -754,7 +777,13 @@ function onFormSubmit(e) {
   // Parse Form Data (Array indices based on Form Responses 1 columns)
   // [0] Timestamp, [1] Email, [2] SubbedFor, [3] Other, [4] Date, [5] Period, [6] Type, [7] Decimal
   const email = e.values[1];
-  const subbedFor = e.values[2];
+  let subbedFor = e.values[2];
+  
+  // Clean Subbed For Name (Remove Titles for Legacy Form compatibility)
+  if (subbedFor) {
+    subbedFor = subbedFor.replace(/^(Mr\.|Ms\.|Mrs\.|Miss|Dr\.)\s*/i, "").trim();
+  }
+
   const otherText = e.values[3];
   const dateStr = e.values[4]; // Form might return different date format, beware.
   const period = e.values[5];
