@@ -376,7 +376,7 @@ function updateEarnedRow(rowIndex, newData) {
        // We don't update Timestamp or Email usually, but we could.
        
        formSheet.getRange(i + 1, 3).setValue(newData.subbedFor);
-       formSheet.getRange(i + 1, 5).setValue(new Date(newData.date));
+       formSheet.getRange(i + 1, 5).setValue(newData.date);
        formSheet.getRange(i + 1, 6).setValue(newData.period);
        formSheet.getRange(i + 1, 7).setValue(newData.amountType);
        formSheet.getRange(i + 1, 8).setValue(newData.amountDecimal);
@@ -388,7 +388,7 @@ function updateEarnedRow(rowIndex, newData) {
   // 3. Update TST Approvals (New) directly to reflect changes immediately
   // Cols: C=SubbedFor (3/idx 2), E=Date (5/idx 4), F=Period (6/idx 5), G=Type (7/idx 6), H=Hours (8/idx 7)
   approvalSheet.getRange(rowIndex, 3).setValue(newData.subbedFor);
-  approvalSheet.getRange(rowIndex, 5).setValue(new Date(newData.date));
+  approvalSheet.getRange(rowIndex, 5).setValue(newData.date);
   approvalSheet.getRange(rowIndex, 6).setValue(newData.period);
   approvalSheet.getRange(rowIndex, 7).setValue(newData.amountType);
   approvalSheet.getRange(rowIndex, 8).setValue(newData.amountDecimal);
@@ -426,7 +426,7 @@ function updateUsedRow(rowIndex, newData) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Usage (New)');
   // Cols: C=Date (3), D=Amount (4)
-  sheet.getRange(rowIndex, 3).setValue(new Date(newData.date));
+  sheet.getRange(rowIndex, 3).setValue(newData.date);
   sheet.getRange(rowIndex, 4).setValue(newData.amount);
   return true;
 }
