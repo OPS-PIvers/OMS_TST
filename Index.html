@@ -2376,8 +2376,8 @@
                         </tr>
                       </thead>
                       <tbody class="bg-white divide-y divide-gray-200">
-                        ${PERIODS.map(p => `
-                          <tr>
+                        ${PERIODS.map((p, pIndex) => `
+                          <tr class="${pIndex % 2 === 1 ? 'bg-gray-50' : ''}">
                             <td class="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 bg-gray-50 sticky left-0 z-10 border-r border-gray-200 shadow-sm">${p}</td>
                             ${DAYS.map(d => {
                                const teachers = matrix[p][d].sort((a,b) => a.hours - b.hours); // Sort by least hours first?
