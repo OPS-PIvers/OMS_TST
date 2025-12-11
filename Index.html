@@ -2418,12 +2418,15 @@
          STATE.scheduleData = data; // Save to state for editing
          STATE.editingSchedule = null; // Reset edit state
          renderAdminSchedule();
+         showLoading(false);
        }).getScheduleData();
     }
 
     function renderAdminSchedule() {
        const scheduleData = STATE.scheduleData;
        if (!scheduleData) return;
+
+       if (!STATE.expandedMonths) STATE.expandedMonths = new Set();
 
        const html = `
          <div class="space-y-4">
@@ -2450,6 +2453,16 @@
                  }
                });
              });
+
+             // State Persistence Logic
+             const accordionId = `admin-month-${index}`;
+             // If we are editing this month, force it open
+             if (STATE.editingSchedule && STATE.editingSchedule.month === month) {
+                 STATE.expandedMonths.add(accordionId);
+             }
+             const isOpen = STATE.expandedMonths.has(accordionId);
+             const contentClass = isOpen ? "border-t border-gray-200 p-1 overflow-x-auto" : "hidden border-t border-gray-200 p-1 overflow-x-auto";
+             const iconClass = isOpen ? "fas fa-chevron-down text-gray-400 transition-transform rotate-180" : "fas fa-chevron-down text-gray-400 transition-transform";
              
              return `
                <div class="bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
@@ -2458,10 +2471,10 @@
                      <span class="font-bold text-lg text-ops-gray-dark">${month}</span>
                      <span class="text-xs bg-gray-200 text-gray-600 px-2 py-0.5 rounded-full">${scheduleData[month]?.length || 0} Entries</span>
                    </div>
-                   <i id="icon-admin-month-${index}" class="fas fa-chevron-down text-gray-400 transition-transform"></i>
+                   <i id="icon-admin-month-${index}" class="${iconClass}"></i>
                  </button>
                  
-                 <div id="content-admin-month-${index}" class="hidden border-t border-gray-200 p-1 overflow-x-auto">
+                 <div id="content-admin-month-${index}" class="${contentClass}">
                     <table class="min-w-full divide-y divide-gray-200 border-separate" style="border-spacing: 0;">
                       <thead>
                         <tr>
@@ -2619,12 +2632,17 @@
     function toggleAccordion(id) {
        const content = document.getElementById(`content-${id}`);
        const icon = document.getElementById(`icon-${id}`);
+       
+       if (!STATE.expandedMonths) STATE.expandedMonths = new Set();
+
        if (content.classList.contains('hidden')) {
          content.classList.remove('hidden');
          icon.classList.add('rotate-180');
+         STATE.expandedMonths.add(id);
        } else {
          content.classList.add('hidden');
          icon.classList.remove('rotate-180');
+         STATE.expandedMonths.delete(id);
        }
     }
     
