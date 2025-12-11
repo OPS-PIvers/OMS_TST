@@ -126,9 +126,6 @@
               <i class="fas fa-plus-circle mr-1"></i> Add Request
             </button>
             <div id="user-info" class="text-sm font-light text-blue-100 hidden md:block"></div>
-            <button onclick="refreshApp()" class="text-xs bg-ops-blue-dark hover:bg-opacity-80 transition px-4 py-2 rounded text-white font-medium uppercase tracking-wide">
-              Refresh
-            </button>
           </div>
         </div>
         
@@ -528,7 +525,10 @@
                 <h2 class="text-xl font-bold text-ops-blue-dark">Pending Earned Approvals</h2>
                 <p class="text-xs text-ops-gray uppercase tracking-wider mt-1">Review & Release to Directory</p>
               </div>
-              <div class="flex items-center gap-3">
+              <div class="flex items-center gap-2">
+                 <button onclick="loadAdminEarned()" class="bg-white text-ops-gray hover:text-ops-blue border border-transparent hover:border-ops-blue-lighter px-2 py-1 rounded shadow-sm transition" title="Refresh Data">
+                    <i class="fas fa-sync-alt"></i>
+                 </button>
                  ${isSel ? `
                    <button onclick="toggleEarnedSelectionMode()" class="bg-white text-gray-600 border border-gray-300 px-3 py-1 rounded shadow-sm hover:bg-gray-50 text-xs font-bold uppercase tracking-wide transition">
                      Cancel
@@ -635,7 +635,10 @@
                 <h2 class="text-xl font-bold text-ops-red-dark">Pending Usage Requests</h2>
                 <p class="text-xs text-ops-red-dark opacity-75 uppercase tracking-wider mt-1">Deduct from Balance</p>
               </div>
-              <div class="flex items-center gap-3">
+              <div class="flex items-center gap-2">
+                 <button onclick="loadAdminUsed()" class="bg-white text-ops-gray hover:text-ops-blue border border-transparent hover:border-ops-blue-lighter px-2 py-1 rounded shadow-sm transition" title="Refresh Data">
+                    <i class="fas fa-sync-alt"></i>
+                 </button>
                  ${isSel ? `
                    <button onclick="toggleUsedSelectionMode()" class="bg-white text-gray-600 border border-gray-300 px-3 py-1 rounded shadow-sm hover:bg-gray-50 text-xs font-bold uppercase tracking-wide transition">
                      Cancel
@@ -885,6 +888,9 @@
                </div>
                
                <div class="flex items-center gap-2">
+                 <button onclick="loadAdminTotals()" class="bg-white text-ops-gray hover:text-ops-blue border border-transparent hover:border-ops-blue-lighter px-2 py-1 rounded shadow-sm transition" title="Refresh Directory">
+                    <i class="fas fa-sync-alt"></i>
+                 </button>
                  ${isSel ? `
                    <button onclick="toggleSelectionMode()" class="bg-white text-gray-600 border border-gray-300 px-4 py-2 rounded shadow-sm hover:bg-gray-50 text-sm font-medium transition-colors">
                      Cancel
@@ -1683,9 +1689,9 @@
                  amountClass = 'text-ops-blue/70'; 
                  amountSign = '+';
                  detailsHtml = `
-                    <div class="flex flex-col items-start">
+                    <div class="flex flex-col items-start whitespace-nowrap">
                         <span class="text-ops-gray-dark font-medium">${h.period}</span>
-                        <div class="text-ops-gray text-xs">Covered: ${h.subbedFor}</div>
+                        <div class="text-ops-gray text-xs">Covered: ${getLastName(h.subbedFor)}</div>
                     </div>`;
              } else if (h.type === 'Earned') { // Approved Earned
                  rowClass = 'bg-ops-blue-lighter/50 hover:bg-ops-blue-lighter/80 transition-colors';
@@ -1693,9 +1699,9 @@
                  amountClass = 'text-ops-blue';
                  amountSign = '+';
                  detailsHtml = `
-                    <div class="flex flex-col items-start">
+                    <div class="flex flex-col items-start whitespace-nowrap">
                         <span class="text-ops-gray-dark font-medium">${h.period}</span>
-                        <div class="text-ops-gray text-xs">Covered: ${h.subbedFor}</div>
+                        <div class="text-ops-gray text-xs">Covered: ${getLastName(h.subbedFor)}</div>
                     </div>`;
              } else if (h.type === 'Used') {
                  rowClass = 'bg-ops-red-lighter/30 hover:bg-ops-red-lighter/50 transition-colors';
@@ -1703,7 +1709,7 @@
                  amountClass = 'text-ops-red';
                  amountSign = '-';
                  detailsHtml = `
-                    <div class="flex flex-col items-start">
+                    <div class="flex flex-col items-start whitespace-nowrap">
                         <span class="text-ops-gray-dark font-medium">Redeemed</span>
                     </div>`;
              } else { // Denied
@@ -1712,10 +1718,10 @@
                  amountClass = 'text-ops-gray-light line-through';
                  amountSign = '+';
                  detailsHtml = `
-                    <div class="flex flex-col items-start">
+                    <div class="flex flex-col items-start whitespace-nowrap">
                         <span class="text-ops-gray-light italic line-through decoration-ops-gray-light">${h.period}</span>
-                        <div class="text-ops-gray-light text-xs italic">Covered: ${h.subbedFor}</div>
-                        ${h.denialReason ? `<div class="text-xs text-ops-red mt-0.5">${h.denialReason}</div>` : ''}
+                        <div class="text-ops-gray-light text-xs italic">Covered: ${getLastName(h.subbedFor)}</div>
+                        ${h.denialReason ? `<div class="text-xs text-ops-red mt-0.5 whitespace-normal">${h.denialReason}</div>` : ''}
                     </div>`;
              }
 
@@ -1754,11 +1760,11 @@
         const tableHeader = `
             <thead class="bg-ops-blue text-white border-b border-ops-blue-dark">
                 <tr>
-                    <th class="px-5 py-4 font-semibold w-28 text-left">Date</th>
-                    <th class="px-5 py-4 font-semibold w-28 text-left">Status</th>
+                    <th class="px-5 py-4 font-semibold w-32 text-left">Date</th>
+                    <th class="px-5 py-4 font-semibold w-24 text-left">Status</th>
                     <th class="px-5 py-4 font-semibold text-left">Details</th>
-                    <th class="px-5 py-4 font-semibold w-24 text-center">Hours</th>
-                    ${isAdmin && !isEmbedded ? `<th class="px-5 py-4 font-semibold w-36 text-center">Actions</th>` : ''}
+                    <th class="px-5 py-4 font-semibold w-20 text-center">Hours</th>
+                    ${isAdmin && !isEmbedded ? `<th class="px-5 py-4 font-semibold w-48 text-center">Actions</th>` : ''}
                 </tr>
             </thead>
         `;
