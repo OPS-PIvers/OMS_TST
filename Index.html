@@ -885,7 +885,7 @@
       const html = `
         <div class="max-w-2xl mx-auto bg-white rounded-lg shadow-lg overflow-hidden border border-gray-200">
           <div class="bg-ops-blue px-6 py-4 border-b border-blue-800">
-            <h2 class="text-xl font-bold text-white"><i class="fas fa-edit mr-2"></i>Submit Earned TST</h2>
+            <h2 class="text-xl font-bold text-white"><i class="fas fa-pencil-alt mr-2"></i>Submit Earned TST</h2>
             <p class="text-blue-200 text-sm mt-1">Log hours when you sub for a colleague.</p>
           </div>
           <div class="p-8">
@@ -1623,14 +1623,14 @@
                           amountSign = '+';
                           if (isAdmin && !isEmbedded) {
                             actions = `
-                              <button onclick="revertTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount})" class="text-yellow-600 hover:text-yellow-800 mx-1 p-1" title="Revert to Pending">
-                                <i class="fas fa-undo"></i>
+                              <button onclick="revertTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount})" class="text-yellow-700 bg-yellow-100 hover:bg-yellow-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Revert to Pending">
+                                <i class="fas fa-undo"></i> Revert
                               </button>
-                              <button onclick="openEditModal('earned', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-blue-600 hover:text-blue-800 mx-1 p-1" title="Edit">
-                                <i class="fas fa-edit"></i>
+                              <button onclick="openEditModal('earned', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-ops-blue bg-blue-100 hover:bg-blue-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Edit">
+                                <i class="fas fa-pencil-alt"></i> Edit
                               </button>
-                              <button onclick="deleteTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, true)" class="text-red-600 hover:text-red-800 mx-1 p-1" title="Delete">
-                                <i class="fas fa-trash"></i>
+                              <button onclick="deleteTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, true)" class="text-ops-red bg-red-100 hover:bg-red-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Delete">
+                                <i class="fas fa-trash"></i> Delete
                               </button>
                             `;
                           }
@@ -1641,14 +1641,12 @@
                           amountSign = '+';
                           rowClass = 'bg-yellow-50';
                           if (isAdmin && !isEmbedded) {
-                            actions = `
-                              <button onclick="openEditModal('earned', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-blue-600 hover:text-blue-800 mx-1 p-1" title="Edit">
-                                <i class="fas fa-edit"></i>
+                              <button onclick="openEditModal('earned', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-ops-blue bg-blue-100 hover:bg-blue-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Edit">
+                                <i class="fas fa-pencil-alt"></i> Edit
                               </button>
-                              <button onclick="deleteTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, false)" class="text-red-600 hover:text-red-800 mx-1 p-1" title="Delete">
-                                <i class="fas fa-trash"></i>
+                              <button onclick="deleteTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, false)" class="text-ops-red bg-red-100 hover:bg-red-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Delete">
+                                <i class="fas fa-trash"></i> Delete
                               </button>
-                            `;
                           }
                        } else if(h.type === 'Used') {
                           typeBadge = '<span class="text-xs bg-red-100 text-ops-red px-1.5 py-0.5 rounded mr-1">Used</span>';
@@ -1657,14 +1655,14 @@
                           amountSign = '-';
                           if (isAdmin && !isEmbedded) {
                             actions = `
-                              <button onclick="revertTransaction('used', ${h.rowIndex}, '${email}', '${name}', ${h.amount})" class="text-yellow-600 hover:text-yellow-800 mx-1 p-1" title="Revert to Pending">
-                                <i class="fas fa-undo"></i>
+                              <button onclick="revertTransaction('used', ${h.rowIndex}, '${email}', '${name}', ${h.amount})" class="text-yellow-700 bg-yellow-100 hover:bg-yellow-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Revert to Pending">
+                                <i class="fas fa-undo"></i> Revert
                               </button>
-                              <button onclick="openEditModal('used', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-blue-600 hover:text-blue-800 mx-1 p-1" title="Edit">
-                                <i class="fas fa-edit"></i>
+                              <button onclick="openEditModal('used', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-ops-blue bg-blue-100 hover:bg-blue-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Edit">
+                                <i class="fas fa-pencil-alt"></i> Edit
                               </button>
-                              <button onclick="deleteTransaction('used', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, true)" class="text-red-600 hover:text-red-800 mx-1 p-1" title="Delete">
-                                <i class="fas fa-trash"></i>
+                              <button onclick="deleteTransaction('used', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, true)" class="text-ops-red bg-red-100 hover:bg-red-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Delete">
+                                <i class="fas fa-trash"></i> Delete
                               </button>
                             `;
                           }
@@ -1679,14 +1677,14 @@
                           rowClass = 'bg-gray-50 italic opacity-75';
                           if (isAdmin && !isEmbedded) {
                             actions = `
-                              <button onclick="revertTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount})" class="text-yellow-600 hover:text-yellow-800 mx-1 p-1" title="Revert to Pending">
-                                <i class="fas fa-undo"></i>
+                              <button onclick="revertTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount})" class="text-yellow-700 bg-yellow-100 hover:bg-yellow-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Revert to Pending">
+                                <i class="fas fa-undo"></i> Revert
                               </button>
-                              <button onclick="openEditModal('earned', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-blue-600 hover:text-blue-800 mx-1 p-1" title="Edit">
-                                <i class="fas fa-edit"></i>
+                              <button onclick="openEditModal('earned', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-ops-blue bg-blue-100 hover:bg-blue-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Edit">
+                                <i class="fas fa-pencil-alt"></i> Edit
                               </button>
-                              <button onclick="deleteTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, false)" class="text-red-600 hover:text-red-800 mx-1 p-1" title="Delete">
-                                <i class="fas fa-trash"></i>
+                              <button onclick="deleteTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, false)" class="text-ops-red bg-red-100 hover:bg-red-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Delete">
+                                <i class="fas fa-trash"></i> Delete
                               </button>
                             `;
                           }
