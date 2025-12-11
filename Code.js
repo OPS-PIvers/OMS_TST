@@ -1,7 +1,15 @@
 /**
- * Serves the HTML file.
+ * Serves the HTML file or handles email actions.
  */
-function doGet() {
+function doGet(e) {
+  if (e && e.parameter && e.parameter.action) {
+    if (e.parameter.action === 'accept') {
+      return handleCoverageAccept(e.parameter);
+    } else if (e.parameter.action === 'reject') {
+      return handleCoverageReject(e.parameter);
+    }
+  }
+
   return HtmlService.createHtmlOutputFromFile('Index')
       .setTitle('TST Manager')
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
@@ -1152,4 +1160,256 @@ function sendStyledEmail(recipient, subject, title, contentHtml, buttonText) {
     subject: subject,
     htmlBody: htmlTemplate
   });
+}
+
+// --- SCHEDULE / TST AVAILABILITY FEATURE ---
+
+const MONTH_ORDER = ["September", "October", "November", "December", "January", "February", "March", "April", "May", "June"];
+
+function getScheduleData() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let schedSheet = ss.getSheetByName('TST Availability');
+  if (!schedSheet) {
+    // Create if missing
+    schedSheet = ss.insertSheet('TST Availability');
+    schedSheet.appendRow(['Month', 'Day(s) Available', 'Period', 'Name', 'Email', 'Hours Earned This Month']);
+  }
+
+  const data = schedSheet.getDataRange().getValues();
+  data.shift(); // Remove header
+
+  // 1. Calculate Hours per Teacher per Month
+  const hoursMap = calculateMonthlyHours(); // Returns { "email_Month": hours }
+
+  // 2. Process Schedule Data
+  // We return a structured object: { "September": [ { name, email, days, period, hours }, ... ], ... }
+  const schedule = {};
+  MONTH_ORDER.forEach(m => schedule[m] = []);
+
+  data.forEach(row => {
+    const [month, days, period, name, email] = row;
+    if (schedule[month]) {
+      const key = `${email}_${month}`;
+      const hours = hoursMap[key] || 0;
+      schedule[month].push({
+        month, days, period, name, email, hours
+      });
+    }
+  });
+
+  return schedule;
+}
+
+function calculateMonthlyHours() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('TST Approvals (New)');
+  const data = sheet.getDataRange().getValues();
+  data.shift();
+
+  const sums = {}; // "email_MonthName" -> total
+  const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+  // Determine current school year context
+  const today = new Date();
+  const currentMonth = today.getMonth(); // 0-11
+  const currentYear = today.getFullYear();
+  
+  // School Year Start Year: If Month >= 7 (Aug), Start = Year. Else Start = Year - 1.
+  const startYear = currentMonth >= 7 ? currentYear : currentYear - 1;
+  const endYear = startYear + 1;
+  
+  const schoolYearStart = new Date(startYear, 7, 1); // Aug 1
+  const schoolYearEnd = new Date(endYear, 6, 30); // July 30
+
+  data.forEach(row => {
+    const email = row[0];
+    const date = new Date(row[4]);
+    const hours = Number(row[7]);
+    
+    // Check if within current school year
+    if (date >= schoolYearStart && date <= schoolYearEnd) {
+      const mName = monthNames[date.getMonth()];
+      const key = `${email}_${mName}`;
+      sums[key] = (sums[key] || 0) + hours;
+    }
+  });
+
+  return sums;
+}
+
+function saveAvailability(month, availabilityList) {
+  // availabilityList: [{ days: "Mon,Tue", period: "Period 1" }, ...]
+  const userEmail = Session.getActiveUser().getEmail();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const staffSheet = ss.getSheetByName('Staff Directory');
+  const staffData = staffSheet.getDataRange().getValues();
+  const userRow = staffData.find(r => r[1].toString().toLowerCase() === userEmail.toLowerCase());
+  const userName = userRow ? userRow[0] : userEmail;
+
+  const sheet = ss.getSheetByName('TST Availability');
+  const data = sheet.getDataRange().getValues();
+  
+  // 1. Remove existing rows for this user + month
+  // We loop backwards to delete
+  for (let i = data.length - 1; i >= 1; i--) {
+    if (data[i][0] === month && data[i][4] === userEmail) {
+      sheet.deleteRow(i + 1);
+    }
+  }
+
+  // 2. Add new rows
+  // A: Month | B: Day(s) | C: Period | D: Name | E: Email | F: Hours (Ignored/Formula)
+  availabilityList.forEach(item => {
+    sheet.appendRow([month, item.days, item.period, userName, userEmail, ""]);
+  });
+}
+
+function sendCoverageRequest(payload) {
+  // payload: { teacherEmail, teacherName, subbedFor, date, period, amount, amountType }
+  const scriptUrl = ScriptApp.getService().getUrl();
+  const adminEmail = Session.getActiveUser().getEmail();
+  
+  // Encode params safely
+  const params = [
+    `action=accept`,
+    `tEmail=${encodeURIComponent(payload.teacherEmail)}`,
+    `tName=${encodeURIComponent(payload.teacherName)}`,
+    `sub=${encodeURIComponent(payload.subbedFor)}`,
+    `date=${encodeURIComponent(payload.date)}`,
+    `pd=${encodeURIComponent(payload.period)}`,
+    `amt=${payload.amount}`,
+    `type=${encodeURIComponent(payload.amountType)}`,
+    `adm=${encodeURIComponent(adminEmail)}`
+  ].join('&');
+  
+  const acceptLink = `${scriptUrl}?${params}`;
+  const rejectLink = `${scriptUrl}?action=reject&tName=${encodeURIComponent(payload.teacherName)}&sub=${encodeURIComponent(payload.subbedFor)}&adm=${encodeURIComponent(adminEmail)}`;
+
+  const subject = `TST Coverage Request: ${payload.date} - ${payload.period}`;
+  
+  // Parse YYYY-MM-DD to MM/DD/YYYY manually to avoid timezone shifts
+  const [y, m, d] = payload.date.split('-');
+  const dateDisplay = `${m}/${d}/${y}`;
+
+  const htmlBody = `
+    <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e5e7eb; border-radius: 8px;">
+      <h2 style="color: #2d3f89; margin-top: 0;">TST Coverage Request</h2>
+      <p>Hello <strong>${payload.teacherName}</strong>,</p>
+      <p>Can you provide sub coverage?</p>
+      
+      <div style="background-color: #f3f4f6; padding: 15px; border-radius: 6px; margin: 20px 0;">
+        <p style="margin: 5px 0;"><strong>Date:</strong> ${dateDisplay}</p>
+        <p style="margin: 5px 0;"><strong>Period:</strong> ${payload.period}</p>
+        <p style="margin: 5px 0;"><strong>Covering For:</strong> ${payload.subbedFor}</p>
+        <p style="margin: 5px 0;"><strong>Duration:</strong> ${payload.amountType}</p>
+      </div>
+
+      <div style="text-align: center; margin: 30px 0;">
+         <a href="${acceptLink}" style="background-color: #2d3f89; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold; margin-right: 10px;">Accept & Earn</a>
+         <a href="${rejectLink}" style="background-color: #ad2122; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold;">Reject</a>
+      </div>
+      
+      <p style="font-size: 12px; color: #6b7280; text-align: center;">Clicking submit will automatically submit the TST form on your behalf.</p>
+    </div>
+  `;
+
+  MailApp.sendEmail({
+    to: payload.teacherEmail,
+    subject: subject,
+    htmlBody: htmlBody
+  });
+}
+
+function handleCoverageAccept(p) {
+  // Decode
+  const formObj = {
+    email: p.tEmail,
+    subbedForName: p.sub,
+    subbedForType: 'Staff', // Assumption
+    date: p.date,
+    period: p.pd,
+    amountType: p.type,
+    amountDecimal: parseFloat(p.amt)
+  };
+  
+  // Reuse submit logic
+  submitEarned(formObj);
+  
+  const appUrl = ScriptApp.getService().getUrl();
+  const dateDisplay = new Date(p.date.split('-').join('/')).toLocaleDateString();
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Coverage Confirmed</title>
+      <link href="https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+      <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+      <style>
+        body { font-family: 'Lexend', sans-serif; background-color: #f9fafb; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+        .card { background: white; border-radius: 12px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); width: 100%; max-width: 480px; overflow: hidden; border: 1px solid #e5e7eb; }
+        .header { background-color: #2d3f89; padding: 24px; text-align: center; color: white; }
+        .icon-circle { background: white; width: 64px; height: 64px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px auto; color: #2d3f89; font-size: 32px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .content { padding: 32px 24px; text-align: center; }
+        .title { font-size: 24px; font-weight: 700; color: #1f2937; margin-bottom: 8px; }
+        .subtitle { color: #6b7280; margin-bottom: 24px; font-size: 14px; }
+        .details-box { background-color: #eff6ff; border-left: 4px solid #2d3f89; text-align: left; padding: 16px; border-radius: 4px; margin-bottom: 32px; }
+        .detail-row { margin-bottom: 8px; font-size: 14px; color: #374151; }
+        .detail-row:last-child { margin-bottom: 0; }
+        .label { font-weight: 600; color: #2d3f89; margin-right: 8px; }
+        .btn { display: inline-block; background-color: #2d3f89; color: white; padding: 12px 32px; border-radius: 6px; text-decoration: none; font-weight: 600; transition: background-color 0.2s; }
+        .btn:hover { background-color: #1e3a8a; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <div class="header">
+          <div class="icon-circle">
+            <i class="fas fa-check"></i>
+          </div>
+          <h1 style="margin:0; font-size:20px; font-weight:600;">Orono Middle School</h1>
+          <p style="margin:4px 0 0 0; opacity:0.8; font-size:12px; text-transform:uppercase; letter-spacing:1px;">TST Manager</p>
+        </div>
+        <div class="content">
+          <h2 class="title">Coverage Confirmed!</h2>
+          <p class="subtitle">Thank you, <strong>${p.tName}</strong>. Your request has been successfully processed.</p>
+          
+          <div class="details-box">
+            <div class="detail-row"><span class="label">Date:</span> ${dateDisplay}</div>
+            <div class="detail-row"><span class="label">Period:</span> ${p.pd}</div>
+            <div class="detail-row"><span class="label">Subbing For:</span> ${p.sub}</div>
+            <div class="detail-row"><span class="label">Duration:</span> ${p.type}</div>
+          </div>
+
+          <a href="${appUrl}" class="btn">Go to Dashboard</a>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+  
+  return HtmlService.createHtmlOutput(html)
+      .setTitle('Coverage Confirmed')
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+function handleCoverageReject(p) {
+  // Notify Admin
+  MailApp.sendEmail({
+    to: p.adm,
+    subject: `TST Request Rejected: ${p.tName}`,
+    htmlBody: `
+      <p>Teacher <strong>${p.tName}</strong> rejected the coverage request for <strong>${p.sub}</strong>.</p>
+      <p>Please select another teacher from the schedule.</p>
+    `
+  });
+  
+  return HtmlService.createHtmlOutput(`
+    <div style="font-family: sans-serif; text-align: center; padding: 50px;">
+      <h1 style="color: #ef4444;">Request Rejected</h1>
+      <p>The admin has been notified.</p>
+    </div>
+  `);
 }

@@ -314,12 +314,13 @@
         tabs = [
           { id: 'admin-earned', label: 'TST Earned', sub: 'Pending', icon: 'fa-inbox' },
           { id: 'admin-used', label: 'TST Used', sub: 'Pending', icon: 'fa-hand-holding-usd' },
+          { id: 'admin-schedule', label: 'Schedule', sub: 'Coverage', icon: 'fa-calendar-alt' },
           { id: 'admin-totals', label: 'Directory', sub: 'Finalized', icon: 'fa-users' }
         ];
       } else if (STATE.user.role === 'Teacher') {
         tabs = [
           { id: 'teacher-submit', label: 'Submit', sub: 'Earned Time', icon: 'fa-plus-circle' },
-          // { id: 'teacher-request', label: 'Request', sub: 'Usage', icon: 'fa-minus-circle' }, // Removed as per new workflow
+          { id: 'teacher-schedule', label: 'Schedule', sub: 'Availability', icon: 'fa-calendar-check' },
           { id: 'teacher-totals', label: 'My Report', sub: 'Totals', icon: 'fa-chart-pie' }
         ];
       }
@@ -415,7 +416,9 @@
       if (tabId === 'admin-earned') loadAdminEarned();
       else if (tabId === 'admin-used') loadAdminUsed();
       else if (tabId === 'admin-totals') loadAdminTotals();
+      else if (tabId === 'admin-schedule') loadAdminSchedule();
       else if (tabId === 'teacher-submit') renderTeacherSubmit();
+      else if (tabId === 'teacher-schedule') loadTeacherSchedule();
       else if (tabId === 'teacher-totals') loadTeacherTotals();
     }
 
@@ -1641,12 +1644,14 @@
                           amountSign = '+';
                           rowClass = 'bg-yellow-50';
                           if (isAdmin && !isEmbedded) {
+                            actions = `
                               <button onclick="openEditModal('earned', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-ops-blue bg-blue-100 hover:bg-blue-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Edit">
                                 <i class="fas fa-pencil-alt"></i> Edit
                               </button>
                               <button onclick="deleteTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, false)" class="text-ops-red bg-red-100 hover:bg-red-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Delete">
                                 <i class="fas fa-trash"></i> Delete
                               </button>
+                            `;
                           }
                        } else if(h.type === 'Used') {
                           typeBadge = '<span class="text-xs bg-red-100 text-ops-red px-1.5 py-0.5 rounded mr-1">Used</span>';
@@ -2194,6 +2199,342 @@
         .withSuccessHandler(initApp)
         .withFailureHandler(handleError)
         .getInitialData();
+    }
+
+    // --- SCHEDULE / AVAILABILITY VIEWS ---
+
+    const MONTHS = ["September", "October", "November", "December", "January", "February", "March", "April", "May", "June"];
+    const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+    const PERIODS = [
+        "Period 1 - 8:10 - 8:57",
+        "Period 2 - 9:01 - 9:48",
+        "Period 3 - 9:52 - 10:39",
+        "Period 4 - 10:43 - 11:09",
+        "Period 5 - 11:11 - 11:37",
+        "Period 4/5 - 10:30 - 11:37",
+        "Period 6 - 11:40 - 12:06",
+        "Period 7 - 12:08 - 12:34",
+        "Period 6/7 - 11:40 - 12:34",
+        "Period 8 - 12:37 - 1:08",
+        "Period 9 - 1:12 - 1:59",
+        "Period 10 - 2:03 - 2:50"
+    ];
+
+    function loadTeacherSchedule() {
+       google.script.run.withSuccessHandler(data => {
+         renderTeacherSchedule(data);
+       }).getScheduleData();
+    }
+
+    function renderTeacherSchedule(scheduleData) {
+       const userEmail = STATE.user.email;
+       
+       const html = `
+         <div class="max-w-4xl mx-auto space-y-4">
+           <div class="bg-blue-50 border-l-4 border-ops-blue p-4 rounded mb-6">
+             <h2 class="text-xl font-bold text-ops-blue-dark">My Availability</h2>
+             <p class="text-sm text-ops-gray-dark">Please indicate which periods you are willing to sub for each month.</p>
+           </div>
+           
+           ${MONTHS.map((month, index) => {
+             // Find user data for this month
+             const monthData = scheduleData[month] || [];
+             const myEntries = monthData.filter(d => d.email === userEmail);
+             
+             // Create map of Period -> Set(Days)
+             const availabilityMap = {};
+             myEntries.forEach(entry => {
+                availabilityMap[entry.period] = new Set(entry.days.split(','));
+             });
+
+             return `
+               <div class="bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+                 <button onclick="toggleAccordion('month-${index}')" class="w-full px-6 py-4 flex justify-between items-center bg-gray-50 hover:bg-gray-100 transition">
+                   <span class="font-bold text-lg text-ops-gray-dark">${month}</span>
+                   <i id="icon-month-${index}" class="fas fa-chevron-down text-gray-400 transition-transform"></i>
+                 </button>
+                 
+                 <div id="content-month-${index}" class="hidden border-t border-gray-200">
+                   <form onsubmit="saveTeacherAvailability(event, '${month}')" class="p-6">
+                      <div class="overflow-x-auto">
+                        <table class="min-w-full text-sm">
+                          <thead>
+                            <tr class="text-left text-ops-gray uppercase tracking-wider text-xs">
+                              <th class="pb-3 pl-2">Period</th>
+                              ${DAYS.map(d => `<th class="pb-3 text-center w-16">${d}</th>`).join('')}
+                            </tr>
+                          </thead>
+                          <tbody class="divide-y divide-gray-100">
+                            ${PERIODS.map(p => `
+                              <tr>
+                                <td class="py-2 pl-2 font-medium text-gray-700">${p}</td>
+                                ${DAYS.map(d => {
+                                  const isChecked = availabilityMap[p] && availabilityMap[p].has(d);
+                                  return `
+                                    <td class="py-2 text-center">
+                                      <input type="checkbox" name="${p}_${d}" ${isChecked ? 'checked' : ''} class="rounded text-ops-blue focus:ring-ops-blue border-gray-300 h-4 w-4">
+                                    </td>`;
+                                }).join('')}
+                              </tr>
+                            `).join('')}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div class="mt-6 flex justify-end">
+                        <button type="submit" class="bg-ops-blue text-white px-6 py-2 rounded shadow hover:bg-ops-blue-dark font-bold text-sm transition transform active:scale-95">
+                          Save ${month} Availability
+                        </button>
+                      </div>
+                   </form>
+                 </div>
+               </div>
+             `;
+           }).join('')}
+         </div>
+       `;
+       
+       document.getElementById('view-container').innerHTML = html;
+    }
+
+    function saveTeacherAvailability(e, month) {
+      e.preventDefault();
+      const form = e.target;
+      const checkboxes = form.querySelectorAll('input[type="checkbox"]:checked');
+      
+      // Group by Period
+      const periodMap = {}; // "Period 1" -> ["Mon", "Tue"]
+      checkboxes.forEach(cb => {
+         const [period, day] = cb.name.split('_');
+         if (!periodMap[period]) periodMap[period] = [];
+         periodMap[period].push(day);
+      });
+      
+      // Convert to List
+      const availabilityList = Object.keys(periodMap).map(p => ({
+         period: p,
+         days: periodMap[p].join(',')
+      }));
+      
+      showLoading(true);
+      google.script.run.withSuccessHandler(() => {
+        showLoading(false);
+        showToast(`${month} availability saved.`, "success");
+      }).saveAvailability(month, availabilityList);
+    }
+
+    function loadAdminSchedule() {
+       google.script.run.withSuccessHandler(data => {
+         renderAdminSchedule(data);
+       }).getScheduleData();
+    }
+
+    function renderAdminSchedule(scheduleData) {
+       const html = `
+         <div class="space-y-4">
+           <div class="flex justify-between items-center mb-4">
+             <div>
+               <h2 class="text-2xl font-bold text-ops-blue-dark">Master Schedule</h2>
+               <p class="text-sm text-ops-gray">Find coverage by month, day, and period.</p>
+             </div>
+           </div>
+           
+           ${MONTHS.map((month, index) => {
+             // We need to build a matrix: Period x Day -> [Teachers]
+             // scheduleData[month] = [ { name, email, days: "Mon,Tue", period: "Period 1", hours: 5 }, ... ]
+             
+             const matrix = {};
+             PERIODS.forEach(p => {
+               matrix[p] = {};
+               DAYS.forEach(d => matrix[p][d] = []);
+             });
+             
+             (scheduleData[month] || []).forEach(entry => {
+               const dayList = entry.days.split(',');
+               dayList.forEach(day => {
+                 if (matrix[entry.period] && matrix[entry.period][day]) {
+                   matrix[entry.period][day].push(entry);
+                 }
+               });
+             });
+             
+             return `
+               <div class="bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+                 <button onclick="toggleAccordion('admin-month-${index}')" class="w-full px-6 py-4 flex justify-between items-center bg-gray-50 hover:bg-gray-100 transition">
+                   <div class="flex items-center gap-3">
+                     <span class="font-bold text-lg text-ops-gray-dark">${month}</span>
+                     <span class="text-xs bg-gray-200 text-gray-600 px-2 py-0.5 rounded-full">${scheduleData[month]?.length || 0} Entries</span>
+                   </div>
+                   <i id="icon-admin-month-${index}" class="fas fa-chevron-down text-gray-400 transition-transform"></i>
+                 </button>
+                 
+                 <div id="content-admin-month-${index}" class="hidden border-t border-gray-200 p-1 overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200 border-separate" style="border-spacing: 0;">
+                      <thead>
+                        <tr>
+                          <th class="px-4 py-3 bg-gray-50 text-left text-xs font-bold text-gray-500 uppercase tracking-wider sticky left-0 z-10 border-b border-gray-200">Period</th>
+                          ${DAYS.map(d => `<th class="px-4 py-3 bg-gray-50 text-left text-xs font-bold text-gray-500 uppercase tracking-wider border-b border-gray-200 min-w-[200px]">${d}</th>`).join('')}
+                        </tr>
+                      </thead>
+                      <tbody class="bg-white divide-y divide-gray-200">
+                        ${PERIODS.map(p => `
+                          <tr>
+                            <td class="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 bg-gray-50 sticky left-0 z-10 border-r border-gray-200 shadow-sm">${p}</td>
+                            ${DAYS.map(d => {
+                               const teachers = matrix[p][d].sort((a,b) => a.hours - b.hours); // Sort by least hours first?
+                               return `
+                                 <td class="px-2 py-2 align-top border-r border-gray-100 last:border-r-0">
+                                   <div class="space-y-2">
+                                     ${teachers.length === 0 ? '<span class="text-xs text-gray-300 italic">No coverage</span>' : 
+                                       teachers.map(t => `
+                                         <div class="flex justify-between items-center bg-blue-50 hover:bg-blue-100 p-2 rounded border border-blue-100 transition group">
+                                            <div class="min-w-0">
+                                              <div class="text-xs font-bold text-ops-blue truncate" title="${t.name}">${t.name}</div>
+                                              <div class="text-[10px] text-gray-500">${Number(t.hours).toFixed(1)} hrs</div>
+                                            </div>
+                                            <button onclick="openRequestCoverageModal('${t.email}', '${t.name.replace(/'/g, "\\'")}', '${p}', '${month}')" class="text-ops-blue bg-white hover:bg-white hover:text-ops-blue-dark border border-blue-200 rounded-full h-6 w-6 flex items-center justify-center shadow-sm opacity-0 group-hover:opacity-100 transition-opacity" title="Request Coverage">
+                                              <i class="fas fa-paper-plane text-xs"></i>
+                                            </button>
+                                         </div>
+                                       `).join('')
+                                     }
+                                   </div>
+                                 </td>
+                               `;
+                            }).join('')}
+                          </tr>
+                        `).join('')}
+                      </tbody>
+                    </table>
+                 </div>
+               </div>
+             `;
+           }).join('')}
+         </div>
+       `;
+       
+       document.getElementById('view-container').innerHTML = html;
+    }
+
+    function toggleAccordion(id) {
+       const content = document.getElementById(`content-${id}`);
+       const icon = document.getElementById(`icon-${id}`);
+       if (content.classList.contains('hidden')) {
+         content.classList.remove('hidden');
+         icon.classList.add('rotate-180');
+       } else {
+         content.classList.add('hidden');
+         icon.classList.remove('rotate-180');
+       }
+    }
+
+    function openRequestCoverageModal(tEmail, tName, period, month) {
+      // Default date to tomorrow or reasonable guess based on month?
+      // Since month is "September", we could pick current date if match, or blank.
+      
+      const modalContent = `
+        <form onsubmit="handleCoverageRequestSubmit(event)">
+          <input type="hidden" name="teacherEmail" value="${tEmail}">
+          <input type="hidden" name="teacherName" value="${tName}">
+          <input type="hidden" name="period" value="${period}">
+          
+          <div class="mb-4 bg-blue-50 p-4 rounded border border-blue-100">
+            <label class="block text-xs font-bold text-ops-blue uppercase tracking-wider mb-1">Requesting Coverage From</label>
+            <div class="text-lg font-bold text-ops-blue-dark">${tName}</div>
+            <div class="text-sm text-ops-gray">${period}</div>
+          </div>
+
+          <div class="mb-4">
+            <label class="block text-sm font-bold text-ops-gray-dark mb-2">Date Needed</label>
+            <input type="date" name="date" required class="block w-full rounded border-gray-300 p-2 border focus:border-ops-blue focus:ring-1 focus:ring-ops-blue">
+            <p class="text-xs text-gray-400 mt-1">Month: ${month}</p>
+          </div>
+
+          <div class="mb-4">
+             <label class="block text-sm font-bold text-ops-gray-dark mb-2">Duration</label>
+             <div class="flex gap-4">
+              <label class="flex-1 cursor-pointer">
+                <input type="radio" name="duration" value="1" checked class="peer sr-only">
+                <div class="rounded-lg border border-gray-300 p-3 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
+                  <div class="font-bold">Full Period</div>
+                </div>
+              </label>
+              <label class="flex-1 cursor-pointer">
+                <input type="radio" name="duration" value="0.5" class="peer sr-only">
+                <div class="rounded-lg border border-gray-300 p-3 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
+                  <div class="font-bold">Half Period</div>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <div class="mb-6">
+            <label class="block text-sm font-bold text-ops-gray-dark mb-2">Who needs coverage?</label>
+            <div class="relative">
+               <select id="req-sub-type" onchange="toggleReqSubInput(this.value)" class="block w-full rounded border-gray-300 shadow-sm p-2 border bg-gray-50 mb-2">
+                 <option value="Staff">Staff Member</option>
+                 <option value="Other">Other (Manual)</option>
+               </select>
+               
+               <div id="req-sub-staff-container">
+                  <select name="subbedNameDropdown" class="block w-full rounded border-gray-300 p-2 border">
+                    ${STATE.user.staffData.map(s => `<option value="${s.name}">${s.name}</option>`).join('')}
+                  </select>
+               </div>
+               <div id="req-sub-manual-container" class="hidden">
+                  <input type="text" name="subbedNameManual" placeholder="e.g. Activity Bus / Meeting" class="block w-full rounded border-gray-300 p-2 border">
+               </div>
+            </div>
+          </div>
+
+          <div class="flex justify-end gap-3">
+            <button type="button" onclick="closeModal()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300">
+              Cancel
+            </button>
+            <button type="submit" class="px-4 py-2 bg-ops-blue text-white rounded hover:bg-ops-blue-dark font-bold shadow-sm">
+              <i class="fas fa-envelope mr-2"></i> Send Request
+            </button>
+          </div>
+        </form>
+      `;
+      
+      showModal("Request Coverage", modalContent);
+    }
+
+    function toggleReqSubInput(val) {
+       if(val === 'Other') {
+         document.getElementById('req-sub-staff-container').classList.add('hidden');
+         document.getElementById('req-sub-manual-container').classList.remove('hidden');
+       } else {
+         document.getElementById('req-sub-staff-container').classList.remove('hidden');
+         document.getElementById('req-sub-manual-container').classList.add('hidden');
+       }
+    }
+
+    function handleCoverageRequestSubmit(e) {
+      e.preventDefault();
+      const form = e.target;
+      const isOther = form.querySelector('#req-sub-type').value === 'Other';
+      
+      const payload = {
+        teacherEmail: form.teacherEmail.value,
+        teacherName: form.teacherName.value,
+        subbedFor: isOther ? form.subbedNameManual.value : form.subbedNameDropdown.value,
+        date: form.date.value,
+        period: form.period.value,
+        amountType: form.duration.value == '1' ? 'Full Period' : 'Half Period',
+        amount: parseFloat(form.duration.value)
+      };
+      
+      showLoading(true);
+      closeModal();
+      
+      google.script.run.withSuccessHandler(() => {
+        showLoading(false);
+        showToast(`Request sent to ${payload.teacherName}.`, "success");
+      }).withFailureHandler(err => {
+        showLoading(false);
+        showToast("Error sending request: " + err, "error");
+      }).sendCoverageRequest(payload);
     }
 
   </script>
