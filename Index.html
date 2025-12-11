@@ -31,11 +31,17 @@
               'red-dark': '#7a1718',
               'red-light': '#c13435',
               'red-lighter': '#e5c7c7', // Warning Background
+              yellow: {
+                dark: '#854d0e',
+                lighter: '#fef9c3'
+              },
               gray: {
+                darkest: '#1a1a1a',
                 dark: '#333333',
                 DEFAULT: '#666666',
                 light: '#999999',
-                lighter: '#CCCCCC'
+                lighter: '#CCCCCC',
+                lightest: '#f2f2f3'
               }
             }
           }
@@ -151,7 +157,7 @@
 
   <!-- Modal Template -->
   <div id="modal-backdrop" class="fixed inset-0 bg-ops-blue-dark bg-opacity-75 hidden z-40 flex items-center justify-center backdrop-blur-sm">
-    <div class="bg-white rounded-lg shadow-2xl w-full max-w-2xl mx-4 overflow-hidden transform transition-all border-t-4 border-ops-blue">
+    <div id="modal-panel" class="bg-white rounded-lg shadow-2xl w-full max-w-2xl mx-4 overflow-hidden transform transition-all border-t-4 border-ops-blue">
       <div class="flex justify-between items-center bg-gray-50 px-6 py-4 border-b border-gray-100">
         <h3 id="modal-title" class="text-xl font-bold text-ops-blue-dark">Modal Title</h3>
         <button onclick="closeModal()" class="text-ops-gray-light hover:text-ops-red transition rounded-full p-1">
@@ -254,8 +260,25 @@
       el.classList.add('opacity-0');
       setTimeout(() => el.classList.add('hidden'), 200);
     }
+    
+    // --- Generic Modal Helpers ---
+    function showModal(title, content, maxWidthClass = 'max-w-2xl') {
+      document.getElementById('modal-title').innerText = title;
+      document.getElementById('modal-content').innerHTML = content;
+      
+      const panel = document.getElementById('modal-panel');
+      // Remove existing max-w classes
+      panel.classList.remove('max-w-2xl', 'max-w-3xl', 'max-w-4xl', 'max-w-5xl', 'max-w-xl', 'max-w-lg');
+      // Add requested class
+      panel.classList.add(maxWidthClass);
+      
+      document.getElementById('modal-backdrop').classList.remove('hidden');
+    }
 
-    // --- State Management ---
+    function closeModal() {
+      document.getElementById('modal-backdrop').classList.add('hidden');
+      document.getElementById('modal-content').innerHTML = ''; // Cleanup
+    }
     let STATE = {
       user: null, 
       currentTab: null,
@@ -1619,157 +1642,162 @@
         showLoading(false);
         const staff = STATE.user.staffData.find(s => s.email === email);
 
-        const html = `
-          <div class="space-y-6">
-            <div class="grid grid-cols-4 gap-4 text-center">
-               <div class="bg-gray-50 p-4 rounded-lg border border-gray-200">
-                <div class="text-xs text-ops-gray uppercase tracking-wide mb-1">Carry Over</div>
-                <div class="text-2xl font-bold text-ops-gray-dark">${Number(staff.carryOver || 0).toFixed(2)}</div>
+        // --- NEW HTML CONSTRUCTION ---
+        
+        // 1. KPI Cards
+        const kpiHtml = `
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+              <div class="bg-white border border-ops-gray-lighter rounded-lg p-3 text-center shadow-sm">
+                  <div class="text-xs font-bold text-ops-gray uppercase tracking-wide mb-1">Carry Over</div>
+                  <div class="text-2xl font-bold text-ops-gray-dark">${Number(staff.carryOver || 0).toFixed(2)}</div>
               </div>
-              <div class="bg-ops-blue-lighter p-4 rounded-lg border border-blue-100">
-                <div class="text-xs text-ops-gray uppercase tracking-wide mb-1">Earned</div>
-                <div class="text-2xl font-bold text-ops-blue">${Number(staff.earned).toFixed(2)}</div>
+              <div class="bg-ops-blue-lighter border border-ops-blue-light/20 rounded-lg p-3 text-center shadow-sm">
+                  <div class="text-xs font-bold text-ops-blue uppercase tracking-wide mb-1">Earned</div>
+                  <div class="text-2xl font-bold text-ops-blue-dark">${Number(staff.earned).toFixed(2)}</div>
               </div>
-              <div class="bg-ops-red-lighter p-4 rounded-lg border border-red-100">
-                <div class="text-xs text-ops-gray uppercase tracking-wide mb-1">Used</div>
-                <div class="text-2xl font-bold text-ops-red">${Number(staff.used).toFixed(2)}</div>
+              <div class="bg-ops-red-lighter border border-ops-red-light/20 rounded-lg p-3 text-center shadow-sm">
+                  <div class="text-xs font-bold text-ops-red-dark uppercase tracking-wide mb-1">Used</div>
+                  <div class="text-2xl font-bold text-ops-red-dark">${Number(staff.used).toFixed(2)}</div>
               </div>
-              <div class="bg-gray-100 p-4 rounded-lg border border-gray-200">
-                <div class="text-xs text-ops-gray uppercase tracking-wide mb-1">Balance</div>
-                <div class="text-2xl font-bold text-ops-gray-dark">${Number(staff.total).toFixed(2)}</div>
+              <div class="bg-ops-gray-lightest border border-ops-gray-lighter rounded-lg p-3 text-center shadow-sm">
+                  <div class="text-xs font-bold text-ops-gray uppercase tracking-wide mb-1">Balance</div>
+                  <div class="text-2xl font-bold text-ops-gray-dark">${Number(staff.total).toFixed(2)}</div>
               </div>
-            </div>
-
-            <div>
-              <h4 class="font-bold text-ops-blue-dark border-b pb-2 mb-3">Activity Log ${isAdmin && !isEmbedded ? '(Admin View)' : '(Finalized)'}</h4>
-              <div class="max-h-96 overflow-y-auto border rounded bg-gray-50">
-                <table class="min-w-full text-sm">
-                  <thead class="bg-white sticky top-0">
-                    <tr>
-                      <th class="py-2 px-3 text-left w-24">Date</th>
-                      <th class="py-2 px-3 text-left">Details</th>
-                      <th class="py-2 px-3 text-center w-16">Hours</th>
-                      ${isAdmin && !isEmbedded ? '<th class="py-2 px-3 text-center w-28">Actions</th>' : ''}
-                    </tr>
-                  </thead>
-                  <tbody class="divide-y divide-gray-200">
-                    ${history.map(h => {
-                       let typeBadge = '';
-                       let details = '';
-                       let amountClass = '';
-                       let amountSign = '';
-                       let rowClass = '';
-                       let actions = '';
-                       
-                       const getLastName = (name) => name ? name.split(' ').pop() : '';
-
-                       if(h.type === 'Earned') {
-                          typeBadge = '<span class="text-xs bg-blue-100 text-ops-blue px-1.5 py-0.5 rounded mr-1">Earned</span>';
-                          details = `<span class="text-xs font-semibold text-gray-500">${h.period}</span><br>Covered: ${getLastName(h.subbedFor)}`;
-                          amountClass = 'text-ops-blue';
-                          amountSign = '+';
-                          if (isAdmin && !isEmbedded) {
-                            actions = `
-                              <button onclick="revertTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount})" class="text-yellow-700 bg-yellow-100 hover:bg-yellow-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Revert to Pending">
-                                <i class="fas fa-undo"></i>
-                              </button>
-                              <button onclick="openEditModal('earned', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-ops-blue bg-blue-100 hover:bg-blue-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Edit">
-                                <i class="fas fa-pencil-alt"></i>
-                              </button>
-                              <button onclick="deleteTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, true)" class="text-ops-red bg-red-100 hover:bg-red-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Delete">
-                                <i class="fas fa-trash"></i>
-                              </button>
-                            `;
-                          }
-                       } else if(h.type === 'Pending') {
-                          typeBadge = '<span class="text-xs bg-yellow-100 text-yellow-800 px-1.5 py-0.5 rounded mr-1">Pending</span>';
-                          details = `<span class="text-xs font-semibold text-gray-500">${h.period}</span><br>Covered: ${getLastName(h.subbedFor)}`;
-                          amountClass = 'text-yellow-600';
-                          amountSign = '+';
-                          rowClass = 'bg-yellow-50';
-                          if (isAdmin && !isEmbedded) {
-                            actions = `
-                              <button onclick="openEditModal('earned', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-ops-blue bg-blue-100 hover:bg-blue-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Edit">
-                                <i class="fas fa-pencil-alt"></i>
-                              </button>
-                              <button onclick="deleteTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, false)" class="text-ops-red bg-red-100 hover:bg-red-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Delete">
-                                <i class="fas fa-trash"></i>
-                              </button>
-                            `;
-                          }
-                       } else if(h.type === 'Used') {
-                          typeBadge = '<span class="text-xs bg-red-100 text-ops-red px-1.5 py-0.5 rounded mr-1">Used</span>';
-                          details = 'Redeemed';
-                          amountClass = 'text-ops-red';
-                          amountSign = '-';
-                          if (isAdmin && !isEmbedded) {
-                            actions = `
-                              <button onclick="revertTransaction('used', ${h.rowIndex}, '${email}', '${name}', ${h.amount})" class="text-yellow-700 bg-yellow-100 hover:bg-yellow-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Revert to Pending">
-                                <i class="fas fa-undo"></i>
-                              </button>
-                              <button onclick="openEditModal('used', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-ops-blue bg-blue-100 hover:bg-blue-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Edit">
-                                <i class="fas fa-pencil-alt"></i>
-                              </button>
-                              <button onclick="deleteTransaction('used', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, true)" class="text-ops-red bg-red-100 hover:bg-red-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Delete">
-                                <i class="fas fa-trash"></i>
-                              </button>
-                            `;
-                          }
-                       } else { // Denied
-                          typeBadge = '<span class="text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded mr-1">Denied</span>';
-                          details = `<span class="text-xs font-semibold text-gray-500">${h.period}</span><br>Covered: ${getLastName(h.subbedFor)}`;
-                          if (h.denialReason) {
-                            details += `<div class="text-xs text-red-500 mt-0.5">${h.denialReason}</div>`;
-                          }
-                          amountClass = 'text-gray-400 line-through';
-                          amountSign = '+';
-                          rowClass = 'bg-gray-50 italic opacity-75';
-                          if (isAdmin && !isEmbedded) {
-                            actions = `
-                              <button onclick="revertTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount})" class="text-yellow-700 bg-yellow-100 hover:bg-yellow-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Revert to Pending">
-                                <i class="fas fa-undo"></i>
-                              </button>
-                              <button onclick="openEditModal('earned', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-ops-blue bg-blue-100 hover:bg-blue-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Edit">
-                                <i class="fas fa-pencil-alt"></i>
-                              </button>
-                              <button onclick="deleteTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, false)" class="text-ops-red bg-red-100 hover:bg-red-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Delete">
-                                <i class="fas fa-trash"></i>
-                              </button>
-                            `;
-                          }
-                       }
-
-                      return `
-                      <tr class="${rowClass}">
-                        <td class="py-3 px-3 text-ops-gray-dark font-medium align-top">${new Date(h.date).toLocaleDateString()}</td>
-                        <td class="py-3 px-3 text-ops-gray align-top">${typeBadge} ${details}</td>
-                        <td class="py-3 px-3 text-center font-bold ${amountClass} align-top">${amountSign}${h.amount}</td>
-                        ${isAdmin && !isEmbedded ? `<td class="py-3 px-3 text-center align-top whitespace-nowrap">${actions}</td>` : ''}
-                      </tr>`;
-                    }).join('')}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            ${!isEmbedded ? `
-              <div class="mt-4 pt-4 border-t flex justify-end">
-                 <button onclick="sendEmailReport('${email}', '${name}')" class="bg-ops-gray-dark text-white px-5 py-2.5 rounded shadow hover:bg-black transition text-sm font-medium">
-                   <i class="fas fa-envelope mr-2"></i> Email Report
-                 </button>
-              </div>
-            ` : ''}
           </div>
+        `;
+
+        // 2. Table Body
+        const tableRows = history.map(h => {
+             let statusBadge = '';
+             let rowClass = '';
+             let amountClass = '';
+             let amountSign = '';
+             let detailsHtml = '';
+             let actionsHtml = '';
+
+             const getLastName = (n) => n ? n.split(' ').pop() : '';
+
+             if (h.type === 'Pending') {
+                 rowClass = 'bg-white hover:bg-ops-gray-lightest transition-colors';
+                 statusBadge = `<span class="inline-flex items-center px-2.5 py-1 rounded text-xs font-bold bg-ops-yellow-lighter text-ops-yellow-dark border border-ops-yellow-lighter">Pending</span>`;
+                 amountClass = 'text-ops-blue/70'; 
+                 amountSign = '+';
+                 detailsHtml = `
+                    <div class="flex flex-col items-start">
+                        <span class="text-ops-gray-dark font-medium">${h.period}</span>
+                        <div class="text-ops-gray text-xs">Covered: ${h.subbedFor}</div>
+                    </div>`;
+             } else if (h.type === 'Earned') { // Approved Earned
+                 rowClass = 'bg-ops-blue-lighter/50 hover:bg-ops-blue-lighter/80 transition-colors';
+                 statusBadge = `<span class="inline-flex items-center px-2.5 py-1 rounded text-xs font-bold bg-ops-blue-lighter text-ops-blue-dark">Earned</span>`;
+                 amountClass = 'text-ops-blue';
+                 amountSign = '+';
+                 detailsHtml = `
+                    <div class="flex flex-col items-start">
+                        <span class="text-ops-gray-dark font-medium">${h.period}</span>
+                        <div class="text-ops-gray text-xs">Covered: ${h.subbedFor}</div>
+                    </div>`;
+             } else if (h.type === 'Used') {
+                 rowClass = 'bg-ops-red-lighter/30 hover:bg-ops-red-lighter/50 transition-colors';
+                 statusBadge = `<span class="inline-flex items-center px-2.5 py-1 rounded text-xs font-bold bg-ops-red-lighter text-ops-red-dark">Used</span>`;
+                 amountClass = 'text-ops-red';
+                 amountSign = '-';
+                 detailsHtml = `
+                    <div class="flex flex-col items-start">
+                        <span class="text-ops-gray-dark font-medium">Redeemed</span>
+                    </div>`;
+             } else { // Denied
+                 rowClass = 'bg-ops-gray-lightest/50';
+                 statusBadge = `<span class="inline-flex items-center px-2.5 py-1 rounded text-xs font-bold bg-ops-gray-lighter text-ops-gray-dark">Denied</span>`;
+                 amountClass = 'text-ops-gray-light line-through';
+                 amountSign = '+';
+                 detailsHtml = `
+                    <div class="flex flex-col items-start">
+                        <span class="text-ops-gray-light italic line-through decoration-ops-gray-light">${h.period}</span>
+                        <div class="text-ops-gray-light text-xs italic">Covered: ${h.subbedFor}</div>
+                        ${h.denialReason ? `<div class="text-xs text-ops-red mt-0.5">${h.denialReason}</div>` : ''}
+                    </div>`;
+             }
+
+             // Actions
+             if (isAdmin && !isEmbedded) {
+                 const jsonItem = JSON.stringify(h).replace(/'/g, "&apos;");
+                 
+                 const revertBtn = (h.type === 'Earned' || h.type === 'Used' || h.type === 'Denied') ? 
+                    `<button onclick="revertTransaction('${h.sheetType || (h.type==='Used'?'used':'earned')}', ${h.rowIndex}, '${email}', '${name}', ${h.amount})" class="w-8 h-8 flex items-center justify-center bg-ops-gray-lighter text-ops-gray rounded hover:bg-ops-gray-light transition-colors" title="Revert to Pending"><span class="fas fa-history text-lg"></span></button>` : 
+                    `<button class="w-8 h-8 flex items-center justify-center bg-gray-100 text-gray-300 rounded cursor-not-allowed" disabled><span class="fas fa-history text-lg"></span></button>`;
+                 
+                 const editBtn = `<button onclick="openEditModal('${h.sheetType || (h.type==='Used'?'used':'earned')}', ${h.rowIndex}, '${email}', '${name}', ${jsonItem})" class="w-8 h-8 flex items-center justify-center bg-ops-blue-lighter text-ops-blue rounded hover:bg-blue-100 transition-colors" title="Edit"><span class="fas fa-pencil-alt text-lg"></span></button>`;
+                 
+                 const deleteBtn = `<button onclick="deleteTransaction('${h.sheetType || (h.type==='Used'?'used':'earned')}', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, ${h.type === 'Earned' || h.type === 'Used'})" class="w-8 h-8 flex items-center justify-center bg-ops-red-lighter text-ops-red rounded hover:bg-red-200 transition-colors" title="Delete"><span class="fas fa-trash text-lg"></span></button>`;
+
+                 actionsHtml = `
+                    <div class="flex justify-center gap-2">
+                        ${revertBtn}
+                        ${editBtn}
+                        ${deleteBtn}
+                    </div>
+                 `;
+             }
+
+             return `
+                <tr class="${rowClass}">
+                    <td class="px-5 py-4 font-medium text-ops-gray-dark">${new Date(h.date).toLocaleDateString()}</td>
+                    <td class="px-5 py-4">${statusBadge}</td>
+                    <td class="px-5 py-4">${detailsHtml}</td>
+                    <td class="px-5 py-4 text-center font-bold ${amountClass}">${amountSign}${Number(h.amount).toFixed(1)}</td>
+                    ${isAdmin && !isEmbedded ? `<td class="px-5 py-4">${actionsHtml}</td>` : ''}
+                </tr>
+             `;
+        }).join('');
+
+        const tableHeader = `
+            <thead class="bg-ops-blue text-white border-b border-ops-blue-dark">
+                <tr>
+                    <th class="px-5 py-4 font-semibold w-28 text-left">Date</th>
+                    <th class="px-5 py-4 font-semibold w-28 text-left">Status</th>
+                    <th class="px-5 py-4 font-semibold text-left">Details</th>
+                    <th class="px-5 py-4 font-semibold w-24 text-center">Hours</th>
+                    ${isAdmin && !isEmbedded ? `<th class="px-5 py-4 font-semibold w-36 text-center">Actions</th>` : ''}
+                </tr>
+            </thead>
+        `;
+
+        const html = `
+            <div class="flex flex-col h-full bg-white">
+                 <div class="p-1">
+                    ${kpiHtml}
+                    
+                    <div class="border border-ops-gray-lighter rounded-lg overflow-hidden shadow-sm">
+                        <table class="w-full text-left text-sm">
+                            ${tableHeader}
+                            <tbody class="divide-y divide-ops-gray-lightest">
+                                ${tableRows}
+                            </tbody>
+                        </table>
+                         ${history.length === 0 ? '<div class="p-8 text-center text-gray-400 italic">No activity found.</div>' : ''}
+                    </div>
+                 </div>
+
+                 ${!isEmbedded && isAdmin ? `
+                 <div class="mt-6 pt-4 border-t border-ops-gray-lightest flex justify-end">
+                    <button onclick="sendEmailReport('${email}', '${name}')" class="bg-ops-blue hover:bg-ops-blue-dark text-white px-6 py-2.5 rounded shadow-sm font-semibold transition-colors flex items-center gap-2">
+                        <span class="fas fa-envelope text-sm"></span>
+                        Email Report
+                    </button>
+                 </div>
+                 ` : ''}
+            </div>
         `;
 
         if (isEmbedded) {
           document.getElementById('view-container').innerHTML = `
-            <div class="bg-white p-8 shadow-lg rounded-lg max-w-4xl mx-auto border border-gray-200">
+            <div class="bg-white p-8 shadow-lg rounded-lg max-w-5xl mx-auto border border-gray-200">
               <h2 class="text-2xl font-bold text-ops-blue-dark mb-6">My TST Summary</h2>
               ${html}
             </div>`;
         } else {
-          showModal(name, html);
+           showModal(name, html, 'max-w-5xl');
         }
 
       })[apiCall](email);
