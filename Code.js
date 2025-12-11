@@ -1329,7 +1329,7 @@ function sendCoverageRequest(payload) {
 
       <div style="text-align: center; margin: 30px 0;">
          <a href="${acceptLink}" style="background-color: #2d3f89; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold; margin-right: 10px;">Accept & Earn</a>
-         <a href="${rejectLink}" style="background-color: #ad2122; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold;">Reject</a>
+         <a href="${rejectLink}" style="background-color: #ad2122; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold;">Decline</a>
       </div>
       
       <p style="font-size: 12px; color: #6b7280; text-align: center;">Clicking submit will automatically submit the TST form on your behalf.</p>
@@ -1443,21 +1443,21 @@ function handleCoverageAccept(p) {
 function handleCoverageReject(p) {
   // Notify Admin
   const emailBody = `
-    <p>Teacher <strong>${p.tName}</strong> has <span style="color: #ad2122; font-weight: bold;">rejected</span> the coverage request for <strong>${p.sub}</strong>.</p>
+    <p>Teacher <strong>${p.tName}</strong> has <span style="color: #ad2122; font-weight: bold;">declined</span> the coverage request for <strong>${p.sub}</strong>.</p>
     
     <div style="background-color: #fef2f2; border-left: 4px solid #ef4444; padding: 15px; margin: 15px 0;">
-       <p style="margin: 0; color: #991b1b; font-weight: bold;">Rejected Request</p>
+       <p style="margin: 0; color: #991b1b; font-weight: bold;">Declined Request</p>
        <p style="margin: 5px 0 0 0; color: #7f1d1d;">Period: ${p.pd || 'Not specified'}</p>
     </div>
 
     <p>Please select another teacher from the schedule.</p>
   `;
 
-  sendStyledEmail(p.adm, `TST Request Rejected: ${p.tName}`, "Coverage Rejected", emailBody, "Find Replacement");
+  sendStyledEmail(p.adm, `TST Request Declined: ${p.tName}`, "Coverage Declined", emailBody, "Find Replacement");
   
   return HtmlService.createHtmlOutput(`
     <div style="font-family: sans-serif; text-align: center; padding: 50px;">
-      <h1 style="color: #ef4444;">Request Rejected</h1>
+      <h1 style="color: #ef4444;">Request Declined</h1>
       <p>The admin has been notified.</p>
     </div>
   `);
