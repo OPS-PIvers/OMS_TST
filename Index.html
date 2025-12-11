@@ -1660,38 +1660,40 @@
                        let amountSign = '';
                        let rowClass = '';
                        let actions = '';
+                       
+                       const getLastName = (name) => name ? name.split(' ').pop() : '';
 
                        if(h.type === 'Earned') {
                           typeBadge = '<span class="text-xs bg-blue-100 text-ops-blue px-1.5 py-0.5 rounded mr-1">Earned</span>';
-                          details = `Subbed: ${h.subbedFor}<br><span class="text-xs font-semibold text-gray-500">${h.period}</span>`;
+                          details = `<span class="text-xs font-semibold text-gray-500">${h.period}</span><br>Covered: ${getLastName(h.subbedFor)}`;
                           amountClass = 'text-ops-blue';
                           amountSign = '+';
                           if (isAdmin && !isEmbedded) {
                             actions = `
                               <button onclick="revertTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount})" class="text-yellow-700 bg-yellow-100 hover:bg-yellow-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Revert to Pending">
-                                <i class="fas fa-undo"></i> Revert
+                                <i class="fas fa-undo"></i>
                               </button>
                               <button onclick="openEditModal('earned', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-ops-blue bg-blue-100 hover:bg-blue-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Edit">
-                                <i class="fas fa-pencil-alt"></i> Edit
+                                <i class="fas fa-pencil-alt"></i>
                               </button>
                               <button onclick="deleteTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, true)" class="text-ops-red bg-red-100 hover:bg-red-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Delete">
-                                <i class="fas fa-trash"></i> Delete
+                                <i class="fas fa-trash"></i>
                               </button>
                             `;
                           }
                        } else if(h.type === 'Pending') {
                           typeBadge = '<span class="text-xs bg-yellow-100 text-yellow-800 px-1.5 py-0.5 rounded mr-1">Pending</span>';
-                          details = `Subbed: ${h.subbedFor}<br><span class="text-xs font-semibold text-gray-500">${h.period}</span>`;
+                          details = `<span class="text-xs font-semibold text-gray-500">${h.period}</span><br>Covered: ${getLastName(h.subbedFor)}`;
                           amountClass = 'text-yellow-600';
                           amountSign = '+';
                           rowClass = 'bg-yellow-50';
                           if (isAdmin && !isEmbedded) {
                             actions = `
                               <button onclick="openEditModal('earned', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-ops-blue bg-blue-100 hover:bg-blue-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Edit">
-                                <i class="fas fa-pencil-alt"></i> Edit
+                                <i class="fas fa-pencil-alt"></i>
                               </button>
                               <button onclick="deleteTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, false)" class="text-ops-red bg-red-100 hover:bg-red-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Delete">
-                                <i class="fas fa-trash"></i> Delete
+                                <i class="fas fa-trash"></i>
                               </button>
                             `;
                           }
@@ -1703,19 +1705,19 @@
                           if (isAdmin && !isEmbedded) {
                             actions = `
                               <button onclick="revertTransaction('used', ${h.rowIndex}, '${email}', '${name}', ${h.amount})" class="text-yellow-700 bg-yellow-100 hover:bg-yellow-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Revert to Pending">
-                                <i class="fas fa-undo"></i> Revert
+                                <i class="fas fa-undo"></i>
                               </button>
                               <button onclick="openEditModal('used', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-ops-blue bg-blue-100 hover:bg-blue-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Edit">
-                                <i class="fas fa-pencil-alt"></i> Edit
+                                <i class="fas fa-pencil-alt"></i>
                               </button>
                               <button onclick="deleteTransaction('used', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, true)" class="text-ops-red bg-red-100 hover:bg-red-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Delete">
-                                <i class="fas fa-trash"></i> Delete
+                                <i class="fas fa-trash"></i>
                               </button>
                             `;
                           }
                        } else { // Denied
                           typeBadge = '<span class="text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded mr-1">Denied</span>';
-                          details = `Request Denied (Subbed: ${h.subbedFor})<br><span class="text-xs font-semibold text-gray-500">${h.period}</span>`;
+                          details = `<span class="text-xs font-semibold text-gray-500">${h.period}</span><br>Covered: ${getLastName(h.subbedFor)}`;
                           if (h.denialReason) {
                             details += `<div class="text-xs text-red-500 mt-0.5">${h.denialReason}</div>`;
                           }
@@ -1725,13 +1727,13 @@
                           if (isAdmin && !isEmbedded) {
                             actions = `
                               <button onclick="revertTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount})" class="text-yellow-700 bg-yellow-100 hover:bg-yellow-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Revert to Pending">
-                                <i class="fas fa-undo"></i> Revert
+                                <i class="fas fa-undo"></i>
                               </button>
                               <button onclick="openEditModal('earned', ${h.rowIndex}, '${email}', '${name}', ${JSON.stringify(h).replace(/'/g, "&apos;")})" class="text-ops-blue bg-blue-100 hover:bg-blue-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Edit">
-                                <i class="fas fa-pencil-alt"></i> Edit
+                                <i class="fas fa-pencil-alt"></i>
                               </button>
                               <button onclick="deleteTransaction('earned', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, false)" class="text-ops-red bg-red-100 hover:bg-red-200 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Delete">
-                                <i class="fas fa-trash"></i> Delete
+                                <i class="fas fa-trash"></i>
                               </button>
                             `;
                           }
