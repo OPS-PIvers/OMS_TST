@@ -1306,7 +1306,7 @@ function sendCoverageRequest(payload) {
   ].join('&');
   
   const acceptLink = `${scriptUrl}?${params}`;
-  const rejectLink = `${scriptUrl}?action=reject&tName=${encodeURIComponent(payload.teacherName)}&sub=${encodeURIComponent(payload.subbedFor)}&adm=${encodeURIComponent(adminEmail)}`;
+  const rejectLink = `${scriptUrl}?action=reject&tName=${encodeURIComponent(payload.teacherName)}&sub=${encodeURIComponent(payload.subbedFor)}&pd=${encodeURIComponent(payload.period)}&adm=${encodeURIComponent(adminEmail)}`;
 
   const subject = `TST Coverage Request: ${payload.date} - ${payload.period}`;
   
@@ -1357,6 +1357,21 @@ function handleCoverageAccept(p) {
   
   // Reuse submit logic
   submitEarned(formObj);
+  
+  // Notify Admin of Acceptance
+  if (p.adm) {
+    const emailBody = `
+      <p><strong>${p.tName}</strong> has accepted the request to cover for <strong>${p.sub}</strong>.</p>
+      <div style="background-color: #f8fafc; border-left: 4px solid #2d3f89; padding: 15px; margin: 15px 0;">
+        <p style="margin: 0; color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;">Coverage Details</p>
+        <p style="margin: 5px 0 0 0; color: #1e293b; font-weight: bold;">Date: ${p.date}</p>
+        <p style="margin: 0; color: #334155;">Period: ${p.pd} &bull; Duration: ${p.type}</p>
+      </div>
+      <p>A pending earned request has been automatically created.</p>
+    `;
+    
+    sendStyledEmail(p.adm, `TST Coverage Accepted: ${p.tName}`, "Coverage Confirmed", emailBody, "View Dashboard");
+  }
   
   let appUrl = ScriptApp.getService().getUrl();
   // Sanitize: Remove query params if present
@@ -1427,14 +1442,18 @@ function handleCoverageAccept(p) {
 
 function handleCoverageReject(p) {
   // Notify Admin
-  MailApp.sendEmail({
-    to: p.adm,
-    subject: `TST Request Rejected: ${p.tName}`,
-    htmlBody: `
-      <p>Teacher <strong>${p.tName}</strong> rejected the coverage request for <strong>${p.sub}</strong>.</p>
-      <p>Please select another teacher from the schedule.</p>
-    `
-  });
+  const emailBody = `
+    <p>Teacher <strong>${p.tName}</strong> has <span style="color: #ad2122; font-weight: bold;">rejected</span> the coverage request for <strong>${p.sub}</strong>.</p>
+    
+    <div style="background-color: #fef2f2; border-left: 4px solid #ef4444; padding: 15px; margin: 15px 0;">
+       <p style="margin: 0; color: #991b1b; font-weight: bold;">Rejected Request</p>
+       <p style="margin: 5px 0 0 0; color: #7f1d1d;">Period: ${p.pd || 'Not specified'}</p>
+    </div>
+
+    <p>Please select another teacher from the schedule.</p>
+  `;
+
+  sendStyledEmail(p.adm, `TST Request Rejected: ${p.tName}`, "Coverage Rejected", emailBody, "Find Replacement");
   
   return HtmlService.createHtmlOutput(`
     <div style="font-family: sans-serif; text-align: center; padding: 50px;">
