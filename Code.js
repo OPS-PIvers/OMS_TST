@@ -1443,3 +1443,79 @@ function handleCoverageReject(p) {
     </div>
   `);
 }
+
+/**
+ * Admin Action: Update the schedule for a specific Month + Period.
+ * This effectively "syncs" the grid view back to the row-based sheet.
+ * @param {string} month - e.g. "September"
+ * @param {string} period - e.g. "Period 1 - ..."
+ * @param {Object} dayUpdates - { "Mon": ["email1", "email2"], "Tue": [] ... }
+ */
+function updateSchedulePeriod(month, period, dayUpdates) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('TST Availability');
+  const staffSheet = ss.getSheetByName('Staff Directory');
+  
+  // 1. Get all staff map for name lookup (Email -> Name)
+  const staffData = staffSheet.getDataRange().getValues();
+  staffData.shift(); // Header
+  const staffMap = {};
+  staffData.forEach(r => {
+    staffMap[r[1].toString().toLowerCase()] = r[0]; // Email -> Name
+  });
+
+  // 2. Get current availability data
+  const range = sheet.getDataRange();
+  const data = range.getValues();
+  
+  // 3. Identify rows to delete (Matching Month + Period)
+  // We will rebuild rows for this Month+Period context to ensure clean state.
+  // Note: This deletes ALL entries for this Period in this Month and recreates them.
+  // This is safer than trying to diff row-by-row for multi-day entries.
+  
+  const rowsToDelete = [];
+  for (let i = data.length - 1; i >= 1; i--) {
+    // Cols: A=Month, C=Period
+    if (data[i][0] === month && data[i][2] === period) {
+      rowsToDelete.push(i + 1); // 1-based index
+    }
+  }
+  
+  // Batch delete is hard in Apps Script (indexes shift). 
+  // Strategy: Clear content of rows, then sort/filter? No.
+  // Strategy: Delete from bottom up.
+  rowsToDelete.forEach(idx => sheet.deleteRow(idx));
+
+  // 4. Rebuild Rows from dayUpdates
+  // dayUpdates format: { "Mon": ["a@b.com", "c@d.com"], "Tue": ["a@b.com"] }
+  // We want to group by Teacher to create multi-day rows if possible, 
+  // OR just create single-day rows for simplicity?
+  // The existing system seems to support "Mon,Tue" (comma separated).
+  
+  // Invert the map: TeacherEmail -> Set(Days)
+  const teacherDays = {};
+  Object.keys(dayUpdates).forEach(day => {
+    const emails = dayUpdates[day]; // List of emails for this day
+    emails.forEach(email => {
+      const e = email.toLowerCase().trim();
+      if (!teacherDays[e]) teacherDays[e] = new Set();
+      teacherDays[e].add(day);
+    });
+  });
+
+  // Create new rows
+  const newRows = [];
+  Object.keys(teacherDays).forEach(email => {
+    const days = Array.from(teacherDays[email]).sort().join(','); // "Mon,Tue"
+    const name = staffMap[email] || email; // Fallback to email if name not found
+    
+    // Cols: Month, Day(s), Period, Name, Email, Hours(empty)
+    newRows.push([month, days, period, name, email, ""]);
+  });
+
+  if (newRows.length > 0) {
+    sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, newRows[0].length).setValues(newRows);
+  }
+  
+  return true;
+}

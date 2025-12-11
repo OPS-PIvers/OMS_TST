@@ -525,17 +525,17 @@
                 <h2 class="text-xl font-bold text-ops-blue-dark">Pending Earned Approvals</h2>
                 <p class="text-xs text-ops-gray uppercase tracking-wider mt-1">Review & Release to Directory</p>
               </div>
-              <div class="flex items-center gap-2">
-                 <button onclick="loadAdminEarned()" class="bg-white text-ops-gray hover:text-ops-blue border border-transparent hover:border-ops-blue-lighter px-2 py-1 rounded shadow-sm transition" title="Refresh Data">
-                    <i class="fas fa-sync-alt"></i>
+              <div class="flex items-center gap-2 h-10">
+                 <button onclick="loadAdminEarned()" class="bg-white text-ops-gray hover:text-ops-blue border border-transparent hover:border-ops-blue-lighter px-3 py-2 rounded shadow-sm transition h-full flex items-center" title="Refresh Data">
+                    <i class="fas fa-sync-alt text-lg"></i>
                  </button>
                  ${isSel ? `
                    <button onclick="toggleEarnedSelectionMode()" class="bg-white text-gray-600 border border-gray-300 px-3 py-1 rounded shadow-sm hover:bg-gray-50 text-xs font-bold uppercase tracking-wide transition">
                      Cancel
                    </button>
                  ` : `
-                   <button onclick="toggleEarnedSelectionMode()" class="bg-white text-ops-blue border border-ops-blue px-3 py-1 rounded shadow-sm hover:bg-blue-50 text-xs font-bold uppercase tracking-wide transition">
-                     <i class="fas fa-check-square mr-1"></i> Select
+                   <button onclick="toggleEarnedSelectionMode()" class="bg-white text-ops-blue border border-ops-blue px-4 py-2 rounded shadow-sm hover:bg-blue-50 text-sm font-bold uppercase tracking-wide transition flex items-center h-full">
+                     <i class="fas fa-check-square mr-2 text-lg"></i> SELECT
                    </button>
                  `}
               </div>
@@ -635,17 +635,17 @@
                 <h2 class="text-xl font-bold text-ops-red-dark">Pending Usage Requests</h2>
                 <p class="text-xs text-ops-red-dark opacity-75 uppercase tracking-wider mt-1">Deduct from Balance</p>
               </div>
-              <div class="flex items-center gap-2">
-                 <button onclick="loadAdminUsed()" class="bg-white text-ops-gray hover:text-ops-blue border border-transparent hover:border-ops-blue-lighter px-2 py-1 rounded shadow-sm transition" title="Refresh Data">
-                    <i class="fas fa-sync-alt"></i>
+              <div class="flex items-center gap-2 h-10">
+                 <button onclick="loadAdminUsed()" class="bg-white text-ops-gray hover:text-ops-blue border border-transparent hover:border-ops-blue-lighter px-3 py-2 rounded shadow-sm transition h-full flex items-center" title="Refresh Data">
+                    <i class="fas fa-sync-alt text-lg"></i>
                  </button>
                  ${isSel ? `
                    <button onclick="toggleUsedSelectionMode()" class="bg-white text-gray-600 border border-gray-300 px-3 py-1 rounded shadow-sm hover:bg-gray-50 text-xs font-bold uppercase tracking-wide transition">
                      Cancel
                    </button>
                  ` : `
-                   <button onclick="toggleUsedSelectionMode()" class="bg-white text-ops-red border border-ops-red px-3 py-1 rounded shadow-sm hover:bg-red-50 text-xs font-bold uppercase tracking-wide transition">
-                     <i class="fas fa-check-square mr-1"></i> Select
+                   <button onclick="toggleUsedSelectionMode()" class="bg-white text-ops-red border border-ops-red px-4 py-2 rounded shadow-sm hover:bg-red-50 text-sm font-bold uppercase tracking-wide transition flex items-center h-full">
+                     <i class="fas fa-check-square mr-2 text-lg"></i> SELECT
                    </button>
                  `}
               </div>
@@ -1686,13 +1686,23 @@
              if (h.type === 'Pending') {
                  rowClass = 'bg-white hover:bg-ops-gray-lightest transition-colors';
                  statusBadge = `<span class="inline-flex items-center px-2.5 py-1 rounded text-xs font-bold bg-ops-yellow-lighter text-ops-yellow-dark border border-ops-yellow-lighter">Pending</span>`;
-                 amountClass = 'text-ops-blue/70'; 
-                 amountSign = '+';
-                 detailsHtml = `
-                    <div class="flex flex-col items-start whitespace-nowrap">
-                        <span class="text-ops-gray-dark font-medium">${h.period}</span>
-                        <div class="text-ops-gray text-xs">Covered: ${getLastName(h.subbedFor)}</div>
-                    </div>`;
+                 
+                 if (h.sheetType === 'used') {
+                    amountClass = 'text-ops-red/70';
+                    amountSign = '-';
+                    detailsHtml = `
+                      <div class="flex flex-col items-start whitespace-nowrap">
+                          <span class="text-ops-gray-dark font-medium">Requested Usage</span>
+                      </div>`;
+                 } else {
+                    amountClass = 'text-ops-blue/70'; 
+                    amountSign = '+';
+                    detailsHtml = `
+                      <div class="flex flex-col items-start whitespace-nowrap">
+                          <span class="text-ops-gray-dark font-medium">${h.period}</span>
+                          <div class="text-ops-gray text-xs">Covered: ${getLastName(h.subbedFor)}</div>
+                      </div>`;
+                 }
              } else if (h.type === 'Earned') { // Approved Earned
                  rowClass = 'bg-ops-blue-lighter/50 hover:bg-ops-blue-lighter/80 transition-colors';
                  statusBadge = `<span class="inline-flex items-center px-2.5 py-1 rounded text-xs font-bold bg-ops-blue-lighter text-ops-blue-dark">Earned</span>`;
@@ -1803,7 +1813,7 @@
               ${html}
             </div>`;
         } else {
-           showModal(name, html, 'max-w-5xl');
+           showModal(name, html, 'max-w-7xl');
         }
 
       })[apiCall](email);
@@ -2402,24 +2412,27 @@
 
     function loadAdminSchedule() {
        google.script.run.withSuccessHandler(data => {
-         renderAdminSchedule(data);
+         STATE.scheduleData = data; // Save to state for editing
+         STATE.editingSchedule = null; // Reset edit state
+         renderAdminSchedule();
        }).getScheduleData();
     }
 
-    function renderAdminSchedule(scheduleData) {
+    function renderAdminSchedule() {
+       const scheduleData = STATE.scheduleData;
+       if (!scheduleData) return;
+
        const html = `
          <div class="space-y-4">
            <div class="flex justify-between items-center mb-4">
              <div>
                <h2 class="text-2xl font-bold text-ops-blue-dark">Master Schedule</h2>
-               <p class="text-sm text-ops-gray">Find coverage by month, day, and period.</p>
+               <p class="text-sm text-ops-gray">Find and manage coverage by month, day, and period.</p>
              </div>
            </div>
            
            ${MONTHS.map((month, index) => {
-             // We need to build a matrix: Period x Day -> [Teachers]
-             // scheduleData[month] = [ { name, email, days: "Mon,Tue", period: "Period 1", hours: 5 }, ... ]
-             
+             // Build matrix: Period x Day -> [Teachers]
              const matrix = {};
              PERIODS.forEach(p => {
                matrix[p] = {};
@@ -2449,90 +2462,145 @@
                     <table class="min-w-full divide-y divide-gray-200 border-separate" style="border-spacing: 0;">
                       <thead>
                         <tr>
-                          <th class="px-4 py-3 bg-gray-50 text-left text-xs font-bold text-gray-500 uppercase tracking-wider sticky left-0 z-10 border-b border-gray-200">Period</th>
+                          <th class="px-4 py-3 bg-gray-50 text-left text-xs font-bold text-gray-500 uppercase tracking-wider sticky left-0 z-10 border-b border-gray-200 bg-opacity-95 backdrop-blur">Period</th>
                           ${DAYS.map(d => `<th class="px-4 py-3 bg-gray-50 text-left text-xs font-bold text-gray-500 uppercase tracking-wider border-b border-gray-200 min-w-[200px]">${d}</th>`).join('')}
                         </tr>
                       </thead>
                       <tbody class="bg-white divide-y divide-gray-200">
-                        ${PERIODS.map((p, pIndex) => `
-                          <tr class="${pIndex % 2 === 1 ? 'bg-gray-50' : ''}">
-                            <td class="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 bg-gray-50 sticky left-0 z-10 border-r border-gray-200 shadow-sm">${p}</td>
-                            ${DAYS.map(d => {
-                               const teachers = matrix[p][d].sort((a,b) => a.hours - b.hours); // Sort by least hours first?
-                               return `
-                                 <td class="px-2 py-2 align-top border-r border-gray-100 last:border-r-0">
-                                   <div class="space-y-2">
-                                     ${teachers.length === 0 ? '<span class="text-xs text-gray-300 italic">No coverage</span>' : 
-                                       teachers.map(t => {
-                                         const pendingCount = t.pendingRequests ? t.pendingRequests.length : 0;
-                                         let pendingIndicator = '';
-                                         
-                                         if (pendingCount > 0) {
-                                            // 1. Build rich HTML content for the tooltip
-                                            const listItems = t.pendingRequests.map(r => {
-                                              // Extract "1" from "Period 1 - ..."
-                                              let shortPd = r.period;
-                                              const match = r.period.match(/Period\s+([0-9\/]+)/);
-                                              if (match) shortPd = match[1];
-                                              
-                                              // Extract Last Name (Assume "First Last" or "First M. Last")
-                                              const nameParts = r.subbedFor.trim().split(' ');
-                                              const lastName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : r.subbedFor;
-
-                                              return `
-                                                <div class="border-b border-blue-900/50 pb-2 mb-2 last:border-0 last:pb-0 last:mb-0">
-                                                  <div class="flex justify-between items-center mb-0.5">
-                                                    <span class="font-bold text-white">${new Date(r.date).toLocaleDateString()}</span>
-                                                    <span class="bg-blue-900 text-blue-100 px-1.5 py-0.5 rounded text-[10px] font-medium">Pd ${shortPd}</span>
-                                                  </div>
-                                                  <div class="text-blue-200 truncate text-[11px]"><span class="opacity-75">Covering:</span> ${lastName}</div>
-                                                </div>
-                                              `;
-                                            }).join('');
-                                            
-                                            const tooltipHtml = `
-                                              <div class="font-bold text-blue-100 border-b border-blue-500/30 pb-2 mb-2 uppercase tracking-wide text-[10px] flex items-center gap-2">
-                                                <i class="fas fa-clock"></i> Pending Requests (${pendingCount})
-                                              </div>
-                                              <div>${listItems}</div>
-                                            `;
-                                            
-                                            // Escape quotes and remove newlines for the HTML attribute
-                                            const safeTooltip = tooltipHtml
-                                              .replace(/"/g, "&quot;")
-                                              .replace(/'/g, "\\'")
-                                              .replace(/(\r\n|\n|\r)/gm, "");
-
-                                            pendingIndicator = `
-                                              <i class="fas fa-hourglass-half text-orange-500 ml-1 cursor-help hover:text-orange-600 transition-colors" 
-                                                 onmouseenter="showTooltip(event, '${safeTooltip}')" 
-                                                 onmousemove="moveTooltip(event)" 
-                                                 onmouseleave="hideTooltip()">
-                                              </i>`;
-                                         }
-
-                                         return `
-                                         <div class="flex justify-between items-center bg-blue-50 hover:bg-blue-100 p-2 rounded border border-blue-100 transition group">
-                                            <div class="min-w-0">
-                                              <div class="flex items-center">
-                                                 <div class="text-xs font-bold text-ops-blue truncate" title="${t.name}">${t.name}</div>
-                                                 ${pendingIndicator}
-                                              </div>
-                                              <div class="text-[10px] text-gray-500">${Number(t.hours).toFixed(1)} hrs</div>
-                                            </div>
-                                            <button onclick="openRequestCoverageModal('${t.email}', '${t.name.replace(/'/g, "\\'")}', '${p}', '${month}')" class="text-ops-blue bg-white hover:bg-white hover:text-ops-blue-dark border border-blue-200 rounded-full h-6 w-6 flex items-center justify-center shadow-sm opacity-0 group-hover:opacity-100 transition-opacity" title="Request Coverage">
-                                              <i class="fas fa-paper-plane text-xs"></i>
-                                            </button>
-                                         </div>
-                                       `;
-                                       }).join('')
-                                     }
+                        ${PERIODS.map((p, pIndex) => {
+                          const isEditing = STATE.editingSchedule && STATE.editingSchedule.month === month && STATE.editingSchedule.period === p;
+                          const rowBg = pIndex % 2 === 1 ? 'bg-gray-50' : 'bg-white';
+                          
+                          if (isEditing) {
+                             // --- EDIT MODE ROW ---
+                             return `
+                               <tr class="bg-blue-50/50">
+                                 <td class="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 sticky left-0 z-10 border-r border-blue-200 shadow-sm bg-blue-50 align-top">
+                                   <div class="flex flex-col gap-2">
+                                     <span>${p}</span>
+                                     <div class="flex flex-col gap-1 mt-2">
+                                       <button onclick="saveAdminSchedulePeriod('${month}', '${p}')" class="bg-green-600 hover:bg-green-700 text-white text-xs px-2 py-1.5 rounded font-bold transition">
+                                         <i class="fas fa-save mr-1"></i> Save
+                                       </button>
+                                       <button onclick="cancelAdminScheduleEdit()" class="bg-gray-300 hover:bg-gray-400 text-gray-700 text-xs px-2 py-1.5 rounded font-bold transition">
+                                         Cancel
+                                       </button>
+                                     </div>
                                    </div>
                                  </td>
-                               `;
-                            }).join('')}
-                          </tr>
-                        `).join('')}
+                                 ${DAYS.map(d => {
+                                    // Get current temp state for this day
+                                    const currentEmails = STATE.editingSchedule.changes[d] || []; 
+                                    // Map emails back to names for display
+                                    // We need to look up names from staffData
+                                    const chips = currentEmails.map(email => {
+                                       const staff = STATE.user.staffData.find(s => s.email === email);
+                                       const name = staff ? staff.name : email;
+                                       return `
+                                         <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-white border border-blue-200 text-blue-700 shadow-sm">
+                                           ${name}
+                                           <button onclick="removeTeacherFromSchedule('${d}', '${email}')" class="ml-1.5 text-blue-400 hover:text-red-500 focus:outline-none">
+                                             <i class="fas fa-times"></i>
+                                           </button>
+                                         </span>`;
+                                    }).join('');
+
+                                    return `
+                                      <td class="px-2 py-2 align-top border-r border-blue-100 last:border-r-0 min-w-[200px]">
+                                        <div class="flex flex-wrap gap-1.5 mb-2">
+                                          ${chips}
+                                        </div>
+                                        <div class="relative group">
+                                          <input type="text" 
+                                            placeholder="Add teacher..." 
+                                            class="w-full text-xs border border-blue-300 rounded px-2 py-1.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                            onkeyup="renderScheduleAutocomplete(this, '${d}', '${month}', '${p}')"
+                                          >
+                                          <div class="hidden absolute z-50 w-full bg-white border border-gray-200 shadow-lg rounded mt-1 max-h-48 overflow-y-auto text-xs" id="ac-${month}-${p.replace(/\s/g,'')}-${d}"></div>
+                                        </div>
+                                      </td>
+                                    `;
+                                 }).join('')}
+                               </tr>
+                             `;
+                          } else {
+                             // --- VIEW MODE ROW ---
+                             return `
+                              <tr class="${rowBg} hover:bg-gray-100 transition-colors group/row">
+                                <td class="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 sticky left-0 z-10 border-r border-gray-200 shadow-sm ${rowBg} group-hover/row:bg-gray-100">
+                                  <div class="flex justify-between items-center">
+                                    <span>${p}</span>
+                                    <button onclick="toggleAdminScheduleEdit('${month}', '${p}')" class="opacity-0 group-hover/row:opacity-100 text-ops-blue hover:bg-blue-100 p-1.5 rounded transition-all" title="Edit Period">
+                                      <i class="fas fa-pencil-alt"></i>
+                                    </button>
+                                  </div>
+                                </td>
+                                ${DAYS.map(d => {
+                                   const teachers = matrix[p][d].sort((a,b) => a.hours - b.hours);
+                                   return `
+                                     <td class="px-2 py-2 align-top border-r border-gray-100 last:border-r-0">
+                                       <div class="space-y-2">
+                                         ${teachers.length === 0 ? '<span class="text-xs text-gray-300 italic">No coverage</span>' : 
+                                           teachers.map(t => {
+                                             const pendingCount = t.pendingRequests ? t.pendingRequests.length : 0;
+                                             let pendingIndicator = '';
+                                             
+                                             if (pendingCount > 0) {
+                                                const listItems = t.pendingRequests.map(r => {
+                                                  let shortPd = r.period;
+                                                  const match = r.period.match(/Period\s+([0-9\/]+)/);
+                                                  if (match) shortPd = match[1];
+                                                  const nameParts = r.subbedFor.trim().split(' ');
+                                                  const lastName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : r.subbedFor;
+                                                  return `
+                                                    <div class="border-b border-blue-900/50 pb-2 mb-2 last:border-0 last:pb-0 last:mb-0">
+                                                      <div class="flex justify-between items-center mb-0.5">
+                                                        <span class="font-bold text-white">${new Date(r.date).toLocaleDateString()}</span>
+                                                        <span class="bg-blue-900 text-blue-100 px-1.5 py-0.5 rounded text-[10px] font-medium">Pd ${shortPd}</span>
+                                                      </div>
+                                                      <div class="text-blue-200 truncate text-[11px]"><span class="opacity-75">Covering:</span> ${lastName}</div>
+                                                    </div>
+                                                  `;
+                                                }).join('');
+                                                const tooltipHtml = `
+                                                  <div class="font-bold text-blue-100 border-b border-blue-500/30 pb-2 mb-2 uppercase tracking-wide text-[10px] flex items-center gap-2">
+                                                    <i class="fas fa-clock"></i> Pending Requests (${pendingCount})
+                                                  </div>
+                                                  <div>${listItems}</div>
+                                                `.replace(/"/g, "&quot;").replace(/'/g, "\\'").replace(/(\r\n|\n|\r)/gm, "");
+
+                                                pendingIndicator = `
+                                                  <i class="fas fa-hourglass-half text-orange-500 ml-1 cursor-help hover:text-orange-600 transition-colors" 
+                                                     onmouseenter="showTooltip(event, '${tooltipHtml}')" 
+                                                     onmousemove="moveTooltip(event)" 
+                                                     onmouseleave="hideTooltip()">
+                                                  </i>`;
+                                             }
+
+                                             return `
+                                             <div class="flex justify-between items-center bg-blue-50 hover:bg-blue-100 p-2 rounded border border-blue-100 transition group">
+                                                <div class="min-w-0">
+                                                  <div class="flex items-center">
+                                                     <div class="text-xs font-bold text-ops-blue truncate" title="${t.name}">${t.name}</div>
+                                                     ${pendingIndicator}
+                                                  </div>
+                                                  <div class="text-[10px] text-gray-500">${Number(t.hours).toFixed(1)} hrs</div>
+                                                </div>
+                                                <button onclick="openRequestCoverageModal('${t.email}', '${t.name.replace(/'/g, "\\'")}', '${p}', '${month}')" class="text-ops-blue bg-white hover:bg-white hover:text-ops-blue-dark border border-blue-200 rounded-full h-6 w-6 flex items-center justify-center shadow-sm opacity-0 group-hover:opacity-100 transition-opacity" title="Request Coverage">
+                                                  <i class="fas fa-paper-plane text-xs"></i>
+                                                </button>
+                                             </div>
+                                           `;
+                                           }).join('')
+                                         }
+                                       </div>
+                                     </td>
+                                   `;
+                                }).join('')}
+                              </tr>
+                            `;
+                          }
+                        }).join('')}
                       </tbody>
                     </table>
                  </div>
@@ -2555,6 +2623,106 @@
          content.classList.add('hidden');
          icon.classList.remove('rotate-180');
        }
+    }
+    
+    // --- Admin Schedule Editing Logic ---
+
+    function toggleAdminScheduleEdit(month, period) {
+      // 1. Initialize Editing State
+      // We need to convert the View Matrix back into an editable map: { "Mon": [emails], "Tue": ... }
+      
+      const changes = {};
+      DAYS.forEach(d => changes[d] = []);
+      
+      // Populate from current data
+      // Find entries for Month/Period
+      const entries = (STATE.scheduleData[month] || []).filter(e => e.period === period);
+      entries.forEach(e => {
+         const days = e.days.split(',');
+         days.forEach(d => {
+            if(changes[d]) changes[d].push(e.email);
+         });
+      });
+
+      STATE.editingSchedule = {
+        month: month,
+        period: period,
+        changes: changes
+      };
+      
+      renderAdminSchedule();
+      // Auto-open accordion if needed (it should be open since we clicked edit inside it)
+    }
+
+    function cancelAdminScheduleEdit() {
+      STATE.editingSchedule = null;
+      renderAdminSchedule();
+    }
+
+    function removeTeacherFromSchedule(day, email) {
+      if (!STATE.editingSchedule) return;
+      const list = STATE.editingSchedule.changes[day];
+      const idx = list.indexOf(email);
+      if (idx > -1) {
+        list.splice(idx, 1);
+        renderAdminSchedule(); // Re-render to update UI
+      }
+    }
+
+    function addTeacherToSchedule(day, email) {
+      if (!STATE.editingSchedule) return;
+      const list = STATE.editingSchedule.changes[day];
+      if (!list.includes(email)) {
+        list.push(email);
+        renderAdminSchedule();
+      }
+    }
+
+    function renderScheduleAutocomplete(input, day, month, periodSafe) {
+      const query = input.value.toLowerCase();
+      // Remove spaces from period for ID safety
+      const periodId = periodSafe.replace(/\s/g,'');
+      const container = document.getElementById(`ac-${month}-${periodId}-${day}`);
+      
+      if (!query) {
+        container.classList.add('hidden');
+        return;
+      }
+
+      const matches = STATE.user.staffData.filter(s => s.name.toLowerCase().includes(query) || s.email.toLowerCase().includes(query));
+      
+      if (matches.length > 0) {
+        container.innerHTML = matches.map(s => `
+          <div onclick="selectScheduleTeacher('${day}', '${s.email}')" class="px-3 py-2 hover:bg-blue-50 cursor-pointer border-b border-gray-100 last:border-0">
+            <div class="font-bold text-gray-800">${s.name}</div>
+            <div class="text-xs text-gray-500">${s.email}</div>
+          </div>
+        `).join('');
+        container.classList.remove('hidden');
+      } else {
+        container.classList.add('hidden');
+      }
+    }
+
+    function selectScheduleTeacher(day, email) {
+      addTeacherToSchedule(day, email);
+    }
+
+    function saveAdminSchedulePeriod(month, period) {
+      if (!STATE.editingSchedule) return;
+      
+      const dayUpdates = STATE.editingSchedule.changes; // { "Mon": [emails]... }
+      
+      showLoading(true);
+      google.script.run.withSuccessHandler(() => {
+         // Reload data to reflect changes
+         STATE.editingSchedule = null;
+         loadAdminSchedule(); // This handles showLoading(false) internally
+         showToast("Schedule updated successfully.", "success");
+      }).withFailureHandler(err => {
+         showLoading(false);
+         showToast("Error saving schedule: " + err, "error");
+      }).updateSchedulePeriod(month, period, dayUpdates);
     }
 
     function openRequestCoverageModal(tEmail, tName, period, month) {
