@@ -1180,9 +1180,12 @@ function getScheduleData() {
 
   // 1. Calculate Hours per Teacher per Month
   const hoursMap = calculateMonthlyHours(); // Returns { "email_Month": hours }
+  
+  // 2. Get Pending Requests Map
+  const pendingMap = getPendingEarnedMap();
 
-  // 2. Process Schedule Data
-  // We return a structured object: { "September": [ { name, email, days, period, hours }, ... ], ... }
+  // 3. Process Schedule Data
+  // We return a structured object: { "September": [ { name, email, days, period, hours, pendingRequests }, ... ], ... }
   const schedule = {};
   MONTH_ORDER.forEach(m => schedule[m] = []);
 
@@ -1192,12 +1195,32 @@ function getScheduleData() {
       const key = `${email}_${month}`;
       const hours = hoursMap[key] || 0;
       schedule[month].push({
-        month, days, period, name, email, hours
+        month, days, period, name, email, hours,
+        pendingRequests: pendingMap[email] || []
       });
     }
   });
 
   return schedule;
+}
+
+function getPendingEarnedMap() {
+  const pendingList = getPendingEarned(); // Reuse existing function
+  const map = {};
+  
+  pendingList.forEach(item => {
+    if (!map[item.email]) {
+      map[item.email] = [];
+    }
+    // Minimal data needed for the tooltip/indicator
+    map[item.email].push({
+      date: item.date, // Already safeDate string
+      subbedFor: item.subbedFor,
+      period: item.period
+    });
+  });
+  
+  return map;
 }
 
 function calculateMonthlyHours() {
@@ -1335,7 +1358,14 @@ function handleCoverageAccept(p) {
   // Reuse submit logic
   submitEarned(formObj);
   
-  const appUrl = ScriptApp.getService().getUrl();
+  let appUrl = ScriptApp.getService().getUrl();
+  // Sanitize: Remove query params if present
+  if (appUrl && appUrl.includes('?')) {
+    appUrl = appUrl.split('?')[0];
+  }
+  // Fallback: If appUrl is empty (e.g. unpublished), use "?" to reload page without params
+  const dashboardLink = appUrl ? appUrl : "?";
+
   const dateDisplay = new Date(p.date.split('-').join('/')).toLocaleDateString();
 
   const html = `
@@ -1383,7 +1413,7 @@ function handleCoverageAccept(p) {
             <div class="detail-row"><span class="label">Duration:</span> ${p.type}</div>
           </div>
 
-          <a href="${appUrl}" class="btn">Go to Dashboard</a>
+          <a href="${dashboardLink}" class="btn">Go to Dashboard</a>
         </div>
       </div>
     </body>

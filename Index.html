@@ -84,6 +84,9 @@
 </head>
 <body class="bg-gray-50 min-h-screen font-sans">
 
+  <!-- Global Tooltip -->
+  <div id="global-tooltip" class="fixed hidden bg-ops-blue-dark text-white text-xs rounded-lg shadow-xl p-4 z-[100] max-w-xs pointer-events-none transition-opacity duration-200 opacity-0 border border-ops-blue-light"></div>
+
   <!-- Toast Container -->
   <div id="toast-container" class="fixed top-5 right-5 flex flex-col gap-3 pointer-events-none" style="z-index: 9999;"></div>
 
@@ -165,7 +168,7 @@
     // --- Toast Notification System ---
     function showToast(message, type = 'info') {
       const container = document.getElementById('toast-container');
-      
+      // ... existing toast logic ...
       // Icons and Colors based on type
       let icon, bgClass, textClass, borderClass;
       
@@ -211,6 +214,45 @@
           toast.addEventListener('animationend', () => toast.remove());
         }
       }, 4000);
+    }
+
+    // --- Tooltip System ---
+    function showTooltip(e, content) {
+      const el = document.getElementById('global-tooltip');
+      el.innerHTML = content;
+      el.classList.remove('hidden');
+      // Small delay to allow transition
+      requestAnimationFrame(() => el.classList.remove('opacity-0'));
+      
+      moveTooltip(e);
+    }
+
+    function moveTooltip(e) {
+      const el = document.getElementById('global-tooltip');
+      if (el.classList.contains('hidden')) return;
+
+      const x = e.clientX;
+      const y = e.clientY;
+      
+      // Adjust positioning to avoid edge overflow
+      const rect = el.getBoundingClientRect();
+      const winW = window.innerWidth;
+      const winH = window.innerHeight;
+      
+      let left = x + 15;
+      let top = y + 15;
+      
+      if (left + rect.width > winW) left = x - rect.width - 10;
+      if (top + rect.height > winH) top = y - rect.height - 10;
+      
+      el.style.left = `${left}px`;
+      el.style.top = `${top}px`;
+    }
+
+    function hideTooltip() {
+      const el = document.getElementById('global-tooltip');
+      el.classList.add('opacity-0');
+      setTimeout(() => el.classList.add('hidden'), 200);
     }
 
     // --- State Management ---
@@ -2385,17 +2427,69 @@
                                  <td class="px-2 py-2 align-top border-r border-gray-100 last:border-r-0">
                                    <div class="space-y-2">
                                      ${teachers.length === 0 ? '<span class="text-xs text-gray-300 italic">No coverage</span>' : 
-                                       teachers.map(t => `
+                                       teachers.map(t => {
+                                         const pendingCount = t.pendingRequests ? t.pendingRequests.length : 0;
+                                         let pendingIndicator = '';
+                                         
+                                         if (pendingCount > 0) {
+                                            // 1. Build rich HTML content for the tooltip
+                                            const listItems = t.pendingRequests.map(r => {
+                                              // Extract "1" from "Period 1 - ..."
+                                              let shortPd = r.period;
+                                              const match = r.period.match(/Period\s+([0-9\/]+)/);
+                                              if (match) shortPd = match[1];
+                                              
+                                              // Extract Last Name (Assume "First Last" or "First M. Last")
+                                              const nameParts = r.subbedFor.trim().split(' ');
+                                              const lastName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : r.subbedFor;
+
+                                              return `
+                                                <div class="border-b border-blue-900/50 pb-2 mb-2 last:border-0 last:pb-0 last:mb-0">
+                                                  <div class="flex justify-between items-center mb-0.5">
+                                                    <span class="font-bold text-white">${new Date(r.date).toLocaleDateString()}</span>
+                                                    <span class="bg-blue-900 text-blue-100 px-1.5 py-0.5 rounded text-[10px] font-medium">Pd ${shortPd}</span>
+                                                  </div>
+                                                  <div class="text-blue-200 truncate text-[11px]"><span class="opacity-75">Covering:</span> ${lastName}</div>
+                                                </div>
+                                              `;
+                                            }).join('');
+                                            
+                                            const tooltipHtml = `
+                                              <div class="font-bold text-blue-100 border-b border-blue-500/30 pb-2 mb-2 uppercase tracking-wide text-[10px] flex items-center gap-2">
+                                                <i class="fas fa-clock"></i> Pending Requests (${pendingCount})
+                                              </div>
+                                              <div>${listItems}</div>
+                                            `;
+                                            
+                                            // Escape quotes and remove newlines for the HTML attribute
+                                            const safeTooltip = tooltipHtml
+                                              .replace(/"/g, "&quot;")
+                                              .replace(/'/g, "\\'")
+                                              .replace(/(\r\n|\n|\r)/gm, "");
+
+                                            pendingIndicator = `
+                                              <i class="fas fa-hourglass-half text-orange-500 ml-1 cursor-help hover:text-orange-600 transition-colors" 
+                                                 onmouseenter="showTooltip(event, '${safeTooltip}')" 
+                                                 onmousemove="moveTooltip(event)" 
+                                                 onmouseleave="hideTooltip()">
+                                              </i>`;
+                                         }
+
+                                         return `
                                          <div class="flex justify-between items-center bg-blue-50 hover:bg-blue-100 p-2 rounded border border-blue-100 transition group">
                                             <div class="min-w-0">
-                                              <div class="text-xs font-bold text-ops-blue truncate" title="${t.name}">${t.name}</div>
+                                              <div class="flex items-center">
+                                                 <div class="text-xs font-bold text-ops-blue truncate" title="${t.name}">${t.name}</div>
+                                                 ${pendingIndicator}
+                                              </div>
                                               <div class="text-[10px] text-gray-500">${Number(t.hours).toFixed(1)} hrs</div>
                                             </div>
                                             <button onclick="openRequestCoverageModal('${t.email}', '${t.name.replace(/'/g, "\\'")}', '${p}', '${month}')" class="text-ops-blue bg-white hover:bg-white hover:text-ops-blue-dark border border-blue-200 rounded-full h-6 w-6 flex items-center justify-center shadow-sm opacity-0 group-hover:opacity-100 transition-opacity" title="Request Coverage">
                                               <i class="fas fa-paper-plane text-xs"></i>
                                             </button>
                                          </div>
-                                       `).join('')
+                                       `;
+                                       }).join('')
                                      }
                                    </div>
                                  </td>
