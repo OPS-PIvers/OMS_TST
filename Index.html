@@ -1068,9 +1068,16 @@
     }
 
     function loadTeacherTotals() {
-      const myData = STATE.user.staffData.find(s => s.email === STATE.user.email);
+      const myData = STATE.user.staffData.find(s => s.email.toLowerCase() === STATE.user.email.toLowerCase());
       if(myData) {
         openStaffDetail(STATE.user.email, STATE.user.name, true);
+      } else {
+        document.getElementById('view-container').innerHTML = `
+          <div class="p-10 text-center">
+            <i class="fas fa-exclamation-triangle text-ops-yellow-dark text-4xl mb-4"></i>
+            <p class="text-ops-gray-dark font-bold">Error loading profile.</p>
+            <p class="text-sm text-ops-gray">Your account details could not be found in the directory.</p>
+          </div>`;
       }
     }
 
@@ -1646,7 +1653,12 @@
 
       google.script.run.withSuccessHandler(history => {
         showLoading(false);
-        const staff = STATE.user.staffData.find(s => s.email === email);
+        const staff = STATE.user.staffData.find(s => s.email.toLowerCase() === email.toLowerCase());
+
+        if (!staff) {
+          showToast("Error: Staff member not found in directory.", "error");
+          return;
+        }
 
         // --- NEW HTML CONSTRUCTION ---
         
@@ -1659,15 +1671,15 @@
               </div>
               <div class="bg-ops-blue-lighter border border-ops-blue-light/20 rounded-lg p-3 text-center shadow-sm">
                   <div class="text-xs font-bold text-ops-blue uppercase tracking-wide mb-1">Earned</div>
-                  <div class="text-2xl font-bold text-ops-blue-dark">${Number(staff.earned).toFixed(2)}</div>
+                  <div class="text-2xl font-bold text-ops-blue-dark">${Number(staff.earned || 0).toFixed(2)}</div>
               </div>
               <div class="bg-ops-red-lighter border border-ops-red-light/20 rounded-lg p-3 text-center shadow-sm">
                   <div class="text-xs font-bold text-ops-red-dark uppercase tracking-wide mb-1">Used</div>
-                  <div class="text-2xl font-bold text-ops-red-dark">${Number(staff.used).toFixed(2)}</div>
+                  <div class="text-2xl font-bold text-ops-red-dark">${Number(staff.used || 0).toFixed(2)}</div>
               </div>
               <div class="bg-ops-gray-lightest border border-ops-gray-lighter rounded-lg p-3 text-center shadow-sm">
                   <div class="text-xs font-bold text-ops-gray uppercase tracking-wide mb-1">Balance</div>
-                  <div class="text-2xl font-bold text-ops-gray-dark">${Number(staff.total).toFixed(2)}</div>
+                  <div class="text-2xl font-bold text-ops-gray-dark">${Number(staff.total || 0).toFixed(2)}</div>
               </div>
           </div>
         `;
