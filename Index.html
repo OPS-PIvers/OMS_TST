@@ -1657,6 +1657,16 @@
 
         if (!staff) {
           showToast("Error: Staff member not found in directory.", "error");
+          // Clear or update the staff detail view container with an error message
+          const container = document.getElementById('staffDetailView');
+          if (container) {
+            container.innerHTML = `
+              <div class="p-6 text-center text-ops-red-dark">
+                <i class="fa fa-exclamation-triangle text-3xl mb-2"></i>
+                <div class="mt-2 text-lg font-semibold">Staff member not found in directory.</div>
+              </div>
+            `;
+          }
           return;
         }
 
