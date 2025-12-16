@@ -1354,11 +1354,7 @@ function sendCoverageRequest(payload) {
     <p>This email serves as a record of your request. You will receive another notification if they accept or decline.</p>
   `;
 
-  MailApp.sendEmail({
-    to: adminEmail,
-    subject: adminSubject,
-    htmlBody: adminBody
-  });
+  sendStyledEmail(adminEmail, adminSubject, "Coverage Requested", adminBody, "View Dashboard");
 }
 
 function handleCoverageAccept(p) {
