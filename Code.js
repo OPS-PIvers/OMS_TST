@@ -1022,12 +1022,18 @@ function onFormSubmit(e) {
   const dateStr = e.values[4]; // Form might return different date format, beware.
   const period = e.values[5];
   const amountType = e.values[6];
-  const amountDecimal = e.values[7];
+  let amountDecimal = e.values[7];
   
   // Lookup Name
   const staffData = staffSheet.getDataRange().getValues();
   const staffRow = staffData.find(r => r[1].toString().toLowerCase() === email.toString().toLowerCase());
   const earnerName = staffRow ? staffRow[0] : email;
+
+  // Append to Approvals
+  // If amountDecimal is missing (Legacy Form), calculate it
+  if (!amountDecimal) {
+    amountDecimal = calculatePeriods(period, amountType);
+  }
 
   // Append to Approvals
   approvalSheet.appendRow([
@@ -1044,6 +1050,35 @@ function onFormSubmit(e) {
     false, // Denied
     ""     // TS
   ]);
+}
+
+/**
+ * Calculates periods based on Middle School rules:
+ * - Period 6: always 0.5
+ * - Period 7: always 0.5
+ * - All other periods: 1.0 for Full, 0.5 for Half
+ * @param {string} selectedPeriod The period selection (e.g., "Period 1", "Period 6/7")
+ * @param {string} amount "Full Period" or "Half Period"
+ * @returns {number} The calculated period value
+ */
+function calculatePeriods(selectedPeriod, amount) {
+  // Handle special cases for periods 6 and 7 (always 0.5)
+  if (selectedPeriod && selectedPeriod.toString().includes('Period 6 ') && !selectedPeriod.toString().includes('Period 6/')) {
+    return 0.5;
+  }
+  if (selectedPeriod && selectedPeriod.toString().includes('Period 7 ') && !selectedPeriod.toString().includes('Period 6/')) {
+    return 0.5;
+  }
+
+  // For all other periods (including Period 6/7), use Full/Half logic
+  if (amount && amount.toString().toLowerCase().includes('full')) {
+    return 1.0;
+  } else if (amount && amount.toString().toLowerCase().includes('half')) {
+    return 0.5;
+  }
+
+  // Default fallback
+  return 1.0;
 }
 
 /**
