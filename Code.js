@@ -1143,7 +1143,7 @@ function sendStyledEmail(recipient, subject, title, contentHtml, buttonText) {
           <h2>${title}</h2>
           ${contentHtml}
           <div class="button-container">
-            <a href="${appUrl}" class="button">Visit the TST Portal</a>
+            <a href="${appUrl}" class="button">${buttonText || 'Visit the TST Portal'}</a>
           </div>
         </div>
         <div class="footer">
