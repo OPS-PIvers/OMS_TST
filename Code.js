@@ -1341,6 +1341,24 @@ function sendCoverageRequest(payload) {
     subject: subject,
     htmlBody: htmlBody
   });
+
+  // Also send a tracking email to the Admin
+  const adminSubject = `TST Coverage request: ${dateDisplay} - ${payload.teacherName} - ${payload.period}`;
+  const adminBody = `
+    <p>You requested coverage from <strong>${payload.teacherName}</strong>.</p>
+    <div style="background-color: #f3f4f6; padding: 15px; border-radius: 6px; margin: 10px 0;">
+      <p style="margin: 5px 0;"><strong>Date:</strong> ${dateDisplay}</p>
+      <p style="margin: 5px 0;"><strong>Period:</strong> ${payload.period}</p>
+      <p style="margin: 5px 0;"><strong>Covering For:</strong> ${payload.subbedFor}</p>
+    </div>
+    <p>This email serves as a record of your request. You will receive another notification if they accept or decline.</p>
+  `;
+
+  MailApp.sendEmail({
+    to: adminEmail,
+    subject: adminSubject,
+    htmlBody: adminBody
+  });
 }
 
 function handleCoverageAccept(p) {
