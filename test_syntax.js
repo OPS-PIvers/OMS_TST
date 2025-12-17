@@ -1,3 +1,69 @@
+// --- CONFIGURATION ---
+
+const BUILDING_CONFIG = {
+  'OMS': {
+    name: 'Orono Middle School',
+    scheduleType: 'periods',
+    periods: [
+      "Period 1 - 8:10 - 8:57",
+      "Period 2 - 9:01 - 9:48",
+      "Period 3 - 9:52 - 10:39",
+      "Period 4 - 10:43 - 11:09",
+      "Period 5 - 11:11 - 11:37",
+      "Period 4/5 - 10:30 - 11:37",
+      "Period 6 - 11:40 - 12:06",
+      "Period 7 - 12:08 - 12:34",
+      "Period 6/7 - 11:40 - 12:34",
+      "Period 8 - 12:37 - 1:08",
+      "Period 9 - 1:12 - 1:59",
+      "Period 10 - 2:03 - 2:50"
+    ],
+    coverageTypes: [
+      { label: 'Full Period', value: 1 },
+      { label: 'Half Period', value: 0.5 }
+    ],
+    // Special rules can be defined here if needed, e.g. "Period 6/7 is always 0.5"
+    // The frontend currently handles simple selection. We can enforce rules in validation.
+  },
+  'OHS': {
+    name: 'Orono High School',
+    scheduleType: 'periods',
+    periods: [
+      "Period 1",
+      "Period 2",
+      "Period 3",
+      "Period 4"
+      // Add more as known or generic
+    ],
+    coverageTypes: [
+      { label: 'Full Period', value: 1 }
+    ]
+  },
+  'OIS': {
+    name: 'Orono Intermediate School',
+    scheduleType: 'time_range',
+    increment: 15,
+    coverageTypes: [
+      { label: 'Time Duration', value: 'custom' }
+    ]
+  },
+  'SES': {
+    name: 'Schumann Elementary School',
+    scheduleType: 'time_range',
+    increment: 15,
+    coverageTypes: [
+      { label: 'Time Duration', value: 'custom' }
+    ]
+  }
+};
+
+/**
+ * Helper to get building config.
+ * Defaults to OMS if not found.
+ */
+function getBuildingConfig(buildingCode) {
+  return BUILDING_CONFIG[buildingCode] || BUILDING_CONFIG['OMS'];
+}
 /**
  * Serves the HTML file or handles email actions.
  */
@@ -23,12 +89,12 @@ function getInitialData() {
   const userEmail = Session.getActiveUser().getEmail();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const staffSheet = ss.getSheetByName('Staff Directory');
-  
+
   if (!staffSheet) throw new Error("Sheet 'Staff Directory' not found.");
-  
+
   const data = staffSheet.getDataRange().getValues();
   const headers = data.shift(); // Remove headers
-  
+
   // Dynamic Header Lookup
   const emailIdx = headers.findIndex(h => h.toString().toLowerCase().includes('email'));
   const nameIdx = headers.findIndex(h => h.toString().toLowerCase().includes('name'));
@@ -45,10 +111,10 @@ function getInitialData() {
   let currentUserRole = 'None';
   let currentUserName = '';
   let currentUserBuilding = 'OMS'; // Default
-  
+
   // Find current user in directory
   const userRow = data.find(r => r[safeEmailIdx].toString().toLowerCase() === userEmail.toLowerCase());
-  
+
   if (userRow) {
     currentUserName = userRow[safeNameIdx];
     currentUserRole = userRow[safeRoleIdx];
@@ -57,7 +123,7 @@ function getInitialData() {
       currentUserBuilding = userRow[safeBuildingIdx];
     }
   } else {
-    currentUserRole = 'Guest'; 
+    currentUserRole = 'Guest';
   }
 
   // Super Admin Logic: Check for special role or override
@@ -80,21 +146,21 @@ function getInitialData() {
  */
 function getDashboardCounts() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  
+
   // Earned
   const earnedSheet = ss.getSheetByName('TST Approvals (New)');
   const earnedData = earnedSheet.getDataRange().getValues();
   earnedData.shift(); // Remove header
   // Filter: Not Approved (8/I=false) AND Not Denied (10/K=false)
   const earnedCount = earnedData.filter(r => r[8] !== true && r[8] !== "TRUE" && r[10] !== true && r[10] !== "TRUE" && r[0] !== "").length;
-  
+
   // Used
   const usedSheet = ss.getSheetByName('TST Usage (New)');
   const usedData = usedSheet.getDataRange().getValues();
   usedData.shift();
   // Filter: Not Approved (4/E=false)
   const usedCount = usedData.filter(r => (r[4] === false || r[4] === "" || r[4] === "FALSE") && r[0] !== "").length;
-  
+
   return { earned: earnedCount, used: usedCount };
 }
 
@@ -105,7 +171,7 @@ function batchApproveEarned(indices) {
   if (!indices || !Array.isArray(indices)) return;
   // Sort descending just in case, though for updates it matters less than deletes
   indices.sort((a, b) => b - a);
-  
+
   indices.forEach(idx => {
     approveEarnedRow(idx, { send: false }); // No email for batch
   });
@@ -118,7 +184,7 @@ function batchApproveEarned(indices) {
 function batchDenyEarned(indices) {
   if (!indices || !Array.isArray(indices)) return;
   indices.sort((a, b) => b - a);
-  
+
   indices.forEach(idx => {
     denyEarnedRow(idx, { send: false }); // No email, no specific reason
   });
@@ -131,7 +197,7 @@ function batchDenyEarned(indices) {
 function batchApproveUsed(indices) {
   if (!indices || !Array.isArray(indices)) return;
   indices.sort((a, b) => b - a);
-  
+
   indices.forEach(idx => {
     approveUsedRow(idx);
   });
@@ -146,7 +212,7 @@ function batchDeleteUsed(indices) {
   if (!indices || !Array.isArray(indices)) return;
   // Critical: Sort descending
   indices.sort((a, b) => b - a);
-  
+
   indices.forEach(idx => {
     deleteUsedRow(idx);
   });
@@ -161,7 +227,7 @@ function getStaffDirectoryData() {
   const sheet = ss.getSheetByName('Staff Directory');
   const data = sheet.getDataRange().getValues();
   const headers = data.shift();
-  
+
   // Dynamic Header Lookup
   const nameIdx = headers.findIndex(h => h.toString().toLowerCase().includes('name'));
   const emailIdx = headers.findIndex(h => h.toString().toLowerCase().includes('email'));
@@ -221,10 +287,10 @@ function getPendingEarned(buildingFilter) {
   const sheet = ss.getSheetByName('TST Approvals (New)');
   const data = sheet.getDataRange().getValues();
   const headers = data.shift();
-  
+
   // Col I (Index 8) = Approved Status
   // Col K (Index 10) = Denied Status (New)
-  
+
   return data.map((r, i) => {
     const email = r[0];
     const userBuilding = staffBuildingMap[email.toLowerCase()] || 'OMS'; // Default
@@ -272,7 +338,7 @@ function getPendingUsed(buildingFilter) {
   const sheet = ss.getSheetByName('TST Usage (New)');
   const data = sheet.getDataRange().getValues();
   const headers = data.shift();
-  
+
   // Filter for Checkbox (Col E / Index 4) == false AND has data
   return data.map((r, i) => {
     const email = r[0];
@@ -577,9 +643,9 @@ function deleteApprovedUsed(rowIndex) {
 function approveEarnedRow(rowIndex, emailData) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Approvals (New)');
-  
+
   // Get data for email BEFORE updating
-  // Row Index is 1-based. 
+  // Row Index is 1-based.
   // Cols: A=Email(1), B=Name(2), C=SubbedFor(3), E=Date(5), F=Period(6), H=Hours(8)
   const range = sheet.getRange(rowIndex, 1, 1, 8);
   const values = range.getValues()[0];
@@ -593,13 +659,13 @@ function approveEarnedRow(rowIndex, emailData) {
   };
 
   // Col I (9) is Approved Status, Col J (10) is Timestamp
-  // Col K (11) is Denied Status. 
-  // Safety: Ensure Denied is FALSE if we are Approving. 
-  
+  // Col K (11) is Denied Status.
+  // Safety: Ensure Denied is FALSE if we are Approving.
+
   sheet.getRange(rowIndex, 9).setValue(true);   // Set Approved = TRUE
   sheet.getRange(rowIndex, 10).setValue(new Date()); // Set Approved Timestamp
   sheet.getRange(rowIndex, 11).setValue(false); // Set Denied = FALSE (Safety)
-  
+
   // Send Email if requested
   if (emailData && emailData.send) {
     const formattedDate = new Date(rowData.date).toLocaleDateString();
@@ -615,7 +681,7 @@ function approveEarnedRow(rowIndex, emailData) {
     `;
     sendStyledEmail(rowData.email, subject, "Your TST Request was Approved!", body, "Visit the TST Portal");
   }
-  
+
   return true;
 }
 
@@ -625,7 +691,7 @@ function approveEarnedRow(rowIndex, emailData) {
 function denyEarnedRow(rowIndex, emailData) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Approvals (New)');
-  
+
   // Get data for email
   const range = sheet.getRange(rowIndex, 1, 1, 8);
   const values = range.getValues()[0];
@@ -640,11 +706,11 @@ function denyEarnedRow(rowIndex, emailData) {
 
   // Col I (9) is Approved Status
   // Col K (11) is Denied Status, Col L (12) is Denied Timestamp
-  
+
   sheet.getRange(rowIndex, 9).setValue(false);  // Set Approved = FALSE (Safety)
   sheet.getRange(rowIndex, 11).setValue(true);  // Set Denied = TRUE
   sheet.getRange(rowIndex, 12).setValue(new Date()); // Set Denied Timestamp
-  
+
   // Save Denial Reason (Col M/13)
   let denialReason = "";
   if (emailData) {
@@ -656,16 +722,16 @@ function denyEarnedRow(rowIndex, emailData) {
     }
   }
   sheet.getRange(rowIndex, 13).setValue(denialReason);
-  
+
   // Send Email if requested
   if (emailData && emailData.send) {
     const formattedDate = new Date(rowData.date).toLocaleDateString();
     const subject = `TST Request for ${formattedDate} has been Denied`;
-    
+
     let reasonsHtml = "";
     if (emailData.reasons && emailData.reasons.length > 0) {
-      reasonsHtml = `<ul style="margin: 10px 0; padding-left: 20px; color: #b91c1c;">` + 
-        emailData.reasons.map(r => `<li>${r}</li>`).join('') + 
+      reasonsHtml = `<ul style="margin: 10px 0; padding-left: 20px; color: #b91c1c;">` +
+        emailData.reasons.map(r => `<li>${r}</li>`).join('') +
         `</ul>`;
     }
 
@@ -673,7 +739,7 @@ function denyEarnedRow(rowIndex, emailData) {
 
     const body = `
       <p>Your request has been processed and denied.</p>
-      
+
       <div style="background-color: #fef2f2; border-left: 4px solid #ef4444; padding: 15px; margin: 15px 0;">
         <p style="margin: 0; color: #991b1b; font-weight: bold;">Reason for Denial:</p>
         ${reasonsHtml}
@@ -688,10 +754,10 @@ function denyEarnedRow(rowIndex, emailData) {
 
       <p>Please review the details and resubmit if necessary, or contact the TST administrator.</p>
     `;
-    
+
     sendStyledEmail(rowData.email, subject, "TST Request Update", body, "Visit the TST Portal");
   }
-  
+
   return true;
 }
 
@@ -703,14 +769,14 @@ function deleteEarnedRow(rowIndex) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const approvalSheet = ss.getSheetByName('TST Approvals (New)');
   const formSheet = ss.getSheetByName('Form Responses 1');
-  
+
   // 1. Get details from Approval Sheet to find match
   // Indexes: 0=Email, 1=Name, 2=SubbedFor, 4=Date, 5=Period
   const rowValues = approvalSheet.getRange(rowIndex, 1, 1, 6).getValues()[0];
   const email = rowValues[0];
   const date = new Date(rowValues[4]);
   const period = rowValues[5];
-  
+
   // 2. Find and Delete in Form Responses 1
   const formData = formSheet.getDataRange().getValues();
   // Form Responses: Col B=Email (1), E=Date (4), F=Period (5)
@@ -718,23 +784,23 @@ function deleteEarnedRow(rowIndex) {
   for (let i = formData.length - 1; i >= 1; i--) { // Skip header
     const r = formData[i];
     const rDate = new Date(r[4]);
-    
+
     // Loose date comparison (checking year, month, day)
     const isDateMatch = rDate.getFullYear() === date.getFullYear() &&
                         rDate.getMonth() === date.getMonth() &&
                         rDate.getDate() === date.getDate();
-                        
+
     if (r[1] === email && isDateMatch && r[5] == period) {
        formSheet.deleteRow(i + 1);
        // We stop after first match? Or continue? usually one entry.
        // Let's break to be safe/efficient, assuming duplicates aren't common or handled elsewhere.
-       break; 
+       break;
     }
   }
 
   // 3. Delete from TST Approvals (New)
   approvalSheet.deleteRow(rowIndex);
-  
+
   return true;
 }
 
@@ -746,17 +812,17 @@ function updateEarnedRow(rowIndex, newData) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const approvalSheet = ss.getSheetByName('TST Approvals (New)');
   const formSheet = ss.getSheetByName('Form Responses 1');
-  
+
   // 1. Get OLD details to find match in Form Responses
   const rowValues = approvalSheet.getRange(rowIndex, 1, 1, 6).getValues()[0];
   const oldEmail = rowValues[0];
   const oldDate = new Date(rowValues[4]);
   const oldPeriod = rowValues[5];
-  
+
   // 2. Update Form Responses 1
   const formData = formSheet.getDataRange().getValues();
   let foundInForm = false;
-  
+
   for (let i = formData.length - 1; i >= 1; i--) {
     const r = formData[i];
     const rDate = new Date(r[4]);
@@ -768,7 +834,7 @@ function updateEarnedRow(rowIndex, newData) {
        // Found match. Update columns.
        // Form Responses: C=SubbedFor (2), E=Date (4), F=Period (5), G=AmountType (6), H=Decimal (7)
        // We don't update Timestamp or Email usually, but we could.
-       
+
        formSheet.getRange(i + 1, 3).setValue(newData.subbedFor);
        formSheet.getRange(i + 1, 5).setValue(newData.date);
        formSheet.getRange(i + 1, 6).setValue(newData.period);
@@ -831,7 +897,7 @@ function updateUsedRow(rowIndex, newData) {
 function submitUsage(formObj) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Usage (New)');
-  
+
   // Columns: A: Email, B: Name, C: Date, D: TST Used, E: Status, F: Timestamp, G: Notes
   sheet.appendRow([
     formObj.email,
@@ -851,11 +917,11 @@ function submitUsage(formObj) {
  */
 function submitEarned(formObj) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  
+
   // 1. Archive to Form Responses 1 (Keep as backup)
   const formSheet = ss.getSheetByName('Form Responses 1');
   const timestamp = new Date();
-  
+
   formSheet.appendRow([
     timestamp,
     formObj.email,
@@ -863,13 +929,13 @@ function submitEarned(formObj) {
     formObj.subbedForType === 'Other' ? 'Other' : '',    // Col D: 'Other' flag or empty
     formObj.date,
     formObj.period,
-    formObj.amountType, 
+    formObj.amountType,
     formObj.amountDecimal
   ]);
 
   // 2. Append to TST Approvals (New) - Decoupled
   const approvalSheet = ss.getSheetByName('TST Approvals (New)');
-  
+
   // Lookup Name from Staff Directory
   const staffSheet = ss.getSheetByName('Staff Directory');
   const staffData = staffSheet.getDataRange().getValues();
@@ -891,12 +957,12 @@ function submitEarned(formObj) {
     false,                            // K: Denied (Default False)
     ""                                // L: Denied TS
   ]);
-  
+
   return true;
 }
 
 /**
- * Admin Multi-Submit: Handles creating both Earned and Used records 
+ * Admin Multi-Submit: Handles creating both Earned and Used records
  * based on Admin input.
  */
 function adminSubmitRequest(data) {
@@ -932,7 +998,7 @@ function adminSubmitRequest(data) {
  */
 function processBatch(queue) {
   if (!Array.isArray(queue) || queue.length === 0) return;
-  
+
   queue.forEach(item => {
     try {
       if (item.type === 'earned') {
@@ -945,7 +1011,7 @@ function processBatch(queue) {
       // We continue processing others even if one fails
     }
   });
-  
+
   return true;
 }
 
@@ -954,10 +1020,10 @@ function processBatch(queue) {
  */
 function sendBatchStatusEmails(emails) {
   if (!emails || !Array.isArray(emails)) throw new Error("Invalid email list.");
-  
+
   let successCount = 0;
   let failCount = 0;
-  
+
   const staffDir = getStaffDirectoryData();
 
   emails.forEach(email => {
@@ -984,20 +1050,20 @@ function sendBatchStatusEmails(emails) {
 function sendStatusEmail(targetEmail, targetName) {
   const history = getTeacherHistory(targetEmail);
   const staff = getStaffDirectoryData().find(s => s.email.toLowerCase() === targetEmail.toLowerCase());
-  
+
   if (!staff) throw new Error("Staff member not found.");
-  
+
   const balance = Number(staff.total).toFixed(2);
-  
+
   // Summary Section
   let htmlContent = `
     <div style="background-color: #eff6ff; border-radius: 6px; padding: 20px; margin-bottom: 25px; border-left: 4px solid #3b82f6;">
       <p style="margin: 0; color: #1e40af; font-size: 14px; text-transform: uppercase; font-weight: 600;">Current Balance</p>
       <p style="margin: 5px 0 0 0; color: #1e3a8a; font-size: 32px; font-weight: 700;">${balance} <span style="font-size: 16px; font-weight: 500;">hours</span></p>
     </div>
-    
+
     <h3 style="color: #374151; font-size: 18px; margin-bottom: 15px; border-bottom: 1px solid #e5e7eb; padding-bottom: 10px;">Activity History</h3>
-    
+
     <table cellpadding="0" cellspacing="0" style="width: 100%; border-collapse: collapse; font-size: 14px;">
       <thead>
         <tr style="background-color: #f9fafb;">
@@ -1007,7 +1073,7 @@ function sendStatusEmail(targetEmail, targetName) {
         </tr>
       </thead>
       <tbody>`;
-      
+
   if (history.length === 0) {
     htmlContent += `
       <tr>
@@ -1021,7 +1087,7 @@ function sendStatusEmail(targetEmail, targetName) {
       let typeLabel = '';
       let details = '';
       let amountDisplay = '';
-      
+
       if (h.type === 'Earned') {
         amountStyle += 'color: #059669;'; // Green
         amountDisplay = `+${h.amount}`;
@@ -1041,7 +1107,7 @@ function sendStatusEmail(targetEmail, targetName) {
           details += `: ${h.denialReason}`;
         }
       }
-      
+
       htmlContent += `
         <tr>
           <td style="padding: 12px 10px; border-bottom: 1px solid #f3f4f6; vertical-align: top; color: #4b5563;">
@@ -1057,16 +1123,16 @@ function sendStatusEmail(targetEmail, targetName) {
         </tr>`;
     });
   }
-  
+
   htmlContent += `
       </tbody>
     </table>
-    
+
     <p style="margin-top: 25px; font-size: 13px; color: #6b7280; text-align: center;">
       This report was generated automatically on ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}.
     </p>
   `;
-  
+
   sendStyledEmail(
     targetEmail,
     "Your TST Hours Report",
@@ -1074,7 +1140,7 @@ function sendStatusEmail(targetEmail, targetName) {
     htmlContent,
     "View Dashboard"
   );
-  
+
   return true;
 }
 
@@ -1085,16 +1151,16 @@ function sendStatusEmail(targetEmail, targetName) {
  */
 function onFormSubmit(e) {
   if (!e || !e.values) return; // Safety check
-  
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const approvalSheet = ss.getSheetByName('TST Approvals (New)');
   const staffSheet = ss.getSheetByName('Staff Directory');
-  
+
   // Parse Form Data (Array indices based on Form Responses 1 columns)
   // [0] Timestamp, [1] Email, [2] SubbedFor, [3] Other, [4] Date, [5] Period, [6] Type, [7] Decimal
   const email = e.values[1];
   let subbedFor = e.values[2];
-  
+
   // Clean Subbed For Name (Remove Titles for Legacy Form compatibility)
   if (subbedFor) {
     subbedFor = subbedFor.replace(/^(Mr\.|Ms\.|Mrs\.|Miss|Dr\.)\s*/i, "").trim();
@@ -1105,7 +1171,7 @@ function onFormSubmit(e) {
   const period = e.values[5];
   const amountType = e.values[6];
   const amountDecimal = e.values[7];
-  
+
   // Lookup Name
   const staffData = staffSheet.getDataRange().getValues();
   const staffRow = staffData.find(r => r[1].toString().toLowerCase() === email.toString().toLowerCase());
@@ -1133,7 +1199,7 @@ function onFormSubmit(e) {
  */
 function sendStyledEmail(recipient, subject, title, contentHtml, buttonText) {
   const appUrl = ScriptApp.getService().getUrl();
-  
+
   const htmlTemplate = `
     <!DOCTYPE html>
     <html>
@@ -1142,41 +1208,41 @@ function sendStyledEmail(recipient, subject, title, contentHtml, buttonText) {
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <title>${subject}</title>
       <style>
-        body { 
-          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-          background-color: #f3f4f6; 
-          margin: 0; 
-          padding: 0; 
+        body {
+          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+          background-color: #f3f4f6;
+          margin: 0;
+          padding: 0;
           color: #333333;
           -webkit-text-size-adjust: 100%;
           -ms-text-size-adjust: 100%;
         }
-        .container { 
-          max-width: 600px; 
-          margin: 40px auto; 
-          background-color: #ffffff; 
+        .container {
+          max-width: 600px;
+          margin: 40px auto;
+          background-color: #ffffff;
           border-radius: 8px;
           overflow: hidden;
           box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         }
-        .header { 
-          background-color: #2d3f89; 
-          padding: 30px 20px; 
-          text-align: center; 
+        .header {
+          background-color: #2d3f89;
+          padding: 30px 20px;
+          text-align: center;
         }
-        .header h1 { 
-          color: #ffffff; 
-          margin: 0; 
-          font-size: 24px; 
+        .header h1 {
+          color: #ffffff;
+          margin: 0;
+          font-size: 24px;
           font-weight: 600;
           letter-spacing: 0.5px;
         }
-        .content { 
-          padding: 40px 30px; 
-          line-height: 1.6; 
+        .content {
+          padding: 40px 30px;
+          line-height: 1.6;
         }
         .content h2 {
-          color: #2d3f89; 
+          color: #2d3f89;
           margin-top: 0;
           margin-bottom: 20px;
           font-size: 22px;
@@ -1188,26 +1254,26 @@ function sendStyledEmail(recipient, subject, title, contentHtml, buttonText) {
           margin-top: 30px;
           margin-bottom: 10px;
         }
-        .button { 
-          display: inline-block; 
-          background-color: #2d3f89; 
-          color: #ffffff !important; 
-          padding: 14px 28px; 
-          text-decoration: none; 
-          border-radius: 6px; 
-          font-weight: bold; 
+        .button {
+          display: inline-block;
+          background-color: #2d3f89;
+          color: #ffffff !important;
+          padding: 14px 28px;
+          text-decoration: none;
+          border-radius: 6px;
+          font-weight: bold;
           font-size: 16px;
           transition: background-color 0.3s;
         }
         .button:hover {
           background-color: #1d2a5d;
         }
-        .footer { 
-          background-color: #f9fafb; 
-          padding: 20px; 
-          text-align: center; 
-          font-size: 12px; 
-          color: #6b7280; 
+        .footer {
+          background-color: #f9fafb;
+          padding: 20px;
+          text-align: center;
+          font-size: 12px;
+          color: #6b7280;
           border-top: 1px solid #e5e7eb;
         }
         @media only screen and (max-width: 600px) {
@@ -1236,7 +1302,7 @@ function sendStyledEmail(recipient, subject, title, contentHtml, buttonText) {
     </body>
     </html>
   `;
-  
+
   MailApp.sendEmail({
     to: recipient,
     subject: subject,
@@ -1272,7 +1338,7 @@ function getScheduleData(buildingFilter) {
 
   // 1. Calculate Hours per Teacher per Month
   const hoursMap = calculateMonthlyHours(); // Returns { "email_Month": hours }
-  
+
   // 2. Get Pending Requests Map
   const pendingMap = getPendingEarnedMap();
 
@@ -1304,7 +1370,7 @@ function getScheduleData(buildingFilter) {
 function getPendingEarnedMap() {
   const pendingList = getPendingEarned(); // Reuse existing function
   const map = {};
-  
+
   pendingList.forEach(item => {
     if (!map[item.email]) {
       map[item.email] = [];
@@ -1316,7 +1382,7 @@ function getPendingEarnedMap() {
       period: item.period
     });
   });
-  
+
   return map;
 }
 
@@ -1333,11 +1399,11 @@ function calculateMonthlyHours() {
   const today = new Date();
   const currentMonth = today.getMonth(); // 0-11
   const currentYear = today.getFullYear();
-  
+
   // School Year Start Year: If Month >= 7 (Aug), Start = Year. Else Start = Year - 1.
   const startYear = currentMonth >= 7 ? currentYear : currentYear - 1;
   const endYear = startYear + 1;
-  
+
   const schoolYearStart = new Date(startYear, 7, 1); // Aug 1
   const schoolYearEnd = new Date(endYear, 6, 30); // July 30
 
@@ -1345,7 +1411,7 @@ function calculateMonthlyHours() {
     const email = row[0];
     const date = new Date(row[4]);
     const hours = Number(row[7]);
-    
+
     // Check if within current school year
     if (date >= schoolYearStart && date <= schoolYearEnd) {
       const mName = monthNames[date.getMonth()];
@@ -1368,7 +1434,7 @@ function saveAvailability(month, availabilityList) {
 
   const sheet = ss.getSheetByName('TST Availability');
   const data = sheet.getDataRange().getValues();
-  
+
   // 1. Remove existing rows for this user + month
   // We loop backwards to delete
   for (let i = data.length - 1; i >= 1; i--) {
@@ -1388,7 +1454,7 @@ function sendCoverageRequest(payload) {
   // payload: { teacherEmail, teacherName, subbedFor, date, period, amount, amountType }
   const scriptUrl = ScriptApp.getService().getUrl();
   const adminEmail = Session.getActiveUser().getEmail();
-  
+
   // Encode params safely
   const params = [
     `action=accept`,
@@ -1401,12 +1467,12 @@ function sendCoverageRequest(payload) {
     `type=${encodeURIComponent(payload.amountType)}`,
     `adm=${encodeURIComponent(adminEmail)}`
   ].join('&');
-  
+
   const acceptLink = `${scriptUrl}?${params}`;
   const rejectLink = `${scriptUrl}?action=reject&tName=${encodeURIComponent(payload.teacherName)}&sub=${encodeURIComponent(payload.subbedFor)}&pd=${encodeURIComponent(payload.period)}&adm=${encodeURIComponent(adminEmail)}`;
 
   const subject = `TST Coverage Request: ${payload.date} - ${payload.period}`;
-  
+
   // Parse YYYY-MM-DD to MM/DD/YYYY manually to avoid timezone shifts
   const [y, m, d] = payload.date.split('-');
   const dateDisplay = `${m}/${d}/${y}`;
@@ -1416,7 +1482,7 @@ function sendCoverageRequest(payload) {
       <h2 style="color: #2d3f89; margin-top: 0;">TST Coverage Request</h2>
       <p>Hello <strong>${payload.teacherName}</strong>,</p>
       <p>Can you provide sub coverage?</p>
-      
+
       <div style="background-color: #f3f4f6; padding: 15px; border-radius: 6px; margin: 20px 0;">
         <p style="margin: 5px 0;"><strong>Date:</strong> ${dateDisplay}</p>
         <p style="margin: 5px 0;"><strong>Period:</strong> ${payload.period}</p>
@@ -1428,7 +1494,7 @@ function sendCoverageRequest(payload) {
          <a href="${acceptLink}" style="background-color: #2d3f89; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold; margin-right: 10px;">Accept & Earn</a>
          <a href="${rejectLink}" style="background-color: #ad2122; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold;">Decline</a>
       </div>
-      
+
       <p style="font-size: 12px; color: #6b7280; text-align: center;">Clicking submit will automatically submit the TST form on your behalf.</p>
     </div>
   `;
@@ -1465,10 +1531,10 @@ function handleCoverageAccept(p) {
     amountType: p.type,
     amountDecimal: parseFloat(p.amt)
   };
-  
+
   // Reuse submit logic
   submitEarned(formObj);
-  
+
   // Notify Admin of Acceptance
   if (p.adm) {
     const emailBody = `
@@ -1480,10 +1546,10 @@ function handleCoverageAccept(p) {
       </div>
       <p>A pending earned request has been automatically created.</p>
     `;
-    
+
     sendStyledEmail(p.adm, `TST Coverage Accepted: ${p.tName}`, "Coverage Confirmed", emailBody, "View Dashboard");
   }
-  
+
   let appUrl = ScriptApp.getService().getUrl();
   // Sanitize: Remove query params if present
   if (appUrl && appUrl.includes('?')) {
@@ -1531,7 +1597,7 @@ function handleCoverageAccept(p) {
         <div class="content">
           <h2 class="title">Coverage Confirmed!</h2>
           <p class="subtitle">Thank you, <strong>${p.tName}</strong>. Your request has been successfully processed.</p>
-          
+
           <div class="details-box">
             <div class="detail-row"><span class="label">Date:</span> ${dateDisplay}</div>
             <div class="detail-row"><span class="label">Period:</span> ${p.pd}</div>
@@ -1545,7 +1611,7 @@ function handleCoverageAccept(p) {
     </body>
     </html>
   `;
-  
+
   return HtmlService.createHtmlOutput(html)
       .setTitle('Coverage Confirmed')
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
@@ -1555,7 +1621,7 @@ function handleCoverageReject(p) {
   // Notify Admin
   const emailBody = `
     <p>Teacher <strong>${p.tName}</strong> has <span style="color: #ad2122; font-weight: bold;">declined</span> the coverage request for <strong>${p.sub}</strong>.</p>
-    
+
     <div style="background-color: #fef2f2; border-left: 4px solid #ef4444; padding: 15px; margin: 15px 0;">
        <p style="margin: 0; color: #991b1b; font-weight: bold;">Declined Request</p>
        <p style="margin: 5px 0 0 0; color: #7f1d1d;">Period: ${p.pd || 'Not specified'}</p>
@@ -1565,7 +1631,7 @@ function handleCoverageReject(p) {
   `;
 
   sendStyledEmail(p.adm, `TST Request Declined: ${p.tName}`, "Coverage Declined", emailBody, "Find Replacement");
-  
+
   return HtmlService.createHtmlOutput(`
     <div style="font-family: sans-serif; text-align: center; padding: 50px;">
       <h1 style="color: #ef4444;">Request Declined</h1>
@@ -1585,7 +1651,7 @@ function updateSchedulePeriod(month, period, dayUpdates) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Availability');
   const staffSheet = ss.getSheetByName('Staff Directory');
-  
+
   // 1. Get all staff map for name lookup (Email -> Name)
   const staffData = staffSheet.getDataRange().getValues();
   staffData.shift(); // Header
@@ -1597,12 +1663,12 @@ function updateSchedulePeriod(month, period, dayUpdates) {
   // 2. Get current availability data
   const range = sheet.getDataRange();
   const data = range.getValues();
-  
+
   // 3. Identify rows to delete (Matching Month + Period)
   // We will rebuild rows for this Month+Period context to ensure clean state.
   // Note: This deletes ALL entries for this Period in this Month and recreates them.
   // This is safer than trying to diff row-by-row for multi-day entries.
-  
+
   const rowsToDelete = [];
   for (let i = data.length - 1; i >= 1; i--) {
     // Cols: A=Month, C=Period
@@ -1610,18 +1676,18 @@ function updateSchedulePeriod(month, period, dayUpdates) {
       rowsToDelete.push(i + 1); // 1-based index
     }
   }
-  
-  // Batch delete is hard in Apps Script (indexes shift). 
+
+  // Batch delete is hard in Apps Script (indexes shift).
   // Strategy: Clear content of rows, then sort/filter? No.
   // Strategy: Delete from bottom up.
   rowsToDelete.forEach(idx => sheet.deleteRow(idx));
 
   // 4. Rebuild Rows from dayUpdates
   // dayUpdates format: { "Mon": ["a@b.com", "c@d.com"], "Tue": ["a@b.com"] }
-  // We want to group by Teacher to create multi-day rows if possible, 
+  // We want to group by Teacher to create multi-day rows if possible,
   // OR just create single-day rows for simplicity?
   // The existing system seems to support "Mon,Tue" (comma separated).
-  
+
   // Invert the map: TeacherEmail -> Set(Days)
   const teacherDays = {};
   Object.keys(dayUpdates).forEach(day => {
@@ -1638,7 +1704,7 @@ function updateSchedulePeriod(month, period, dayUpdates) {
   Object.keys(teacherDays).forEach(email => {
     const days = Array.from(teacherDays[email]).sort().join(','); // "Mon,Tue"
     const name = staffMap[email] || email; // Fallback to email if name not found
-    
+
     // Cols: Month, Day(s), Period, Name, Email, Hours(empty)
     newRows.push([month, days, period, name, email, ""]);
   });
@@ -1646,6 +1712,6 @@ function updateSchedulePeriod(month, period, dayUpdates) {
   if (newRows.length > 0) {
     sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, newRows[0].length).setValues(newRows);
   }
-  
+
   return true;
 }

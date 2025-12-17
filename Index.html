@@ -279,25 +279,17 @@
     let STATE = {
       user: null, 
       currentTab: null,
-      dataCache: {}
+      dataCache: {},
+      building: null, // Current active building code
+      config: null    // Loaded from server
     };
     
     // --- Constants & Helpers ---
     function getPeriodOptions(selectedVal) {
-      const periods = [
-        "Period 1 - 8:10 - 8:57",
-        "Period 2 - 9:01 - 9:48",
-        "Period 3 - 9:52 - 10:39",
-        "Period 4 - 10:43 - 11:09",
-        "Period 5 - 11:11 - 11:37",
-        "Period 4/5 - 10:30 - 11:37",
-        "Period 6 - 11:40 - 12:06",
-        "Period 7 - 12:08 - 12:34",
-        "Period 6/7 - 11:40 - 12:34",
-        "Period 8 - 12:37 - 1:08",
-        "Period 9 - 1:12 - 1:59",
-        "Period 10 - 2:03 - 2:50"
-      ];
+      // Use periods from Config based on current building
+      const buildingConf = STATE.config[STATE.building] || STATE.config['OMS'];
+      const periods = buildingConf.periods || [];
+
       return periods.map(p => {
         // Attempt to match exact string OR legacy short number (e.g. "1" matches "Period 1...")
         // We look for "Period {selectedVal} " at the start.
@@ -316,17 +308,18 @@
 
     function initApp(data) {
       STATE.user = data;
+      STATE.config = data.config;
+      STATE.building = data.building || 'OMS'; // Default to OMS
+
       document.getElementById('app-loading').classList.add('hidden');
       document.getElementById('app-container').classList.remove('hidden');
       
-      document.getElementById('user-info').innerHTML = `
-        <span class="block font-medium">${data.name}</span>
-        <span class="text-xs opacity-75">${data.role}</span>
-      `;
+      updateUserInfo();
 
       renderNav();
       
-      if (data.role === 'Admin') {
+      // Allow Admin or Super Admin to access Admin view
+      if (data.role === 'Admin' || data.role === 'Super Admin' || data.isSuperAdmin) {
         document.getElementById('admin-add-btn').classList.remove('hidden');
         switchTab('admin-earned');
         updateBadges(); // Fetch initial counts
@@ -339,6 +332,45 @@
             <p>Your email is not listed in the Staff Directory.</p>
           </div>`;
       }
+    }
+
+    function updateUserInfo() {
+      // Add Building Switcher if Super Admin
+      let switcherHtml = '';
+      if (STATE.user.isSuperAdmin) {
+        const options = Object.keys(STATE.config).map(code =>
+           `<option value="${code}" ${code === STATE.building ? 'selected' : ''}>${STATE.config[code].name}</option>`
+        ).join('');
+        switcherHtml = `
+          <select onchange="switchBuilding(this.value)" class="mt-1 block w-full text-xs text-black rounded border-gray-300 py-1 px-2">
+            ${options}
+          </select>
+        `;
+      } else {
+        const bName = STATE.config[STATE.building] ? STATE.config[STATE.building].name : STATE.building;
+        switcherHtml = `<span class="text-xs opacity-75 block">${bName}</span>`;
+      }
+
+      document.getElementById('user-info').innerHTML = `
+        <span class="block font-medium">${STATE.user.name}</span>
+        <span class="text-xs opacity-75 block">${STATE.user.role}</span>
+        ${switcherHtml}
+      `;
+
+      // Update Branding Title
+      const bConfig = STATE.config[STATE.building];
+      if (bConfig) {
+         document.querySelector('nav .font-bold.text-xl').innerText = bConfig.name;
+      }
+    }
+
+    function switchBuilding(newCode) {
+       STATE.building = newCode;
+       updateUserInfo(); // Update Title
+       // Reload current tab with new context
+       if (STATE.currentTab) {
+          switchTab(STATE.currentTab);
+       }
     }
 
     function updateBadges() {
@@ -372,7 +404,9 @@
       const navContainer = document.getElementById('nav-tabs');
       let tabs = [];
 
-      if (STATE.user.role === 'Admin') {
+      const isAdmin = STATE.user.role === 'Admin' || STATE.user.role === 'Super Admin' || STATE.user.isSuperAdmin;
+
+      if (isAdmin) {
         tabs = [
           { id: 'admin-earned', label: 'TST Earned', sub: 'Pending', icon: 'fa-inbox' },
           { id: 'admin-used', label: 'TST Used', sub: 'Pending', icon: 'fa-hand-holding-usd' },
@@ -494,7 +528,7 @@
         STATE.pendingEarned = data; 
         updateBadges(); 
         renderEarnedTable();
-      }).getPendingEarned();
+      }).getPendingEarned(STATE.building);
     }
     
     function renderEarnedTable() {
@@ -605,7 +639,7 @@
         STATE.pendingUsed = data; 
         updateBadges(); 
         renderUsedTable();
-      }).getPendingUsed();
+      }).getPendingUsed(STATE.building);
     }
     
     function renderUsedTable() {
@@ -955,6 +989,50 @@
 
     function renderTeacherSubmit() {
       const staffOptions = STATE.user.staffData.map(s => `<option value="${s.name}">${s.name}</option>`).join('');
+      const bConfig = STATE.config[STATE.building];
+      const isPeriods = bConfig.scheduleType === 'periods';
+
+      let timeInputHtml = '';
+      if (isPeriods) {
+        timeInputHtml = `
+            <div>
+              <label class="block text-sm font-bold text-ops-gray-dark mb-2">Period</label>
+              <select name="period" class="block w-full rounded border-gray-300 p-2 border bg-gray-50 focus:border-ops-blue focus:ring focus:ring-ops-blue focus:ring-opacity-50">
+                ${getPeriodOptions()}
+              </select>
+            </div>`;
+      } else {
+        timeInputHtml = `
+            <div class="col-span-1">
+              <label class="block text-sm font-bold text-ops-gray-dark mb-2">Start Time</label>
+              <input type="time" name="startTime" required class="block w-full rounded border-gray-300 p-2 border">
+            </div>
+            <div class="col-span-1">
+              <label class="block text-sm font-bold text-ops-gray-dark mb-2">End Time</label>
+              <input type="time" name="endTime" required class="block w-full rounded border-gray-300 p-2 border">
+            </div>`;
+      }
+
+      let durationHtml = '';
+      if (isPeriods) {
+        durationHtml = `
+          <div class="mb-8">
+            <label class="block text-sm font-bold text-ops-gray-dark mb-2">Duration</label>
+            <div class="flex gap-4">
+               ${bConfig.coverageTypes.map((t, idx) => `
+                  <label class="flex-1 cursor-pointer">
+                    <input type="radio" name="duration" value="${t.value}" ${idx===0?'checked':''} class="peer sr-only">
+                    <div class="rounded-lg border border-gray-300 p-4 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
+                      <div class="font-bold">${t.label}</div>
+                    </div>
+                  </label>
+               `).join('')}
+            </div>
+          </div>`;
+      } else {
+        // For Time based, duration is calculated, so we just show a hint or hidden field
+        durationHtml = `<div class="mb-8 text-sm text-ops-gray"><i class="fas fa-info-circle mr-1"></i> Duration will be calculated automatically based on time range.</div>`;
+      }
       
       const html = `
         <div class="max-w-2xl mx-auto bg-white rounded-lg shadow-lg overflow-hidden border border-gray-200">
@@ -993,31 +1071,10 @@
                   <label class="block text-sm font-bold text-ops-gray-dark mb-2">Date</label>
                   <input type="date" name="date" required class="block w-full rounded border-gray-300 p-2 border focus:border-ops-blue focus:ring-1 focus:ring-ops-blue">
                 </div>
-                <div>
-                  <label class="block text-sm font-bold text-ops-gray-dark mb-2">Period</label>
-                  <select name="period" class="block w-full rounded border-gray-300 p-2 border bg-gray-50 focus:border-ops-blue focus:ring focus:ring-ops-blue focus:ring-opacity-50">
-                    ${getPeriodOptions('1')}
-                  </select>
-                </div>
+                ${timeInputHtml}
               </div>
 
-              <div class="mb-8">
-                <label class="block text-sm font-bold text-ops-gray-dark mb-2">Duration</label>
-                <div class="flex gap-4">
-                  <label class="flex-1 cursor-pointer">
-                    <input type="radio" name="duration" value="1" checked class="peer sr-only">
-                    <div class="rounded-lg border border-gray-300 p-4 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
-                      <div class="font-bold">Full Period</div>
-                    </div>
-                  </label>
-                  <label class="flex-1 cursor-pointer">
-                    <input type="radio" name="duration" value="0.5" class="peer sr-only">
-                    <div class="rounded-lg border border-gray-300 p-4 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
-                      <div class="font-bold">Half Period</div>
-                    </div>
-                  </label>
-                </div>
-              </div>
+              ${durationHtml}
 
               <button type="submit" class="w-full bg-ops-blue text-white font-bold py-3 px-4 rounded shadow hover:bg-ops-blue-dark transition transform active:scale-95 uppercase tracking-wide">
                 Submit Request
@@ -1225,15 +1282,47 @@
       e.preventDefault();
       const form = e.target;
       const isOther = form.querySelector('#t-sub-type').value === 'Other';
+      const bConfig = STATE.config[STATE.building];
       
+      let period = "";
+      let amountDecimal = 0;
+      let amountType = "";
+
+      if (bConfig.scheduleType === 'periods') {
+         period = form.period.value;
+         amountDecimal = parseFloat(form.duration.value);
+         // Find label for this value
+         const typeObj = bConfig.coverageTypes.find(t => t.value == amountDecimal);
+         amountType = typeObj ? typeObj.label : (amountDecimal === 1 ? 'Full Period' : 'Half Period');
+      } else {
+         // Time Range Calculation
+         const start = form.startTime.value;
+         const end = form.endTime.value;
+         period = `${start} - ${end}`;
+
+         // Calculate diff in hours
+         const d1 = new Date(`2000-01-01T${start}`);
+         const d2 = new Date(`2000-01-01T${end}`);
+         const diffMs = d2 - d1;
+         const diffHrs = diffMs / (1000 * 60 * 60);
+
+         if (diffHrs <= 0) {
+           showToast("End time must be after start time.", "error");
+           return;
+         }
+
+         amountDecimal = Number(diffHrs.toFixed(2));
+         amountType = "Time Range";
+      }
+
       const payload = {
         email: STATE.user.email,
         subbedForType: isOther ? 'Other' : 'Staff',
         subbedForName: isOther ? form.subbedNameManual.value : form.subbedNameDropdown.value,
         date: form.date.value,
-        period: form.period.value,
-        amountType: form.duration.value == "1" ? "Full Period" : "Half Period",
-        amountDecimal: parseFloat(form.duration.value)
+        period: period,
+        amountType: amountType,
+        amountDecimal: amountDecimal
       };
 
       showLoading(true);
@@ -2318,35 +2407,41 @@
 
     const MONTHS = ["September", "October", "November", "December", "January", "February", "March", "April", "May", "June"];
     const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
-    const PERIODS = [
-        "Period 1 - 8:10 - 8:57",
-        "Period 2 - 9:01 - 9:48",
-        "Period 3 - 9:52 - 10:39",
-        "Period 4 - 10:43 - 11:09",
-        "Period 5 - 11:11 - 11:37",
-        "Period 4/5 - 10:30 - 11:37",
-        "Period 6 - 11:40 - 12:06",
-        "Period 7 - 12:08 - 12:34",
-        "Period 6/7 - 11:40 - 12:34",
-        "Period 8 - 12:37 - 1:08",
-        "Period 9 - 1:12 - 1:59",
-        "Period 10 - 2:03 - 2:50"
-    ];
+    // PERIODS are now dynamic via STATE.config[STATE.building].periods
+
+    function getPeriods() {
+      // If config not loaded yet, default empty
+      if(!STATE.config || !STATE.building) return [];
+
+      const bConfig = STATE.config[STATE.building];
+      if (bConfig.scheduleType === 'periods') {
+        return bConfig.periods;
+      } else {
+        // For Time Range schools, we need "Time Slots" or a single "Available" row?
+        // User said: "need to be able to select a teacher and enter starting/ending time"
+        // This implies the schedule view might just be "Available All Day" or specific blocks.
+        // For simplicity in the Grid View, let's just use a generic "Availability" row
+        // OR define standard blocks like "Morning", "Afternoon".
+        // Let's use generic slots for now or just one "Time Slot".
+        return ["Any Time", "Morning", "Afternoon"];
+      }
+    }
 
     function loadTeacherSchedule() {
        google.script.run.withSuccessHandler(data => {
          renderTeacherSchedule(data);
-       }).getScheduleData();
+       }).getScheduleData(STATE.building);
     }
 
     function renderTeacherSchedule(scheduleData) {
        const userEmail = STATE.user.email;
-       
+       const periods = getPeriods();
+
        const html = `
          <div class="max-w-4xl mx-auto space-y-4">
            <div class="bg-blue-50 border-l-4 border-ops-blue p-4 rounded mb-6">
              <h2 class="text-xl font-bold text-ops-blue-dark">My Availability</h2>
-             <p class="text-sm text-ops-gray-dark">Please indicate which periods you are willing to sub for each month.</p>
+             <p class="text-sm text-ops-gray-dark">Please indicate when you are willing to sub for each month.</p>
            </div>
            
            ${MONTHS.map((month, index) => {
@@ -2373,12 +2468,12 @@
                         <table class="min-w-full text-sm">
                           <thead>
                             <tr class="text-left text-ops-gray uppercase tracking-wider text-xs">
-                              <th class="pb-3 pl-2">Period</th>
+                              <th class="pb-3 pl-2">Time/Period</th>
                               ${DAYS.map(d => `<th class="pb-3 text-center w-16">${d}</th>`).join('')}
                             </tr>
                           </thead>
                           <tbody class="divide-y divide-gray-100">
-                            ${PERIODS.map(p => `
+                            ${periods.map(p => `
                               <tr>
                                 <td class="py-2 pl-2 font-medium text-gray-700">${p}</td>
                                 ${DAYS.map(d => {
@@ -2441,7 +2536,7 @@
          STATE.editingSchedule = null; // Reset edit state
          renderAdminSchedule();
          showLoading(false);
-       }).getScheduleData();
+       }).getScheduleData(STATE.building);
     }
 
     function renderAdminSchedule() {
@@ -2449,6 +2544,7 @@
        if (!scheduleData) return;
 
        if (!STATE.expandedMonths) STATE.expandedMonths = new Set();
+       const periods = getPeriods();
 
        const html = `
          <div class="space-y-4">
@@ -2462,7 +2558,7 @@
            ${MONTHS.map((month, index) => {
              // Build matrix: Period x Day -> [Teachers]
              const matrix = {};
-             PERIODS.forEach(p => {
+             periods.forEach(p => {
                matrix[p] = {};
                DAYS.forEach(d => matrix[p][d] = []);
              });
@@ -2470,6 +2566,7 @@
              (scheduleData[month] || []).forEach(entry => {
                const dayList = entry.days.split(',');
                dayList.forEach(day => {
+                 // Check if period still exists (config might have changed, or data is old)
                  if (matrix[entry.period] && matrix[entry.period][day]) {
                    matrix[entry.period][day].push(entry);
                  }
@@ -2505,7 +2602,7 @@
                         </tr>
                       </thead>
                       <tbody class="bg-white divide-y divide-gray-200">
-                        ${PERIODS.map((p, pIndex) => {
+                        ${periods.map((p, pIndex) => {
                           const isEditing = STATE.editingSchedule && STATE.editingSchedule.month === month && STATE.editingSchedule.period === p;
                           const rowBg = pIndex % 2 === 1 ? 'bg-gray-50' : 'bg-white';
                           
@@ -2554,7 +2651,7 @@
                                             class="w-full text-xs border border-blue-300 rounded px-2 py-1.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                             onkeyup="renderScheduleAutocomplete(this, '${d}', '${month}', '${p}')"
                                           >
-                                          <div class="hidden absolute z-50 w-full bg-white border border-gray-200 shadow-lg rounded mt-1 max-h-48 overflow-y-auto text-xs" id="ac-${month}-${p.replace(/\s/g,'')}-${d}"></div>
+                                          <div class="hidden absolute z-50 w-full bg-white border border-gray-200 shadow-lg rounded mt-1 max-h-48 overflow-y-auto text-xs" id="ac-${month}-${p.replace(/[^a-zA-Z0-9]/g,'')}-${d}"></div>
                                         </div>
                                       </td>
                                     `;
