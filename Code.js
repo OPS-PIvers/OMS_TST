@@ -1031,7 +1031,7 @@ function onFormSubmit(e) {
 
   // Handle legacy form submissions: calculate missing decimal value if needed
   // If amountDecimal is missing (Legacy Form), calculate it
-  if (!amountDecimal) {
+  if (amountDecimal == null || amountDecimal === '') {
     amountDecimal = calculatePeriods(period, amountType);
   }
 
