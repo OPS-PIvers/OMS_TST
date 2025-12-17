@@ -1029,7 +1029,7 @@ function onFormSubmit(e) {
   const staffRow = staffData.find(r => r[1].toString().toLowerCase() === email.toString().toLowerCase());
   const earnerName = staffRow ? staffRow[0] : email;
 
-  // Append to Approvals
+  // Handle legacy form submissions: calculate missing decimal value if needed
   // If amountDecimal is missing (Legacy Form), calculate it
   if (!amountDecimal) {
     amountDecimal = calculatePeriods(period, amountType);
