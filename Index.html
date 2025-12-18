@@ -533,8 +533,11 @@
 
     function renderSettingsForm(buildingCode) {
        const isSuper = STATE.user.isSuperAdmin;
-       const currentConfig = STATE.config[buildingCode] || {};
-       const jsonString = JSON.stringify(currentConfig, null, 2);
+       const config = STATE.config[buildingCode] || {};
+       
+       // Defaults
+       if(!config.periods) config.periods = [];
+       if(!config.coverageTypes) config.coverageTypes = [];
 
        let selectorHtml = '';
        if (isSuper) {
@@ -543,7 +546,7 @@
           ).join('');
           
           selectorHtml = `
-            <div class="mb-4">
+            <div class="mb-6">
                <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Select Building to Edit</label>
                <select id="settings-building-select" onchange="renderSettingsForm(this.value)" class="block w-full rounded border-gray-300 p-2 border bg-gray-50 focus:ring-ops-blue focus:border-ops-blue">
                  ${options}
@@ -552,38 +555,90 @@
           `;
        } else {
           selectorHtml = `
-             <div class="mb-4">
+             <div class="mb-6">
                <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Editing Configuration For</label>
-               <div class="p-2 bg-gray-100 rounded border border-gray-200 font-bold text-ops-gray-dark">${STATE.config[buildingCode].name} (${buildingCode})</div>
+               <div class="p-2 bg-gray-100 rounded border border-gray-200 font-bold text-ops-gray-dark">${config.name || buildingCode} (${buildingCode})</div>
                <input type="hidden" id="settings-building-select" value="${buildingCode}">
              </div>
           `;
        }
 
        const html = `
-         <div class="flex flex-col h-full">
-            <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-4">
-               <div class="flex">
-                 <div class="flex-shrink-0">
-                   <i class="fas fa-exclamation-triangle text-yellow-600"></i>
-                 </div>
-                 <div class="ml-3">
-                   <p class="text-sm text-yellow-700">
-                     Advanced Configuration: Editing this JSON directly changes how the application behaves (periods, names, increments). 
-                     Please ensure valid JSON syntax.
-                   </p>
-                 </div>
-               </div>
-            </div>
-
+         <div class="flex flex-col h-full max-h-[80vh]">
             ${selectorHtml}
 
-            <div class="flex-grow flex flex-col mb-4">
-              <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Configuration (JSON)</label>
-              <textarea id="settings-json" class="flex-grow w-full font-mono text-xs p-4 border border-gray-300 rounded focus:ring-ops-blue focus:border-ops-blue bg-white" rows="15">${jsonString}</textarea>
+            <div class="flex-grow overflow-y-auto pr-2">
+              <form id="settings-form">
+                
+                <!-- General Settings -->
+                <div class="mb-8">
+                   <h4 class="text-sm font-bold text-ops-blue-dark border-b border-gray-200 pb-2 mb-4">General Settings</h4>
+                   <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Building Name</label>
+                        <input type="text" name="name" value="${config.name || ''}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+                      </div>
+                      <div>
+                        <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Schedule Type</label>
+                        <select name="scheduleType" onchange="toggleScheduleSettings(this.value)" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+                           <option value="periods" ${config.scheduleType === 'periods' ? 'selected' : ''}>Periods</option>
+                           <option value="time_range" ${config.scheduleType === 'time_range' ? 'selected' : ''}>Time Range</option>
+                        </select>
+                      </div>
+                   </div>
+                </div>
+
+                <!-- Time Range Settings -->
+                <div id="settings-time-container" class="${config.scheduleType === 'time_range' ? '' : 'hidden'} mb-8">
+                   <h4 class="text-sm font-bold text-ops-blue-dark border-b border-gray-200 pb-2 mb-4">Time Settings</h4>
+                   <div>
+                      <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Time Increment (Minutes)</label>
+                      <input type="number" name="increment" value="${config.increment || 15}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue max-w-xs">
+                      <p class="text-xs text-gray-500 mt-1">Used for time picker steps.</p>
+                   </div>
+                </div>
+
+                <!-- Periods Settings -->
+                <div id="settings-periods-container" class="${config.scheduleType === 'periods' ? '' : 'hidden'} mb-8">
+                   <h4 class="text-sm font-bold text-ops-blue-dark border-b border-gray-200 pb-2 mb-4">Periods</h4>
+                   <div id="periods-list" class="space-y-2 mb-3">
+                      ${config.periods.map(p => `
+                        <div class="flex gap-2 items-center">
+                           <input type="text" name="period[]" value="${p}" class="flex-grow rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+                           <button type="button" onclick="removeRow(this)" class="text-red-400 hover:text-red-600 p-2"><i class="fas fa-trash"></i></button>
+                        </div>
+                      `).join('')}
+                   </div>
+                   <button type="button" onclick="addPeriodRow()" class="text-xs font-bold text-ops-blue hover:text-ops-blue-dark uppercase tracking-wide flex items-center">
+                      <i class="fas fa-plus-circle mr-1"></i> Add Period
+                   </button>
+                </div>
+
+                <!-- Coverage Types -->
+                <div class="mb-8">
+                   <h4 class="text-sm font-bold text-ops-blue-dark border-b border-gray-200 pb-2 mb-4">Coverage Types</h4>
+                   <div id="coverage-list" class="space-y-2 mb-3">
+                      ${config.coverageTypes.map(c => `
+                        <div class="flex gap-2 items-center">
+                           <div class="flex-grow">
+                              <input type="text" placeholder="Label (e.g. Full Period)" name="covLabel[]" value="${c.label || ''}" class="w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue text-sm">
+                           </div>
+                           <div class="w-32">
+                              <input type="text" placeholder="Value (e.g. 1)" name="covValue[]" value="${c.value || ''}" class="w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue text-sm">
+                           </div>
+                           <button type="button" onclick="removeRow(this)" class="text-red-400 hover:text-red-600 p-2"><i class="fas fa-trash"></i></button>
+                        </div>
+                      `).join('')}
+                   </div>
+                   <button type="button" onclick="addCoverageRow()" class="text-xs font-bold text-ops-blue hover:text-ops-blue-dark uppercase tracking-wide flex items-center">
+                      <i class="fas fa-plus-circle mr-1"></i> Add Coverage Type
+                   </button>
+                </div>
+
+              </form>
             </div>
 
-            <div class="flex justify-end gap-3 pt-4 border-t border-gray-100">
+            <div class="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-2">
                <button onclick="closeModal()" class="px-4 py-2 border border-gray-300 rounded text-gray-600 hover:bg-gray-50 font-bold text-sm">Cancel</button>
                <button onclick="saveSettings()" class="px-4 py-2 bg-ops-blue text-white rounded hover:bg-ops-blue-dark font-bold text-sm shadow">
                  <i class="fas fa-save mr-2"></i> Save Changes
@@ -595,17 +650,90 @@
        showModal("Application Settings", html, 'max-w-4xl');
     }
 
+    function toggleScheduleSettings(val) {
+       const pCont = document.getElementById('settings-periods-container');
+       const tCont = document.getElementById('settings-time-container');
+       
+       if(val === 'periods') {
+          pCont.classList.remove('hidden');
+          tCont.classList.add('hidden');
+       } else {
+          pCont.classList.add('hidden');
+          tCont.classList.remove('hidden');
+       }
+    }
+
+    function removeRow(btn) {
+       btn.parentElement.remove();
+    }
+
+    function addPeriodRow() {
+       const div = document.createElement('div');
+       div.className = "flex gap-2 items-center";
+       div.innerHTML = `
+          <input type="text" name="period[]" placeholder="Period Name" class="flex-grow rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+          <button type="button" onclick="removeRow(this)" class="text-red-400 hover:text-red-600 p-2"><i class="fas fa-trash"></i></button>
+       `;
+       document.getElementById('periods-list').appendChild(div);
+    }
+
+    function addCoverageRow() {
+       const div = document.createElement('div');
+       div.className = "flex gap-2 items-center";
+       div.innerHTML = `
+           <div class="flex-grow">
+              <input type="text" placeholder="Label (e.g. Full Period)" name="covLabel[]" class="w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue text-sm">
+           </div>
+           <div class="w-32">
+              <input type="text" placeholder="Value (e.g. 1)" name="covValue[]" class="w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue text-sm">
+           </div>
+           <button type="button" onclick="removeRow(this)" class="text-red-400 hover:text-red-600 p-2"><i class="fas fa-trash"></i></button>
+       `;
+       document.getElementById('coverage-list').appendChild(div);
+    }
+
     function saveSettings() {
        const buildingCode = document.getElementById('settings-building-select').value;
-       const jsonText = document.getElementById('settings-json').value;
+       const form = document.getElementById('settings-form');
+       
+       // Construct Object
+       const config = {
+          name: form.name.value,
+          scheduleType: form.scheduleType.value
+       };
+
+       if(config.scheduleType === 'time_range') {
+          config.increment = parseFloat(form.increment.value) || 15;
+       } else {
+          // Get periods
+          const pInputs = form.querySelectorAll('input[name="period[]"]');
+          config.periods = Array.from(pInputs).map(i => i.value).filter(v => v.trim() !== "");
+       }
+
+       // Get Coverage
+       const cLabels = form.querySelectorAll('input[name="covLabel[]"]');
+       const cValues = form.querySelectorAll('input[name="covValue[]"]');
+       config.coverageTypes = [];
+       
+       for(let i=0; i<cLabels.length; i++) {
+          if(cLabels[i].value.trim() !== "") {
+             let val = cValues[i].value;
+             // Try parse float if it looks like a number
+             if(!isNaN(val) && val.trim() !== "") {
+                val = parseFloat(val);
+             }
+             config.coverageTypes.push({
+                label: cLabels[i].value,
+                value: val
+             });
+          }
+       }
        
        try {
-          const configObj = JSON.parse(jsonText);
-          
           showLoading(true);
           google.script.run.withSuccessHandler(() => {
              // Update local state
-             STATE.config[buildingCode] = configObj;
+             STATE.config[buildingCode] = config;
              
              showLoading(false);
              closeModal();
@@ -614,16 +742,17 @@
              // If we edited current building, refresh view
              if (buildingCode === STATE.building) {
                 updateUserInfo();
-                if(STATE.currentTab) switchTab(STATE.currentTab);
+                // If we changed schedule types, re-render form
+                if(STATE.currentTab === 'teacher-submit') renderTeacherSubmit();
              }
              
           }).withFailureHandler(err => {
              showLoading(false);
              showToast("Failed to save: " + err, "error");
-          }).saveBuildingConfig(buildingCode, configObj);
+          }).saveBuildingConfig(buildingCode, config);
           
        } catch (e) {
-          showToast("Invalid JSON: " + e.message, "error");
+          showToast("Error: " + e.message, "error");
        }
     }
 
