@@ -88,7 +88,7 @@ function getInitialData() {
  * Lightweight helper to get pending counts for badges
  * Now respects building scope.
  */
-function getDashboardCounts() {
+function getDashboardCounts(buildingFilter) {
   const ctx = getUserContext();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   
@@ -108,9 +108,12 @@ function getDashboardCounts() {
     const isPending = r[8] !== true && r[8] !== "TRUE" && r[10] !== true && r[10] !== "TRUE" && r[0] !== "";
     if (!isPending) return false;
 
+    const userBuilding = staffBuildingMap[r[0].toString().toLowerCase()] || 'OMS';
+
     // Filter
-    if (!ctx.isSuperAdmin) {
-       const userBuilding = staffBuildingMap[r[0].toString().toLowerCase()] || 'OMS';
+    if (ctx.isSuperAdmin) {
+      if (buildingFilter && userBuilding !== buildingFilter) return false;
+    } else {
        if (userBuilding !== ctx.building) return false;
     }
     return true;
@@ -125,8 +128,11 @@ function getDashboardCounts() {
     const isPending = (r[4] === false || r[4] === "" || r[4] === "FALSE") && r[0] !== "";
     if (!isPending) return false;
 
-    if (!ctx.isSuperAdmin) {
-       const userBuilding = staffBuildingMap[r[0].toString().toLowerCase()] || 'OMS';
+    const userBuilding = staffBuildingMap[r[0].toString().toLowerCase()] || 'OMS';
+
+    if (ctx.isSuperAdmin) {
+      if (buildingFilter && userBuilding !== buildingFilter) return false;
+    } else {
        if (userBuilding !== ctx.building) return false;
     }
     return true;

@@ -370,6 +370,7 @@
     function switchBuilding(newCode) {
        STATE.building = newCode;
        updateUserInfo(); // Update Title
+       updateBadges();
        // Reload current tab with new context
        if (STATE.currentTab) {
           switchTab(STATE.currentTab);
@@ -401,7 +402,7 @@
              uBadge.classList.add('hidden');
            }
         }
-      }).getDashboardCounts();
+      }).getDashboardCounts(STATE.building);
     }
 
     // --- Navigation Logic ---
