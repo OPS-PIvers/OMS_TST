@@ -132,7 +132,7 @@
   <div id="toast-container" class="fixed top-5 right-5 flex flex-col gap-3 pointer-events-none" style="z-index: 9999;"></div>
 
   <!-- Setup & Loading State -->
-  <div id="app-loading" class="fixed inset-0 flex flex-col items-center justify-center bg-white z-50">
+  <div id="app-loading" class="fixed inset-0 flex flex-col items-center justify-center bg-white z-[200]">
     <div class="loader mb-4"></div>
     <p class="text-ops-gray font-medium">Authenticating & Loading Directory...</p>
   </div>
@@ -198,7 +198,7 @@
   </div>
 
   <!-- Modal Template -->
-  <div id="modal-backdrop" class="fixed inset-0 bg-ops-blue-dark bg-opacity-75 hidden z-40 flex items-center justify-center backdrop-blur-sm">
+  <div id="modal-backdrop" class="fixed inset-0 bg-ops-blue-dark bg-opacity-75 hidden z-[70] flex items-center justify-center backdrop-blur-sm">
     <div id="modal-panel" class="bg-white rounded-lg shadow-2xl w-full max-w-2xl mx-4 overflow-hidden transform transition-all border-t-4 border-ops-blue">
       <div class="flex justify-between items-center bg-gray-50 px-6 py-4 border-b border-gray-100">
         <h3 id="modal-title" class="text-xl font-bold text-ops-blue-dark">Modal Title</h3>
@@ -1076,7 +1076,7 @@
                 <table class="min-w-full divide-y divide-gray-200">
                   <thead class="bg-gray-50">
                     <tr>
-                      ${isSel ? `<th class="px-6 py-3 text-left bg-gray-50 w-10"><input type="checkbox" onchange="toggleSelectAll('earned', this)" class="rounded text-ops-blue focus:ring-ops-blue border-gray-300"></th>` : ''}
+                      ${isSel ? `<th class="px-6 py-3 text-left bg-gray-50 w-10"><input type="checkbox" onchange="toggleBatchSelectAll('earned', this)" ${data.length > 0 && STATE.selectedEarned.size === data.length ? 'checked' : ''} class="rounded text-ops-blue focus:ring-ops-blue border-gray-300"></th>` : ''}
                       <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Teacher</th>
                       <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Subbed For</th>
                       <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Details</th>
@@ -1186,7 +1186,7 @@
                 <table class="min-w-full divide-y divide-gray-200">
                   <thead class="bg-gray-50">
                     <tr>
-                      ${isSel ? `<th class="px-6 py-3 text-left bg-gray-50 w-10"><input type="checkbox" onchange="toggleSelectAll('used', this)" class="rounded text-ops-blue focus:ring-ops-blue border-gray-300"></th>` : ''}
+                      ${isSel ? `<th class="px-6 py-3 text-left bg-gray-50 w-10"><input type="checkbox" onchange="toggleBatchSelectAll('used', this)" ${data.length > 0 && STATE.selectedUsed.size === data.length ? 'checked' : ''} class="rounded text-ops-blue focus:ring-ops-blue border-gray-300"></th>` : ''}
                       <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Teacher</th>
                       <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Date Used</th>
                       <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Amount</th>
@@ -1247,7 +1247,7 @@
       renderAdminTotalsTable(STATE.user.staffData);
     }
 
-    function toggleSelectAll(checkbox) {
+    function toggleDirectorySelectAll(checkbox) {
       const isChecked = checkbox.checked;
       STATE.selectedEmails = new Set();
       
@@ -1337,7 +1337,7 @@
       else renderUsedTable();
     }
 
-    function toggleSelectAll(type, checkbox) {
+    function toggleBatchSelectAll(type, checkbox) {
       const isChecked = checkbox.checked;
       const set = type === 'earned' ? STATE.selectedEarned : STATE.selectedUsed;
       const data = type === 'earned' ? STATE.pendingEarned : STATE.pendingUsed;
@@ -1437,11 +1437,10 @@
             </div>
             <div class="overflow-x-auto max-h-[70vh]">
               <table class="min-w-full divide-y divide-gray-200" id="staff-totals-table">
-                <thead class="bg-gray-50 sticky top-0 z-10 shadow-sm">
-                  <tr>
-                    ${isSel ? `<th class="px-6 py-3 text-left bg-gray-50"><input type="checkbox" onchange="toggleSelectAll(this)" class="rounded text-ops-blue focus:ring-ops-blue border-gray-300"></th>` : ''}
-                    <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50">Name</th>
-                    <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50">Earned</th>
+                    <thead class="bg-gray-50 sticky top-0 z-10 shadow-sm">
+                      <tr>
+                        ${isSel ? `<th class="px-6 py-3 text-left bg-gray-50"><input type="checkbox" onchange="toggleDirectorySelectAll(this)" ${STATE.selectedEmails.size > 0 && STATE.selectedEmails.size === STATE.user.staffData.length ? 'checked' : ''} class="rounded text-ops-blue focus:ring-ops-blue border-gray-300"></th>` : ''}
+                        <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50">Name</th>                    <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50">Earned</th>
                     <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50">Used</th>
                     <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50">Balance</th>
                   </tr>
