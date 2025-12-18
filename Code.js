@@ -41,7 +41,7 @@ function getUserContext() {
 
   let currentUserRole = 'Guest';
   let currentUserName = '';
-  let currentUserBuilding = 'OMS';
+  let currentUserBuilding = DEFAULT_BUILDING;
   
   const userRow = data.find(r => r[safeEmailIdx].toString().toLowerCase() === userEmail.toLowerCase());
   
@@ -79,6 +79,7 @@ function getInitialData() {
     building: ctx.building,
     isSuperAdmin: ctx.isSuperAdmin,
     config: BUILDING_CONFIG, // Send full config to client
+    defaultBuilding: DEFAULT_BUILDING,
     staffData: getStaffDirectoryData()
   };
 }
@@ -89,15 +90,6 @@ function getInitialData() {
  */
 function getDashboardCounts() {
   const ctx = getUserContext();
-  // If SA, we ideally need to know which dashboard they are looking at.
-  // But badges usually show global pending for them, or we need to pass a filter?
-  // Let's assume standard behavior:
-  // - Regular Admin: Counts for THEIR building.
-  // - Super Admin: Counts for ALL (or maybe their default? Let's say ALL for SA to see what needs attention).
-  // actually, let's filter by the user's current context if we could pass it, but this function takes no args.
-  // Let's filter by their assigned building for now to be safe/consistent,
-  // OR fetch all for SA.
-
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   
   // Build Map of Staff -> Building for filtering
@@ -232,7 +224,7 @@ function getStaffDirectoryData() {
     earned: r[iEarned],
     used: r[iUsed],
     carryOver: r[iCarry],
-    building: iBuilding > -1 ? r[iBuilding] : 'OMS', // Default to OMS if missing
+    building: iBuilding > -1 ? r[iBuilding] : DEFAULT_BUILDING,
     total: (Number(r[iCarry]) || 0) + (Number(r[iEarned]) || 0) - (Number(r[iUsed]) || 0),
     rowIndex: i + 2 // 1-based index + header offset
   })).filter(r => r.email !== "");
@@ -257,8 +249,15 @@ function getPendingEarned(buildingFilter) {
   const ctx = getUserContext();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  // Security Enforcement
-  const effectiveFilter = ctx.isSuperAdmin ? (buildingFilter || ctx.building) : ctx.building;
+  // Security & Validation Enforcement
+  let effectiveFilter = ctx.building;
+  if (ctx.isSuperAdmin) {
+    if (buildingFilter && BUILDING_CONFIG.hasOwnProperty(buildingFilter)) {
+      effectiveFilter = buildingFilter;
+    } else {
+      effectiveFilter = ctx.building;
+    }
+  }
 
   // 1. Build Map of Staff -> Building
   const staffDir = getStaffDirectoryData();
@@ -269,11 +268,11 @@ function getPendingEarned(buildingFilter) {
 
   const sheet = ss.getSheetByName('TST Approvals (New)');
   const data = sheet.getDataRange().getValues();
-  data.shift(); // Remove header (headers variable unused)
+  data.shift();
   
   return data.map((r, i) => {
     const email = r[0];
-    const userBuilding = staffBuildingMap[email.toLowerCase()] || 'OMS'; // Default
+    const userBuilding = staffBuildingMap[email.toLowerCase()] || DEFAULT_BUILDING;
 
     return {
       email: email,
@@ -308,8 +307,15 @@ function getPendingUsed(buildingFilter) {
   const ctx = getUserContext();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  // Security Enforcement
-  const effectiveFilter = ctx.isSuperAdmin ? (buildingFilter || ctx.building) : ctx.building;
+  // Security & Validation Enforcement
+  let effectiveFilter = ctx.building;
+  if (ctx.isSuperAdmin) {
+    if (buildingFilter && BUILDING_CONFIG.hasOwnProperty(buildingFilter)) {
+      effectiveFilter = buildingFilter;
+    } else {
+      effectiveFilter = ctx.building;
+    }
+  }
 
   // 1. Build Map of Staff -> Building
   const staffDir = getStaffDirectoryData();
@@ -320,12 +326,12 @@ function getPendingUsed(buildingFilter) {
 
   const sheet = ss.getSheetByName('TST Usage (New)');
   const data = sheet.getDataRange().getValues();
-  data.shift(); // Remove headers
+  data.shift();
   
   // Filter for Checkbox (Col E / Index 4) == false AND has data
   return data.map((r, i) => {
     const email = r[0];
-    const userBuilding = staffBuildingMap[email.toLowerCase()] || 'OMS';
+    const userBuilding = staffBuildingMap[email.toLowerCase()] || DEFAULT_BUILDING;
 
     return {
       email: email,
@@ -1302,8 +1308,15 @@ function getScheduleData(buildingFilter) {
   const ctx = getUserContext();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  // Security Enforcement
-  const effectiveFilter = ctx.isSuperAdmin ? (buildingFilter || ctx.building) : ctx.building;
+  // Security & Validation Enforcement
+  let effectiveFilter = ctx.building;
+  if (ctx.isSuperAdmin) {
+    if (buildingFilter && BUILDING_CONFIG.hasOwnProperty(buildingFilter)) {
+      effectiveFilter = buildingFilter;
+    } else {
+      effectiveFilter = ctx.building;
+    }
+  }
 
   let schedSheet = ss.getSheetByName('TST Availability');
   if (!schedSheet) {
@@ -1337,7 +1350,7 @@ function getScheduleData(buildingFilter) {
     const [month, days, period, name, email] = row;
 
     // Filter by Building
-    const userBuilding = staffBuildingMap[email.toLowerCase()] || 'OMS';
+    const userBuilding = staffBuildingMap[email.toLowerCase()] || DEFAULT_BUILDING;
     if (userBuilding !== effectiveFilter) return;
 
     if (schedule[month]) {

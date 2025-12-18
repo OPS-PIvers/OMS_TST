@@ -281,13 +281,14 @@
       currentTab: null,
       dataCache: {},
       building: null, // Current active building code
-      config: null    // Loaded from server
+      config: null,   // Loaded from server
+      defaultBuilding: 'OMS' // Fallback until loaded
     };
     
     // --- Constants & Helpers ---
     function getPeriodOptions(selectedVal) {
       // Use periods from Config based on current building
-      const buildingConf = STATE.config[STATE.building] || STATE.config['OMS'];
+      const buildingConf = STATE.config[STATE.building] || STATE.config[STATE.defaultBuilding];
       const periods = buildingConf.periods || [];
 
       return periods.map(p => {
@@ -309,7 +310,8 @@
     function initApp(data) {
       STATE.user = data;
       STATE.config = data.config;
-      STATE.building = data.building || 'OMS'; // Default to OMS
+      STATE.defaultBuilding = data.defaultBuilding || 'OMS';
+      STATE.building = data.building || STATE.defaultBuilding;
 
       document.getElementById('app-loading').classList.add('hidden');
       document.getElementById('app-container').classList.remove('hidden');
@@ -375,7 +377,9 @@
     }
 
     function updateBadges() {
-      if (STATE.user.role !== 'Admin') return;
+      const isAdmin = STATE.user.role === 'Admin' || STATE.user.role === 'Super Admin' || STATE.user.isSuperAdmin;
+      if (!isAdmin) return;
+
       google.script.run.withSuccessHandler(counts => {
         const eBadge = document.getElementById('badge-earned');
         const uBadge = document.getElementById('badge-used');
@@ -990,8 +994,8 @@
 
     function renderTeacherSubmit() {
       const staffOptions = STATE.user.staffData.map(s => `<option value="${s.name}">${s.name}</option>`).join('');
-      const bConfig = STATE.config[STATE.building];
-      const isPeriods = bConfig.scheduleType === 'periods';
+      const bConfig = STATE.config[STATE.building] || STATE.config[STATE.defaultBuilding];
+      const isPeriods = bConfig && bConfig.scheduleType === 'periods';
 
       let timeInputHtml = '';
       if (isPeriods) {
@@ -2420,13 +2424,13 @@
       if (bConfig.scheduleType === 'periods') {
         return bConfig.periods;
       } else {
-        // For Time Range schools, we need "Time Slots" or a single "Available" row?
-        // User said: "need to be able to select a teacher and enter starting/ending time"
-        // This implies the schedule view might just be "Available All Day" or specific blocks.
-        // For simplicity in the Grid View, let's just use a generic "Availability" row
-        // OR define standard blocks like "Morning", "Afternoon".
-        // Let's use generic slots for now or just one "Time Slot".
-        return ["Any Time", "Morning", "Afternoon"];
+        // For Time Range buildings, avoid misleading hardcoded slots like "Morning"/"Afternoon".
+        // If the building has custom periods configured, use those; otherwise, fall back to a
+        // single neutral label that reflects that times are entered as ranges.
+        if (Array.isArray(bConfig.periods) && bConfig.periods.length > 0) {
+           return bConfig.periods;
+        }
+        return ["Time Range"];
       }
     }
 
@@ -2823,8 +2827,8 @@
 
     function renderScheduleAutocomplete(input, day, month, periodSafe) {
       const query = input.value.toLowerCase();
-      // Remove spaces from period for ID safety
-      const periodId = periodSafe.replace(/\s/g,'');
+      // Remove spaces/special chars from period for ID safety (matches HTML generation)
+      const periodId = periodSafe.replace(/[^a-zA-Z0-9]/g,'');
       const container = document.getElementById(`ac-${month}-${periodId}-${day}`);
       
       if (!query) {

@@ -1,5 +1,7 @@
 // --- CONFIGURATION ---
 
+const DEFAULT_BUILDING = 'OMS';
+
 const BUILDING_CONFIG = {
   'OMS': {
     name: 'Orono Middle School',
@@ -56,11 +58,3 @@ const BUILDING_CONFIG = {
     ]
   }
 };
-
-/**
- * Helper to get building config.
- * Defaults to OMS if not found.
- */
-function getBuildingConfig(buildingCode) {
-  return BUILDING_CONFIG[buildingCode] || BUILDING_CONFIG['OMS'];
-}
