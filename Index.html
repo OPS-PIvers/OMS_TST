@@ -748,7 +748,7 @@
       google.script.run.withSuccessHandler(staffData => {
         STATE.user.staffData = staffData;
         renderAdminTotalsTable(staffData);
-      }).getStaffDirectoryData();
+      }).getStaffDirectoryData(STATE.building);
     }
 
     function toggleSelectionMode() {

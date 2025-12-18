@@ -199,7 +199,7 @@ function batchDeleteUsed(indices) {
 /**
  * Helper to get clean object array of Staff Directory
  */
-function getStaffDirectoryData() {
+function getStaffDirectoryData(buildingFilter) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('Staff Directory');
   const data = sheet.getDataRange().getValues();
@@ -233,7 +233,11 @@ function getStaffDirectoryData() {
     building: iBuilding > -1 ? r[iBuilding] : DEFAULT_BUILDING,
     total: (Number(r[iCarry]) || 0) + (Number(r[iEarned]) || 0) - (Number(r[iUsed]) || 0),
     rowIndex: i + 2 // 1-based index + header offset
-  })).filter(r => r.email !== "");
+  })).filter(r => {
+    if (r.email === "") return false;
+    if (buildingFilter && r.building !== buildingFilter) return false;
+    return true;
+  });
 }
 
 /**
