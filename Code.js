@@ -54,7 +54,7 @@ function getUserContext() {
     }
   }
 
-  const isSuperAdmin = currentUserRole.toLowerCase() === 'super admin';
+  const isSuperAdmin = currentUserRole === 'Super Admin';
 
   return {
     email: userEmail,
