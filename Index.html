@@ -216,7 +216,7 @@
     // --- Toast Notification System ---
     function showToast(message, type = 'info') {
       const container = document.getElementById('toast-container');
-      // ... existing toast logic ...
+      
       // Icons and Colors based on type
       let icon, bgClass, textClass, borderClass;
       
@@ -254,14 +254,14 @@
 
       container.appendChild(toast);
 
-      // Auto remove after 4 seconds
+      // Remove after 3 seconds
       setTimeout(() => {
-        if(toast.parentElement) {
-          toast.classList.remove('toast-enter');
-          toast.classList.add('toast-exit');
-          toast.addEventListener('animationend', () => toast.remove());
-        }
-      }, 4000);
+        toast.classList.remove('toast-enter');
+        toast.classList.add('toast-exit');
+        setTimeout(() => {
+          if(toast.parentElement) toast.remove();
+        }, 300); // Wait for exit animation
+      }, 3000);
     }
     
     // --- Tooltip System ---
@@ -334,6 +334,12 @@
     function getPeriodOptions(selectedVal) {
       // Use periods from Config based on current building
       const buildingConf = STATE.config[STATE.building] || STATE.config[STATE.defaultBuilding];
+      
+      if (!buildingConf) {
+        console.warn("getPeriodOptions: Configuration missing for", STATE.building);
+        return "";
+      }
+
       const periods = buildingConf.periods || [];
 
       return periods.map(p => {
@@ -414,11 +420,23 @@
       // Render Dropdown Content
       let menuContent = '';
       
-      // Building Switcher (Super Admin only)
+      // Building Switcher Logic
+      // Super Admin gets all known buildings.
+      // Staff with multiple assignments get their assigned buildings.
+      
+      const allBuildings = ["SE", "OIS", "OMS", "OHS"]; // Fallback/Order
+      let availableBuildings = [];
+      
       if (STATE.user.isSuperAdmin) {
+         availableBuildings = allBuildings; 
+         // Or use keys from config if we wanted dynamic: Object.keys(STATE.config)
+      } else if (STATE.user.buildings && STATE.user.buildings.length > 1) {
+         availableBuildings = STATE.user.buildings;
+      }
+      
+      if (availableBuildings.length > 1) {
          // Segmented Control
-         const buildings = ["SE", "OIS", "OMS", "OHS"]; // Fixed order per request
-         const toggleHtml = buildings.map(b => `
+         const toggleHtml = availableBuildings.map(b => `
              <div class="segmented-item ${STATE.building === b ? 'active' : ''}" onclick="switchBuilding('${b}')">
                ${b}
              </div>
@@ -433,7 +451,7 @@
            </div>
          `;
       } else {
-        // Show current building name for non-super admins
+        // Single Building View
         const bName = STATE.config[STATE.building] ? STATE.config[STATE.building].name : STATE.building;
         menuContent += `
            <div class="px-4 py-3 border-b border-gray-100">
@@ -455,9 +473,6 @@
            </button>
          `;
       }
-
-      // Sign Out (Just a refresh link basically since it's Google Auth)
-      // Actually, standard google apps script doesn't have a "sign out", but we can close menu.
       
       dropdown.innerHTML = menuContent;
 
@@ -488,11 +503,8 @@
        STATE.building = newCode;
        updateUserInfo(); // Re-renders dropdown with new active state and updates title
        updateBadges();
-       
-       // Reload current tab with new context
-       if (STATE.currentTab) {
-          switchTab(STATE.currentTab);
-       }
+       // Reload current view
+       switchTab(STATE.currentTab);
     }
 
     function updateBadges() {
@@ -1768,7 +1780,17 @@
       e.preventDefault();
       const form = e.target;
       const isOther = form.querySelector('#t-sub-type').value === 'Other';
-      const bConfig = STATE.config[STATE.building];
+      
+      let bConfig = STATE.config[STATE.building];
+      if (!bConfig) {
+        console.warn(`Config for building '${STATE.building}' not found in handleTeacherSubmit. Using default.`);
+        bConfig = STATE.config[STATE.defaultBuilding];
+      }
+      
+      if (!bConfig) {
+         showToast("Configuration error. Please contact support.", "error");
+         return;
+      }
       
       let period = "";
       let amountDecimal = 0;
@@ -1808,7 +1830,8 @@
         date: form.date.value,
         period: period,
         amountType: amountType,
-        amountDecimal: amountDecimal
+        amountDecimal: amountDecimal,
+        building: STATE.building
       };
 
       showLoading(true);
@@ -1839,7 +1862,13 @@
         return;
       }
 
-      const payload = { email, name, date: form.date.value, amount };
+      const payload = { 
+        email, 
+        name, 
+        date: form.date.value, 
+        amount,
+        building: STATE.building
+      };
 
       showLoading(true);
       google.script.run.withSuccessHandler(() => {
@@ -2899,7 +2928,20 @@
       // If config not loaded yet, default empty
       if(!STATE.config || !STATE.building) return [];
 
-      const bConfig = STATE.config[STATE.building];
+      let bConfig = STATE.config[STATE.building];
+
+      // Fallback if specific building config is missing
+      if (!bConfig) {
+         console.warn(`Config for building '${STATE.building}' not found. Falling back to default '${STATE.defaultBuilding}'.`);
+         bConfig = STATE.config[STATE.defaultBuilding];
+      }
+
+      // Final safety check
+      if (!bConfig) {
+        console.error(`Config not found for building '${STATE.building}' or default '${STATE.defaultBuilding}'.`);
+        return [];
+      }
+
       if (bConfig.scheduleType === 'periods') {
         return bConfig.periods;
       } else {

@@ -60,6 +60,7 @@ This document outlines the required structure for the Google Sheet used by the O
 | **K** | Denied | Boolean | `TRUE` if denied |
 | **L** | Denied TS | Date/Time | Timestamp of denial |
 | **M** | Denial Reason | String | Reason provided by Admin |
+| **N** | Building | String | **New**. Building Code (e.g., `OMS`). |
 
 ---
 
@@ -76,6 +77,7 @@ This document outlines the required structure for the Google Sheet used by the O
 | **E** | Status | Boolean | `TRUE` if processed/approved |
 | **F** | Timestamp | Date/Time | Time of approval |
 | **G** | Notes | String | Optional user notes |
+| **H** | Building | String | **New**. Building Code (e.g., `OMS`). |
 
 ---
 
