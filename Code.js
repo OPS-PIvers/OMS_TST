@@ -1157,12 +1157,29 @@ function onFormSubmit(e) {
   const dateStr = e.values[4]; // Form might return different date format, beware.
   const period = e.values[5];
   const amountType = e.values[6];
-  const amountDecimal = e.values[7];
+  let amountDecimal = e.values[7];
   
-  // Lookup Name
-  const staffData = staffSheet.getDataRange().getValues();
-  const staffRow = staffData.find(r => r[1].toString().toLowerCase() === email.toString().toLowerCase());
-  const earnerName = staffRow ? staffRow[0] : email;
+  // Lookup Name & Building
+  const staffDataRaw = staffSheet.getDataRange().getValues();
+  const headers = staffDataRaw.shift(); // Remove headers
+  
+  // Dynamic Header Lookup
+  const emailIdx = headers.findIndex(h => h.toString().toLowerCase().includes('email'));
+  const nameIdx = headers.findIndex(h => h.toString().toLowerCase().includes('name'));
+  const buildingIdx = headers.findIndex(h => h.toString().toLowerCase().includes('building'));
+
+  const iEmail = emailIdx > -1 ? emailIdx : 1;
+  const iName = nameIdx > -1 ? nameIdx : 0;
+  const iBuilding = buildingIdx;
+
+  const staffRow = staffDataRaw.find(r => r[iEmail].toString().toLowerCase() === email.toString().toLowerCase());
+  const earnerName = staffRow ? staffRow[iName] : email;
+  const earnerBuilding = (staffRow && iBuilding > -1 && staffRow[iBuilding]) ? staffRow[iBuilding] : DEFAULT_BUILDING;
+
+  // Legacy Form Support: Calculate missing decimal if needed
+  if (amountDecimal == null || amountDecimal === '') {
+    amountDecimal = calculatePeriods(period, amountType, earnerBuilding);
+  }
 
   // Append to Approvals
   approvalSheet.appendRow([
@@ -1179,6 +1196,34 @@ function onFormSubmit(e) {
     false, // Denied
     ""     // TS
   ]);
+}
+
+/**
+ * Helper to calculate period value for legacy forms.
+ * @param {string} selectedPeriod 
+ * @param {string} amountType 
+ * @param {string} buildingCode 
+ */
+function calculatePeriods(selectedPeriod, amountType, buildingCode) {
+  // Normalize
+  const p = selectedPeriod ? selectedPeriod.toString() : "";
+  const type = amountType ? amountType.toString().toLowerCase() : "";
+  const b = buildingCode || DEFAULT_BUILDING;
+
+  if (b === 'OMS') {
+    // Special Rules for OMS
+    // Period 6 or 7 (but not 6/7) is always 0.5
+    if ((p.includes('Period 6') || p.includes('Period 7')) && !p.includes('Period 6/7')) {
+      return 0.5;
+    }
+  }
+
+  // Default Rules
+  if (type.includes('half')) return 0.5;
+  if (type.includes('full')) return 1.0;
+
+  // Fallback
+  return 1.0;
 }
 
 /**
