@@ -48,7 +48,7 @@ function getUserContext() {
   
   if (userRow) {
     currentUserName = userRow[safeNameIdx];
-    currentUserRole = userRow[safeRoleIdx];
+    currentUserRole = userRow[safeRoleIdx] ? userRow[safeRoleIdx].toString().trim() : 'Guest';
 
     if (safeBuildingIdx > -1 && userRow[safeBuildingIdx]) {
       const rawBuilding = userRow[safeBuildingIdx].toString();
@@ -62,7 +62,7 @@ function getUserContext() {
     }
   }
 
-  const isSuperAdmin = currentUserRole === 'Super Admin';
+  const isSuperAdmin = currentUserRole.toLowerCase() === 'super admin';
 
   return {
     email: userEmail,
