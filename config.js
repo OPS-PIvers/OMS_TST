@@ -49,7 +49,7 @@ const BUILDING_CONFIG = {
       { label: 'Time Duration', value: 'custom' }
     ]
   },
-  'SES': {
+  'SE': {
     name: 'Schumann Elementary School',
     scheduleType: 'time_range',
     increment: 15,

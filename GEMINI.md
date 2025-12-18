@@ -5,7 +5,7 @@
 This project is a Google Apps Script web application designed to manage "TST" (Time Saving Team/Teacher) hours for Orono Public Schools. It allows staff to earn time (by providing sub coverage) and use time (redeeming credits). 
 
 **Key Features:**
-*   **Multi-Building Support:** Configurable for OMS, OHS, OIS, and SES with building-specific schedules and rules.
+*   **Multi-Building Support:** Configurable for OMS, OHS, OIS, and SE with building-specific schedules and rules.
 *   **Role-Based UI:** Distinct views for Teachers, Admins, and Super Admins.
 *   **Legacy Compatibility:** Supports legacy Google Form submissions with automated calculation logic.
 *   **Availability Grid:** Visual schedule management for TST coverage.
