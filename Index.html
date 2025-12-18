@@ -616,7 +616,13 @@
 
                 <!-- Coverage Types -->
                 <div class="mb-8">
-                   <h4 class="text-sm font-bold text-ops-blue-dark border-b border-gray-200 pb-2 mb-4">Coverage Types</h4>
+                   <div class="flex items-center gap-2 border-b border-gray-200 pb-2 mb-4">
+                      <h4 class="text-sm font-bold text-ops-blue-dark">Coverage Types</h4>
+                      <i class="fas fa-info-circle text-ops-blue-light cursor-help text-xs" 
+                         onmouseenter="showTooltip(event, 'Labels and hour values staff select when submitting requests (e.g. Full Period = 1.0).')" 
+                         onmousemove="moveTooltip(event)" 
+                         onmouseleave="hideTooltip()"></i>
+                   </div>
                    <div id="coverage-list" class="space-y-2 mb-3">
                       ${config.coverageTypes.map(c => `
                         <div class="flex gap-2 items-center">
