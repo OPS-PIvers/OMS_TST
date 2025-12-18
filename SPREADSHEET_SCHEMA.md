@@ -108,3 +108,14 @@ This document outlines the required structure for the Google Sheet used by the O
 | **D** | Name | String | Teacher Name |
 | **E** | Email | String | Teacher Email |
 | **F** | Hours Earned This Month | Formula/Num | (Optional) Used for display in some views |
+
+---
+
+## 6. App Config
+**Purpose:** Stores building-specific configuration as JSON.
+**Code Dependency:** `getConfig` and `saveBuildingConfig` rely on this structure.
+
+| Col | Header Name | Data Type | Notes |
+| :-- | :--- | :--- | :--- |
+| **A** | Building | String | **Unique ID**. Building code (e.g., `OMS`, `OHS`, `OIS`, `SE`). |
+| **B** | Config_JSON | String | **JSON String**. Contains periods, schedule types, and coverage rules. |
