@@ -71,6 +71,7 @@ function getUserContext() {
  */
 function getInitialData() {
   const ctx = getUserContext();
+  const config = getConfig(); // Load from Sheet
 
   return {
     email: ctx.email,
@@ -78,10 +79,95 @@ function getInitialData() {
     role: ctx.role,
     building: ctx.building,
     isSuperAdmin: ctx.isSuperAdmin,
-    config: BUILDING_CONFIG, // Send full config to client
+    config: config,
     defaultBuilding: DEFAULT_BUILDING,
     staffData: getStaffDirectoryData()
   };
+}
+
+/**
+ * Loads configuration from 'App Config' sheet.
+ * Initializes the sheet with default config if it doesn't exist.
+ */
+function getConfig() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName('App Config');
+  
+  // Initialize if missing
+  if (!sheet) {
+    sheet = ss.insertSheet('App Config');
+    sheet.appendRow(['Building', 'Config_JSON']);
+    
+    // Populate with defaults from config.js (BUILDING_CONFIG global)
+    // Note: We assume BUILDING_CONFIG is available in the context (from config.js)
+    Object.keys(BUILDING_CONFIG).forEach(code => {
+      sheet.appendRow([code, JSON.stringify(BUILDING_CONFIG[code], null, 2)]);
+    });
+    
+    return BUILDING_CONFIG;
+  }
+  
+  const data = sheet.getDataRange().getValues();
+  data.shift(); // Remove Header
+  
+  const config = {};
+  data.forEach(row => {
+    const code = row[0];
+    const json = row[1];
+    try {
+      config[code] = JSON.parse(json);
+    } catch (e) {
+      console.error(`Error parsing config for ${code}:`, e);
+      // Fallback to static if parse fails? Or empty object.
+      // If we have a static default available, use it, otherwise empty.
+      config[code] = (typeof BUILDING_CONFIG !== 'undefined' && BUILDING_CONFIG[code]) ? BUILDING_CONFIG[code] : {};
+    }
+  });
+  
+  // Ensure we at least have defaults if sheet was empty or corrupted
+  if (Object.keys(config).length === 0 && typeof BUILDING_CONFIG !== 'undefined') {
+    return BUILDING_CONFIG;
+  }
+  
+  return config;
+}
+
+/**
+ * Saves configuration for a specific building.
+ */
+function saveBuildingConfig(buildingCode, newConfigObj) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName('App Config');
+  
+  if (!sheet) {
+    // Should exist, but safety first
+    getConfig(); 
+    sheet = ss.getSheetByName('App Config');
+  }
+  
+  const data = sheet.getDataRange().getValues();
+  // Find row index (1-based)
+  // Row 1 is header. data index 0 is header.
+  
+  let rowIndex = -1;
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][0] === buildingCode) {
+      rowIndex = i + 1;
+      break;
+    }
+  }
+  
+  const jsonString = JSON.stringify(newConfigObj, null, 2);
+  
+  if (rowIndex > -1) {
+    // Update existing
+    sheet.getRange(rowIndex, 2).setValue(jsonString);
+  } else {
+    // Create new
+    sheet.appendRow([buildingCode, jsonString]);
+  }
+  
+  return true;
 }
 
 /**

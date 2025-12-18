@@ -71,6 +71,41 @@
       transition: all 0.2s ease-in-out;
     }
     
+    /* Segmented Toggle */
+    .segmented-control {
+        background-color: #f3f4f6; /* gray-100/200ish */
+        padding: 4px;
+        border-radius: 8px;
+        display: inline-flex;
+        gap: 4px;
+    }
+    .segmented-item {
+        flex: 1;
+        text-align: center;
+        padding: 6px 12px;
+        font-size: 12px;
+        font-weight: 600;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: all 0.2s;
+        color: #6b7280; /* gray-500 */
+    }
+    .segmented-item.active {
+        background-color: white;
+        color: #2d3f89; /* ops-blue */
+        box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+    }
+    .segmented-item:hover:not(.active) {
+        color: #374151; /* gray-700 */
+        background-color: #e5e7eb;
+    }
+
+    /* Profile Dropdown */
+    .profile-menu {
+        transform-origin: top right;
+        transition: all 0.1s ease-out;
+    }
+    
     /* Toast Animations */
     @keyframes slideIn {
       from { transform: translateX(100%); opacity: 0; }
@@ -106,7 +141,7 @@
   <div id="app-container" class="hidden flex flex-col min-h-screen">
     
     <!-- Navigation -->
-    <nav class="bg-ops-blue text-white shadow-lg">
+    <nav class="bg-ops-blue text-white shadow-lg relative z-50">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex items-center justify-between h-20">
           <div class="flex items-center">
@@ -125,7 +160,17 @@
              <button id="admin-add-btn" onclick="openAdminCreateRequestModal()" class="hidden bg-white text-ops-blue hover:bg-blue-50 transition px-3 py-2 rounded font-bold text-xs uppercase tracking-wide shadow-sm">
               <i class="fas fa-plus-circle mr-1"></i> Add Request
             </button>
-            <div id="user-info" class="text-sm font-light text-blue-100 hidden md:block"></div>
+            
+            <!-- User Profile Area -->
+            <div class="relative" id="user-profile-container">
+               <!-- Button injected via JS -->
+               <div id="user-info"></div>
+               
+               <!-- Dropdown Menu -->
+               <div id="profile-dropdown" class="hidden absolute right-0 mt-2 w-72 bg-white rounded-lg shadow-xl border border-gray-100 py-2 profile-menu">
+                  <!-- Injected via JS -->
+               </div>
+            </div>
           </div>
         </div>
         
@@ -218,7 +263,7 @@
         }
       }, 4000);
     }
-
+    
     // --- Tooltip System ---
     function showTooltip(e, content) {
       const el = document.getElementById('global-tooltip');
@@ -257,7 +302,7 @@
       el.classList.add('opacity-0');
       setTimeout(() => el.classList.add('hidden'), 200);
     }
-    
+
     // --- Generic Modal Helpers ---
     function showModal(title, content, maxWidthClass = 'max-w-2xl') {
       document.getElementById('modal-title').innerText = title;
@@ -306,6 +351,18 @@
         .withFailureHandler(handleError)
         .getInitialData();
     };
+    
+    // Close dropdowns when clicking outside
+    document.addEventListener('click', function(e) {
+      const profileContainer = document.getElementById('user-profile-container');
+      const dropdown = document.getElementById('profile-dropdown');
+      
+      if (profileContainer && !profileContainer.contains(e.target)) {
+        if (!dropdown.classList.contains('hidden')) {
+          dropdown.classList.add('hidden');
+        }
+      }
+    });
 
     function initApp(data) {
       STATE.user = data;
@@ -337,29 +394,71 @@
     }
 
     function updateUserInfo() {
-      // Add Building Switcher if Super Admin
-      let switcherHtml = '';
-      if (STATE.user.isSuperAdmin) {
-        const options = Object.keys(STATE.config).map(code =>
-           `<option value="${code}" ${code === STATE.building ? 'selected' : ''}>${STATE.config[code].name}</option>`
-        ).join('');
-        switcherHtml = `
-          <select onchange="switchBuilding(this.value)" class="mt-1 block w-full text-xs text-black rounded border-gray-300 py-1 px-2">
-            ${options}
-          </select>
-        `;
-      } else {
-        const bName = STATE.config[STATE.building] ? STATE.config[STATE.building].name : STATE.building;
-        switcherHtml = `<span class="text-xs opacity-75 block">${bName}</span>`;
-      }
-
-      document.getElementById('user-info').innerHTML = `
-        <span class="block font-medium">${STATE.user.name}</span>
-        <span class="text-xs opacity-75 block">${STATE.user.role}</span>
-        ${switcherHtml}
+      const userBtn = document.getElementById('user-info');
+      const dropdown = document.getElementById('profile-dropdown');
+      
+      // Render Button
+      userBtn.innerHTML = `
+        <button onclick="toggleProfileMenu()" class="flex items-center gap-3 focus:outline-none group">
+            <div class="text-right hidden md:block">
+                <div class="text-sm font-medium text-white group-hover:text-blue-100 transition">${STATE.user.name}</div>
+                <div class="text-xs text-blue-200 font-light">${STATE.user.role}</div>
+            </div>
+            <div class="bg-blue-600 h-8 w-8 rounded-full flex items-center justify-center text-xs font-bold border border-blue-400 shadow-sm text-white">
+                ${STATE.user.name.charAt(0)}
+            </div>
+            <i class="fas fa-chevron-down text-xs text-blue-300 transition-transform duration-200 group-hover:text-white" id="profile-arrow"></i>
+        </button>
       `;
 
-      // Update Branding Title
+      // Render Dropdown Content
+      let menuContent = '';
+      
+      // Building Switcher (Super Admin only)
+      if (STATE.user.isSuperAdmin) {
+         // Segmented Control
+         const buildings = ["SE", "OIS", "OMS", "OHS"]; // Fixed order per request
+         const toggleHtml = buildings.map(b => `
+             <div class="segmented-item ${STATE.building === b ? 'active' : ''}" onclick="switchBuilding('${b}')">
+               ${b}
+             </div>
+         `).join('');
+         
+         menuContent += `
+           <div class="px-4 py-3 border-b border-gray-100">
+             <div class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Switch School</div>
+             <div class="segmented-control w-full flex">
+               ${toggleHtml}
+             </div>
+           </div>
+         `;
+      } else {
+        // Show current building name for non-super admins
+        const bName = STATE.config[STATE.building] ? STATE.config[STATE.building].name : STATE.building;
+        menuContent += `
+           <div class="px-4 py-3 border-b border-gray-100">
+             <div class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Current School</div>
+             <div class="text-sm font-medium text-ops-blue-dark">${bName}</div>
+           </div>
+        `;
+      }
+
+      // Settings Link (Admin/Super Admin)
+      const isAdmin = STATE.user.role === 'Admin' || STATE.user.role === 'Super Admin' || STATE.user.isSuperAdmin;
+      if (isAdmin) {
+         menuContent += `
+           <a href="#" onclick="openSettingsModal()" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-ops-blue transition">
+             <i class="fas fa-cog w-5 text-gray-400"></i> Settings
+           </a>
+         `;
+      }
+
+      // Sign Out (Just a refresh link basically since it's Google Auth)
+      // Actually, standard google apps script doesn't have a "sign out", but we can close menu.
+      
+      dropdown.innerHTML = menuContent;
+
+      // Update Branding Title based on current config
       const bConfig = STATE.config[STATE.building];
       const titleEl = document.getElementById('nav-app-title');
       if (bConfig && titleEl) {
@@ -367,10 +466,24 @@
       }
     }
 
+    function toggleProfileMenu() {
+      const dropdown = document.getElementById('profile-dropdown');
+      const arrow = document.getElementById('profile-arrow');
+      
+      if (dropdown.classList.contains('hidden')) {
+        dropdown.classList.remove('hidden');
+        if(arrow) arrow.classList.add('rotate-180');
+      } else {
+        dropdown.classList.add('hidden');
+        if(arrow) arrow.classList.remove('rotate-180');
+      }
+    }
+
     function switchBuilding(newCode) {
        STATE.building = newCode;
-       updateUserInfo(); // Update Title
+       updateUserInfo(); // Re-renders dropdown with new active state and updates title
        updateBadges();
+       
        // Reload current tab with new context
        if (STATE.currentTab) {
           switchTab(STATE.currentTab);
@@ -403,6 +516,115 @@
            }
         }
       }).getDashboardCounts(STATE.building);
+    }
+
+    // --- Settings Modal ---
+    function openSettingsModal() {
+       // Close menu if open
+       document.getElementById('profile-dropdown').classList.add('hidden');
+       
+       // Determine which config to edit
+       // Super Admin can select building to edit. Admin only edits their own.
+       const isSuper = STATE.user.isSuperAdmin;
+       const targetBuilding = STATE.building; // Default to current view
+       
+       renderSettingsForm(targetBuilding);
+    }
+
+    function renderSettingsForm(buildingCode) {
+       const isSuper = STATE.user.isSuperAdmin;
+       const currentConfig = STATE.config[buildingCode] || {};
+       const jsonString = JSON.stringify(currentConfig, null, 2);
+
+       let selectorHtml = '';
+       if (isSuper) {
+          const options = Object.keys(STATE.config).map(code => 
+             `<option value="${code}" ${code === buildingCode ? 'selected' : ''}>${code} - ${STATE.config[code].name}</option>`
+          ).join('');
+          
+          selectorHtml = `
+            <div class="mb-4">
+               <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Select Building to Edit</label>
+               <select id="settings-building-select" onchange="renderSettingsForm(this.value)" class="block w-full rounded border-gray-300 p-2 border bg-gray-50 focus:ring-ops-blue focus:border-ops-blue">
+                 ${options}
+               </select>
+            </div>
+          `;
+       } else {
+          selectorHtml = `
+             <div class="mb-4">
+               <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Editing Configuration For</label>
+               <div class="p-2 bg-gray-100 rounded border border-gray-200 font-bold text-ops-gray-dark">${STATE.config[buildingCode].name} (${buildingCode})</div>
+               <input type="hidden" id="settings-building-select" value="${buildingCode}">
+             </div>
+          `;
+       }
+
+       const html = `
+         <div class="flex flex-col h-full">
+            <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-4">
+               <div class="flex">
+                 <div class="flex-shrink-0">
+                   <i class="fas fa-exclamation-triangle text-yellow-600"></i>
+                 </div>
+                 <div class="ml-3">
+                   <p class="text-sm text-yellow-700">
+                     Advanced Configuration: Editing this JSON directly changes how the application behaves (periods, names, increments). 
+                     Please ensure valid JSON syntax.
+                   </p>
+                 </div>
+               </div>
+            </div>
+
+            ${selectorHtml}
+
+            <div class="flex-grow flex flex-col mb-4">
+              <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Configuration (JSON)</label>
+              <textarea id="settings-json" class="flex-grow w-full font-mono text-xs p-4 border border-gray-300 rounded focus:ring-ops-blue focus:border-ops-blue bg-white" rows="15">${jsonString}</textarea>
+            </div>
+
+            <div class="flex justify-end gap-3 pt-4 border-t border-gray-100">
+               <button onclick="closeModal()" class="px-4 py-2 border border-gray-300 rounded text-gray-600 hover:bg-gray-50 font-bold text-sm">Cancel</button>
+               <button onclick="saveSettings()" class="px-4 py-2 bg-ops-blue text-white rounded hover:bg-ops-blue-dark font-bold text-sm shadow">
+                 <i class="fas fa-save mr-2"></i> Save Changes
+               </button>
+            </div>
+         </div>
+       `;
+       
+       showModal("Application Settings", html, 'max-w-4xl');
+    }
+
+    function saveSettings() {
+       const buildingCode = document.getElementById('settings-building-select').value;
+       const jsonText = document.getElementById('settings-json').value;
+       
+       try {
+          const configObj = JSON.parse(jsonText);
+          
+          showLoading(true);
+          google.script.run.withSuccessHandler(() => {
+             // Update local state
+             STATE.config[buildingCode] = configObj;
+             
+             showLoading(false);
+             closeModal();
+             showToast("Configuration saved successfully.", "success");
+             
+             // If we edited current building, refresh view
+             if (buildingCode === STATE.building) {
+                updateUserInfo();
+                if(STATE.currentTab) switchTab(STATE.currentTab);
+             }
+             
+          }).withFailureHandler(err => {
+             showLoading(false);
+             showToast("Failed to save: " + err, "error");
+          }).saveBuildingConfig(buildingCode, configObj);
+          
+       } catch (e) {
+          showToast("Invalid JSON: " + e.message, "error");
+       }
     }
 
     // --- Navigation Logic ---
