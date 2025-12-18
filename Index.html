@@ -1299,7 +1299,7 @@
          period = form.period.value;
          amountDecimal = parseFloat(form.duration.value);
          // Find label for this value
-         const typeObj = bConfig.coverageTypes.find(t => t.value == amountDecimal);
+         const typeObj = bConfig.coverageTypes.find(t => Number(t.value) === amountDecimal);
          amountType = typeObj ? typeObj.label : (amountDecimal === 1 ? 'Full Period' : 'Half Period');
       } else {
          // Time Range Calculation
