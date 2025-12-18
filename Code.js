@@ -1855,3 +1855,40 @@ function updateSchedulePeriod(month, period, dayUpdates) {
   
   return true;
 }
+
+/**
+ * Admin Action: Update staff carry over hours.
+ * @param {string} email - Staff email
+ * @param {number} newAmount - New carry over amount
+ */
+function updateStaffCarryOver(email, newAmount) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('Staff Directory');
+  const data = sheet.getDataRange().getValues();
+  // Header Row = 0.
+  // Cols: A=Name, B=Email(1), G=CarryOver(6) - based on Schema/getStaffDirectoryData
+  
+  // We need to find the correct column index dynamically or hardcode based on known schema
+  // getStaffDirectoryData uses: carryOverIdx = headers.findIndex(...) or 6.
+  
+  const headers = data[0];
+  const emailIdx = headers.findIndex(h => h.toString().toLowerCase().includes('email'));
+  const carryOverIdx = headers.findIndex(h => h.toString().toLowerCase().includes('carry'));
+  
+  const safeEmailIdx = emailIdx > -1 ? emailIdx : 1;
+  const safeCarryIdx = carryOverIdx > -1 ? carryOverIdx : 6;
+
+  // Find row
+  let rowIndex = -1;
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][safeEmailIdx].toString().toLowerCase() === email.toLowerCase()) {
+      rowIndex = i + 1; // 1-based
+      break;
+    }
+  }
+
+  if (rowIndex === -1) throw new Error("Staff member not found.");
+
+  sheet.getRange(rowIndex, safeCarryIdx + 1).setValue(newAmount);
+  return true;
+}
