@@ -16,10 +16,9 @@ function doGet(e) {
 }
 
 /**
- * Gets the current user's email, determines their role based on the Staff Directory,
- * and fetches necessary initial data.
+ * Helper to get the current user's context (Role, Building, etc.) securely.
  */
-function getInitialData() {
+function getUserContext() {
   const userEmail = Session.getActiveUser().getEmail();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const staffSheet = ss.getSheetByName('Staff Directory');
@@ -29,47 +28,109 @@ function getInitialData() {
   const data = staffSheet.getDataRange().getValues();
   const headers = data.shift(); // Remove headers
   
-  let currentUserRole = 'None';
+  // Dynamic Header Lookup
+  const emailIdx = headers.findIndex(h => h.toString().toLowerCase().includes('email'));
+  const nameIdx = headers.findIndex(h => h.toString().toLowerCase().includes('name'));
+  const roleIdx = headers.findIndex(h => h.toString().toLowerCase().includes('role'));
+  const buildingIdx = headers.findIndex(h => h.toString().toLowerCase().includes('building'));
+
+  const safeEmailIdx = emailIdx > -1 ? emailIdx : 1;
+  const safeNameIdx = nameIdx > -1 ? nameIdx : 0;
+  const safeRoleIdx = roleIdx > -1 ? roleIdx : 2;
+  const safeBuildingIdx = buildingIdx;
+
+  let currentUserRole = 'Guest';
   let currentUserName = '';
+  let currentUserBuilding = DEFAULT_BUILDING;
   
-  // Find current user in directory
-  const userRow = data.find(r => r[1].toString().toLowerCase() === userEmail.toLowerCase());
+  const userRow = data.find(r => r[safeEmailIdx].toString().toLowerCase() === userEmail.toLowerCase());
   
   if (userRow) {
-    currentUserName = userRow[0]; // Col A
-    currentUserRole = userRow[2]; // Col C (Admin or Teacher)
-  } else {
-    // Fallback if not found (optional: default to Teacher or lock out)
-    currentUserRole = 'Guest'; 
+    currentUserName = userRow[safeNameIdx];
+    currentUserRole = userRow[safeRoleIdx];
+
+    if (safeBuildingIdx > -1 && userRow[safeBuildingIdx]) {
+      currentUserBuilding = userRow[safeBuildingIdx];
+    }
   }
+
+  const isSuperAdmin = currentUserRole === 'Super Admin';
 
   return {
     email: userEmail,
     name: currentUserName,
     role: currentUserRole,
-    staffData: getStaffDirectoryData() // Pre-load staff data for the UI
+    building: currentUserBuilding,
+    isSuperAdmin: isSuperAdmin
+  };
+}
+
+/**
+ * Gets the current user's email, determines their role based on the Staff Directory,
+ * and fetches necessary initial data.
+ */
+function getInitialData() {
+  const ctx = getUserContext();
+
+  return {
+    email: ctx.email,
+    name: ctx.name,
+    role: ctx.role,
+    building: ctx.building,
+    isSuperAdmin: ctx.isSuperAdmin,
+    config: BUILDING_CONFIG, // Send full config to client
+    defaultBuilding: DEFAULT_BUILDING,
+    staffData: getStaffDirectoryData()
   };
 }
 
 /**
  * Lightweight helper to get pending counts for badges
+ * Now respects building scope.
  */
 function getDashboardCounts() {
+  const ctx = getUserContext();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   
+  // Build Map of Staff -> Building for filtering
+  const staffDir = getStaffDirectoryData();
+  const staffBuildingMap = {};
+  staffDir.forEach(s => {
+    staffBuildingMap[s.email.toLowerCase()] = s.building;
+  });
+
   // Earned
   const earnedSheet = ss.getSheetByName('TST Approvals (New)');
   const earnedData = earnedSheet.getDataRange().getValues();
-  earnedData.shift(); // Remove header
-  // Filter: Not Approved (8/I=false) AND Not Denied (10/K=false)
-  const earnedCount = earnedData.filter(r => r[8] !== true && r[8] !== "TRUE" && r[10] !== true && r[10] !== "TRUE" && r[0] !== "").length;
+  earnedData.shift();
+
+  const earnedCount = earnedData.filter(r => {
+    const isPending = r[8] !== true && r[8] !== "TRUE" && r[10] !== true && r[10] !== "TRUE" && r[0] !== "";
+    if (!isPending) return false;
+
+    // Filter
+    if (!ctx.isSuperAdmin) {
+       const userBuilding = staffBuildingMap[r[0].toString().toLowerCase()] || 'OMS';
+       if (userBuilding !== ctx.building) return false;
+    }
+    return true;
+  }).length;
   
   // Used
   const usedSheet = ss.getSheetByName('TST Usage (New)');
   const usedData = usedSheet.getDataRange().getValues();
   usedData.shift();
-  // Filter: Not Approved (4/E=false)
-  const usedCount = usedData.filter(r => (r[4] === false || r[4] === "" || r[4] === "FALSE") && r[0] !== "").length;
+
+  const usedCount = usedData.filter(r => {
+    const isPending = (r[4] === false || r[4] === "" || r[4] === "FALSE") && r[0] !== "";
+    if (!isPending) return false;
+
+    if (!ctx.isSuperAdmin) {
+       const userBuilding = staffBuildingMap[r[0].toString().toLowerCase()] || 'OMS';
+       if (userBuilding !== ctx.building) return false;
+    }
+    return true;
+  }).length;
   
   return { earned: earnedCount, used: usedCount };
 }
@@ -138,14 +199,33 @@ function getStaffDirectoryData() {
   const data = sheet.getDataRange().getValues();
   const headers = data.shift();
   
+  // Dynamic Header Lookup
+  const nameIdx = headers.findIndex(h => h.toString().toLowerCase().includes('name'));
+  const emailIdx = headers.findIndex(h => h.toString().toLowerCase().includes('email'));
+  const roleIdx = headers.findIndex(h => h.toString().toLowerCase().includes('role'));
+  const earnedIdx = headers.findIndex(h => h.toString().toLowerCase().includes('earned'));
+  const usedIdx = headers.findIndex(h => h.toString().toLowerCase().includes('used'));
+  const carryOverIdx = headers.findIndex(h => h.toString().toLowerCase().includes('carry'));
+  const buildingIdx = headers.findIndex(h => h.toString().toLowerCase().includes('building'));
+
+  // Fallbacks
+  const iName = nameIdx > -1 ? nameIdx : 0;
+  const iEmail = emailIdx > -1 ? emailIdx : 1;
+  const iRole = roleIdx > -1 ? roleIdx : 2;
+  const iEarned = earnedIdx > -1 ? earnedIdx : 3;
+  const iUsed = usedIdx > -1 ? usedIdx : 4;
+  const iCarry = carryOverIdx > -1 ? carryOverIdx : 6;
+  const iBuilding = buildingIdx;
+
   return data.map((r, i) => ({
-    name: r[0],
-    email: r[1],
-    role: r[2],
-    earned: r[3],
-    used: r[4],
-    carryOver: r[6],
-    total: (Number(r[6]) || 0) + (Number(r[3]) || 0) - (Number(r[4]) || 0),
+    name: r[iName],
+    email: r[iEmail],
+    role: r[iRole],
+    earned: r[iEarned],
+    used: r[iUsed],
+    carryOver: r[iCarry],
+    building: iBuilding > -1 ? r[iBuilding] : DEFAULT_BUILDING,
+    total: (Number(r[iCarry]) || 0) + (Number(r[iEarned]) || 0) - (Number(r[iUsed]) || 0),
     rowIndex: i + 2 // 1-based index + header offset
   })).filter(r => r.email !== "");
 }
@@ -163,31 +243,57 @@ function safeDate(val) {
 /**
  * Fetches data for the Admin Pending Earned view.
  * Source: TST Approvals (New)
+ * @param {string} buildingFilter - Optional building code to filter by (Only honored if Super Admin)
  */
-function getPendingEarned() {
+function getPendingEarned(buildingFilter) {
+  const ctx = getUserContext();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // Security & Validation Enforcement
+  let effectiveFilter = ctx.building;
+  if (ctx.isSuperAdmin) {
+    if (buildingFilter && BUILDING_CONFIG.hasOwnProperty(buildingFilter)) {
+      effectiveFilter = buildingFilter;
+    } else {
+      effectiveFilter = ctx.building;
+    }
+  }
+
+  // 1. Build Map of Staff -> Building
+  const staffDir = getStaffDirectoryData();
+  const staffBuildingMap = {};
+  staffDir.forEach(s => {
+    staffBuildingMap[s.email.toLowerCase()] = s.building;
+  });
+
   const sheet = ss.getSheetByName('TST Approvals (New)');
   const data = sheet.getDataRange().getValues();
-  const headers = data.shift();
+  data.shift();
   
-  // Col I (Index 8) = Approved Status
-  // Col K (Index 10) = Denied Status (New)
-  
-  return data.map((r, i) => ({
-    email: r[0],
-    name: r[1],
-    subbedFor: r[2],
-    date: safeDate(r[4]), // Convert Date to String
-    period: r[5],
-    timeType: r[6],
-    hours: r[7],
-    status: r[8], // Approved Checkbox
-    denied: r[10], // Denied Checkbox
-    rowIndex: i + 2
-  })).filter(item => {
-    // Show if NOT approved AND NOT denied AND has valid data
+  return data.map((r, i) => {
+    const email = r[0];
+    const userBuilding = staffBuildingMap[email.toLowerCase()] || DEFAULT_BUILDING;
+
+    return {
+      email: email,
+      name: r[1],
+      subbedFor: r[2],
+      date: safeDate(r[4]),
+      period: r[5],
+      timeType: r[6],
+      hours: r[7],
+      status: r[8],
+      denied: r[10],
+      building: userBuilding,
+      rowIndex: i + 2
+    };
+  }).filter(item => {
     const isApproved = item.status === true || item.status === "TRUE";
     const isDenied = item.denied === true || item.denied === "TRUE";
+
+    // Filter
+    if (item.building !== effectiveFilter) return false;
+
     return !isApproved && !isDenied && item.email !== "";
   });
 }
@@ -195,22 +301,51 @@ function getPendingEarned() {
 /**
  * Fetches data for the Admin Pending Used view.
  * Source: TST Usage (New)
+ * @param {string} buildingFilter - Optional building code to filter by (Only honored if Super Admin)
  */
-function getPendingUsed() {
+function getPendingUsed(buildingFilter) {
+  const ctx = getUserContext();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // Security & Validation Enforcement
+  let effectiveFilter = ctx.building;
+  if (ctx.isSuperAdmin) {
+    if (buildingFilter && BUILDING_CONFIG.hasOwnProperty(buildingFilter)) {
+      effectiveFilter = buildingFilter;
+    } else {
+      effectiveFilter = ctx.building;
+    }
+  }
+
+  // 1. Build Map of Staff -> Building
+  const staffDir = getStaffDirectoryData();
+  const staffBuildingMap = {};
+  staffDir.forEach(s => {
+    staffBuildingMap[s.email.toLowerCase()] = s.building;
+  });
+
   const sheet = ss.getSheetByName('TST Usage (New)');
   const data = sheet.getDataRange().getValues();
-  const headers = data.shift();
+  data.shift();
   
   // Filter for Checkbox (Col E / Index 4) == false AND has data
-  return data.map((r, i) => ({
-    email: r[0],
-    name: r[1],
-    date: safeDate(r[2]), // Convert Date to String
-    used: r[3],
-    status: r[4],
-    rowIndex: i + 2
-  })).filter(item => (item.status === false || item.status === "" || item.status === "FALSE") && item.email !== "");
+  return data.map((r, i) => {
+    const email = r[0];
+    const userBuilding = staffBuildingMap[email.toLowerCase()] || DEFAULT_BUILDING;
+
+    return {
+      email: email,
+      name: r[1],
+      date: safeDate(r[2]),
+      used: r[3],
+      status: r[4],
+      building: userBuilding,
+      rowIndex: i + 2
+    };
+  }).filter(item => {
+    if (item.building !== effectiveFilter) return false;
+    return (item.status === false || item.status === "" || item.status === "FALSE") && item.email !== "";
+  });
 }
 
 /**
@@ -1022,12 +1157,29 @@ function onFormSubmit(e) {
   const dateStr = e.values[4]; // Form might return different date format, beware.
   const period = e.values[5];
   const amountType = e.values[6];
-  const amountDecimal = e.values[7];
+  let amountDecimal = e.values[7];
   
-  // Lookup Name
-  const staffData = staffSheet.getDataRange().getValues();
-  const staffRow = staffData.find(r => r[1].toString().toLowerCase() === email.toString().toLowerCase());
-  const earnerName = staffRow ? staffRow[0] : email;
+  // Lookup Name & Building
+  const staffDataRaw = staffSheet.getDataRange().getValues();
+  const headers = staffDataRaw.shift(); // Remove headers
+  
+  // Dynamic Header Lookup
+  const emailIdx = headers.findIndex(h => h.toString().toLowerCase().includes('email'));
+  const nameIdx = headers.findIndex(h => h.toString().toLowerCase().includes('name'));
+  const buildingIdx = headers.findIndex(h => h.toString().toLowerCase().includes('building'));
+
+  const iEmail = emailIdx > -1 ? emailIdx : 1;
+  const iName = nameIdx > -1 ? nameIdx : 0;
+  const iBuilding = buildingIdx;
+
+  const staffRow = staffDataRaw.find(r => r[iEmail].toString().toLowerCase() === email.toString().toLowerCase());
+  const earnerName = staffRow ? staffRow[iName] : email;
+  const earnerBuilding = (staffRow && iBuilding > -1 && staffRow[iBuilding]) ? staffRow[iBuilding] : DEFAULT_BUILDING;
+
+  // Legacy Form Support: Calculate missing decimal if needed
+  if (amountDecimal == null || amountDecimal === '') {
+    amountDecimal = calculatePeriods(period, amountType, earnerBuilding);
+  }
 
   // Append to Approvals
   approvalSheet.appendRow([
@@ -1044,6 +1196,34 @@ function onFormSubmit(e) {
     false, // Denied
     ""     // TS
   ]);
+}
+
+/**
+ * Helper to calculate period value for legacy forms.
+ * @param {string} selectedPeriod 
+ * @param {string} amountType 
+ * @param {string} buildingCode 
+ */
+function calculatePeriods(selectedPeriod, amountType, buildingCode) {
+  // Normalize
+  const p = selectedPeriod ? selectedPeriod.toString() : "";
+  const type = amountType ? amountType.toString().toLowerCase() : "";
+  const b = buildingCode || DEFAULT_BUILDING;
+
+  if (b === 'OMS') {
+    // Special Rules for OMS
+    // Period 6 or 7 (but not 6/7) is always 0.5
+    if ((p.includes('Period 6') || p.includes('Period 7')) && !p.includes('Period 6/7')) {
+      return 0.5;
+    }
+  }
+
+  // Default Rules
+  if (type.includes('half')) return 0.5;
+  if (type.includes('full')) return 1.0;
+
+  // Fallback
+  return 1.0;
 }
 
 /**
@@ -1166,8 +1346,23 @@ function sendStyledEmail(recipient, subject, title, contentHtml, buttonText) {
 
 const MONTH_ORDER = ["September", "October", "November", "December", "January", "February", "March", "April", "May", "June"];
 
-function getScheduleData() {
+/**
+ * @param {string} buildingFilter - Optional building code to filter by (Only honored if Super Admin)
+ */
+function getScheduleData(buildingFilter) {
+  const ctx = getUserContext();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // Security & Validation Enforcement
+  let effectiveFilter = ctx.building;
+  if (ctx.isSuperAdmin) {
+    if (buildingFilter && BUILDING_CONFIG.hasOwnProperty(buildingFilter)) {
+      effectiveFilter = buildingFilter;
+    } else {
+      effectiveFilter = ctx.building;
+    }
+  }
+
   let schedSheet = ss.getSheetByName('TST Availability');
   if (!schedSheet) {
     // Create if missing
@@ -1177,6 +1372,13 @@ function getScheduleData() {
 
   const data = schedSheet.getDataRange().getValues();
   data.shift(); // Remove header
+
+  // 0. Build Staff Building Map
+  const staffDir = getStaffDirectoryData();
+  const staffBuildingMap = {};
+  staffDir.forEach(s => {
+    staffBuildingMap[s.email.toLowerCase()] = s.building;
+  });
 
   // 1. Calculate Hours per Teacher per Month
   const hoursMap = calculateMonthlyHours(); // Returns { "email_Month": hours }
@@ -1191,6 +1393,11 @@ function getScheduleData() {
 
   data.forEach(row => {
     const [month, days, period, name, email] = row;
+
+    // Filter by Building
+    const userBuilding = staffBuildingMap[email.toLowerCase()] || DEFAULT_BUILDING;
+    if (userBuilding !== effectiveFilter) return;
+
     if (schedule[month]) {
       const key = `${email}_${month}`;
       const hours = hoursMap[key] || 0;
