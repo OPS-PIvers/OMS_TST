@@ -2251,7 +2251,7 @@
 
     function openStaffDetail(email, name, isEmbedded = false) {
       showLoading(true);
-      const isAdmin = STATE.user.role === 'Admin';
+      const isAdmin = STATE.user.role === 'Admin' || STATE.user.role === 'Super Admin' || STATE.user.isSuperAdmin;
       const apiCall = isAdmin && !isEmbedded ? 'getStaffHistoryWithActions' : 'getTeacherHistory';
 
       google.script.run.withSuccessHandler(history => {

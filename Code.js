@@ -37,7 +37,7 @@ function getUserContext() {
   const safeEmailIdx = emailIdx > -1 ? emailIdx : 1;
   const safeNameIdx = nameIdx > -1 ? nameIdx : 0;
   const safeRoleIdx = roleIdx > -1 ? roleIdx : 2;
-  const safeBuildingIdx = buildingIdx;
+  const safeBuildingIdx = buildingIdx > -1 ? buildingIdx : 7; // Fallback to Col H
 
   let currentUserRole = 'Guest';
   let currentUserName = '';
@@ -82,6 +82,10 @@ function getInitialData() {
   const ctx = getUserContext();
   const config = getConfig(); // Load from Sheet
 
+  // Optimization: If Teacher, only calculate balances for them.
+  // Admins need balances for everyone in their building view.
+  const isTeacherOnly = ctx.role === 'Teacher'; 
+
   return {
     email: ctx.email,
     name: ctx.name,
@@ -91,7 +95,7 @@ function getInitialData() {
     isSuperAdmin: ctx.isSuperAdmin,
     config: config,
     defaultBuilding: DEFAULT_BUILDING,
-    staffData: getStaffDirectoryData(ctx.building) // Initial load for primary building
+    staffData: getStaffDirectoryData(ctx.building, isTeacherOnly ? ctx.email : null) // Optimized load
   };
 }
 
@@ -298,7 +302,7 @@ function batchDeleteUsed(indices) {
 /**
  * Helper to get clean object array of Staff Directory with DYNAMIC balances.
  */
-function getStaffDirectoryData(buildingFilter) {
+function getStaffDirectoryData(buildingFilter, targetEmail) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('Staff Directory');
   const data = sheet.getDataRange().getValues();
@@ -315,11 +319,11 @@ function getStaffDirectoryData(buildingFilter) {
   const iEmail = emailIdx > -1 ? emailIdx : 1;
   const iRole = roleIdx > -1 ? roleIdx : 2;
   const iCarry = carryOverIdx > -1 ? carryOverIdx : 6;
-  const iBuilding = buildingIdx;
+  const iBuilding = buildingIdx > -1 ? buildingIdx : 7;
 
   // 1. Calculate Balances Dynamically
   // We need to sum Earned and Used from the transaction sheets, potentially filtered by building.
-  const balances = calculateDynamicBalances(buildingFilter);
+  const balances = calculateDynamicBalances(buildingFilter, targetEmail);
 
   return data.map((r, i) => {
     const email = r[iEmail].toString().toLowerCase();
@@ -352,8 +356,9 @@ function getStaffDirectoryData(buildingFilter) {
 /**
  * Aggregates Earned and Used hours per email.
  * Optionally filters transactions by building.
+ * Optionally filters by a specific target email (optimization).
  */
-function calculateDynamicBalances(buildingFilter) {
+function calculateDynamicBalances(buildingFilter, targetEmail) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const stats = {}; // { email: { earned: 0, used: 0 } }
 
@@ -363,6 +368,8 @@ function calculateDynamicBalances(buildingFilter) {
     if (!stats[key]) stats[key] = { earned: 0, used: 0 };
     return stats[key];
   };
+  
+  const targetEmailLower = targetEmail ? targetEmail.toLowerCase() : null;
 
   // 1. Process Earned (Approved only)
   const earnedSheet = ss.getSheetByName('TST Approvals (New)');
@@ -372,11 +379,16 @@ function calculateDynamicBalances(buildingFilter) {
   // Col H(7)=Hours, I(8)=Approved, N(13)=Building
   earnedData.forEach(r => {
     const email = r[0];
+    if (!email) return;
+    
+    // Optimization: Skip if not target
+    if (targetEmailLower && email.toLowerCase() !== targetEmailLower) return;
+
     const hours = Number(r[7]) || 0;
     const isApproved = r[8] === true || r[8] === "TRUE";
     const building = r[13] || 'OMS';
 
-    if (isApproved && email) {
+    if (isApproved) {
       if (!buildingFilter || building === buildingFilter) {
         getStat(email).earned += hours;
       }
@@ -391,11 +403,16 @@ function calculateDynamicBalances(buildingFilter) {
   // Col D(3)=Amount, E(4)=Status(Approved), H(7)=Building
   usedData.forEach(r => {
     const email = r[0];
+    if (!email) return;
+
+    // Optimization: Skip if not target
+    if (targetEmailLower && email.toLowerCase() !== targetEmailLower) return;
+
     const amount = Number(r[3]) || 0;
     const isApproved = r[4] === true || r[4] === "TRUE"; // Used requests are often auto-approved or manually marked
     const building = r[7] || 'OMS';
 
-    if (isApproved && email) {
+    if (isApproved) {
       if (!buildingFilter || building === buildingFilter) {
         getStat(email).used += amount;
       }
@@ -713,8 +730,8 @@ function approveEarnedRow(rowIndex, emailData) {
   
   // Get data for email BEFORE updating
   // Row Index is 1-based. 
-  // Cols: A=Email(1), B=Name(2), C=SubbedFor(3), E=Date(5), F=Period(6), H=Hours(8)
-  const range = sheet.getRange(rowIndex, 1, 1, 8);
+  // Cols: A=Email(1), B=Name(2), C=SubbedFor(3), E=Date(5), F=Period(6), H=Hours(8), N=Building(14)
+  const range = sheet.getRange(rowIndex, 1, 1, 14);
   const values = range.getValues()[0];
   const rowData = {
     email: values[0],
@@ -722,7 +739,8 @@ function approveEarnedRow(rowIndex, emailData) {
     subbedFor: values[2],
     date: values[4],
     period: values[5],
-    hours: values[7]
+    hours: values[7],
+    building: values[13] || 'OMS'
   };
 
   // Col I (9) is Approved Status, Col J (10) is Timestamp
@@ -735,6 +753,9 @@ function approveEarnedRow(rowIndex, emailData) {
   
   // Send Email if requested
   if (emailData && emailData.send) {
+    const config = getConfig();
+    const buildingName = (config[rowData.building] && config[rowData.building].name) ? config[rowData.building].name : rowData.building;
+
     const formattedDate = new Date(rowData.date).toLocaleDateString();
     const subject = `TST Request for ${formattedDate} has been Approved`;
     const body = `
@@ -746,7 +767,7 @@ function approveEarnedRow(rowIndex, emailData) {
       </div>
       <p>You can check your up-to-date balance on the TST Portal.</p>
     `;
-    sendStyledEmail(rowData.email, subject, "Your TST Request was Approved!", body, "Visit the TST Portal");
+    sendStyledEmail(rowData.email, subject, "Your TST Request was Approved!", body, "Visit the TST Portal", buildingName);
   }
   
   return true;
@@ -760,7 +781,8 @@ function denyEarnedRow(rowIndex, emailData) {
   const sheet = ss.getSheetByName('TST Approvals (New)');
   
   // Get data for email
-  const range = sheet.getRange(rowIndex, 1, 1, 8);
+  // Range expanded to 14 to get Building in Col N
+  const range = sheet.getRange(rowIndex, 1, 1, 14);
   const values = range.getValues()[0];
   const rowData = {
     email: values[0],
@@ -768,7 +790,8 @@ function denyEarnedRow(rowIndex, emailData) {
     subbedFor: values[2],
     date: values[4],
     period: values[5],
-    hours: values[7]
+    hours: values[7],
+    building: values[13] || 'OMS'
   };
 
   // Col I (9) is Approved Status
@@ -792,6 +815,9 @@ function denyEarnedRow(rowIndex, emailData) {
   
   // Send Email if requested
   if (emailData && emailData.send) {
+    const config = getConfig();
+    const buildingName = (config[rowData.building] && config[rowData.building].name) ? config[rowData.building].name : rowData.building;
+
     const formattedDate = new Date(rowData.date).toLocaleDateString();
     const subject = `TST Request for ${formattedDate} has been Denied`;
     
@@ -822,7 +848,7 @@ function denyEarnedRow(rowIndex, emailData) {
       <p>Please review the details and resubmit if necessary, or contact the TST administrator.</p>
     `;
     
-    sendStyledEmail(rowData.email, subject, "TST Request Update", body, "Visit the TST Portal");
+    sendStyledEmail(rowData.email, subject, "TST Request Update", body, "Visit the TST Portal", buildingName);
   }
   
   return true;
@@ -1146,23 +1172,43 @@ function sendStatusEmail(targetEmail, targetName) {
   
   if (!staff) throw new Error("Staff member not found.");
   
-  const balance = Number(staff.total).toFixed(2);
-  
-  // Summary Section
+  const config = getConfig();
+  const primaryBuilding = staff.building.includes(',') ? staff.building.split(',')[0].trim() : staff.building;
+  const buildingName = (config[primaryBuilding] && config[primaryBuilding].name) ? config[primaryBuilding].name : primaryBuilding;
+
+  // Summary Section (4 Cards)
   let htmlContent = `
-    <div style="background-color: #eff6ff; border-radius: 6px; padding: 20px; margin-bottom: 25px; border-left: 4px solid #3b82f6;">
-      <p style="margin: 0; color: #1e40af; font-size: 14px; text-transform: uppercase; font-weight: 600;">Current Balance</p>
-      <p style="margin: 5px 0 0 0; color: #1e3a8a; font-size: 32px; font-weight: 700;">${balance} <span style="font-size: 16px; font-weight: 500;">hours</span></p>
+    <div style="display: table; width: 100%; border-spacing: 10px; margin-bottom: 20px; table-layout: fixed;">
+      <div style="display: table-row;">
+        <div style="display: table-cell; background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; text-align: center;">
+          <div style="color: #6b7280; font-size: 10px; font-weight: bold; text-transform: uppercase; margin-bottom: 4px;">Carry Over</div>
+          <div style="color: #374151; font-size: 18px; font-weight: bold;">${Number(staff.carryOver || 0).toFixed(2)}</div>
+        </div>
+        <div style="display: table-cell; background-color: #eff6ff; border: 1px solid #dbeafe; border-radius: 8px; padding: 12px; text-align: center;">
+          <div style="color: #1e40af; font-size: 10px; font-weight: bold; text-transform: uppercase; margin-bottom: 4px;">Earned</div>
+          <div style="color: #1e3a8a; font-size: 18px; font-weight: bold;">${Number(staff.earned || 0).toFixed(2)}</div>
+        </div>
+      </div>
+      <div style="display: table-row;">
+        <div style="display: table-cell; background-color: #fef2f2; border: 1px solid #fee2e2; border-radius: 8px; padding: 12px; text-align: center;">
+          <div style="color: #991b1b; font-size: 10px; font-weight: bold; text-transform: uppercase; margin-bottom: 4px;">Used</div>
+          <div style="color: #7f1d1d; font-size: 18px; font-weight: bold;">${Number(staff.used || 0).toFixed(2)}</div>
+        </div>
+        <div style="display: table-cell; background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; text-align: center;">
+          <div style="color: #4b5563; font-size: 10px; font-weight: bold; text-transform: uppercase; margin-bottom: 4px;">Balance</div>
+          <div style="color: #111827; font-size: 18px; font-weight: bold;">${Number(staff.total || 0).toFixed(2)}</div>
+        </div>
+      </div>
     </div>
     
-    <h3 style="color: #374151; font-size: 18px; margin-bottom: 15px; border-bottom: 1px solid #e5e7eb; padding-bottom: 10px;">Activity History</h3>
+    <h3 style="color: #374151; font-size: 16px; margin-bottom: 15px; border-bottom: 1px solid #e5e7eb; padding-bottom: 10px; font-weight: 600;">Activity History</h3>
     
-    <table cellpadding="0" cellspacing="0" style="width: 100%; border-collapse: collapse; font-size: 14px;">
+    <table cellpadding="0" cellspacing="0" style="width: 100%; border-collapse: collapse; font-size: 13px;">
       <thead>
         <tr style="background-color: #f9fafb;">
-          <th style="text-align: left; padding: 12px 10px; border-bottom: 1px solid #e5e7eb; color: #6b7280; font-weight: 600; text-transform: uppercase; font-size: 12px;">Date</th>
-          <th style="text-align: left; padding: 12px 10px; border-bottom: 1px solid #e5e7eb; color: #6b7280; font-weight: 600; text-transform: uppercase; font-size: 12px;">Details</th>
-          <th style="text-align: right; padding: 12px 10px; border-bottom: 1px solid #e5e7eb; color: #6b7280; font-weight: 600; text-transform: uppercase; font-size: 12px;">Hours</th>
+          <th style="text-align: left; padding: 10px; border-bottom: 1px solid #e5e7eb; color: #6b7280; font-weight: 600; text-transform: uppercase; font-size: 11px;">Date</th>
+          <th style="text-align: left; padding: 10px; border-bottom: 1px solid #e5e7eb; color: #6b7280; font-weight: 600; text-transform: uppercase; font-size: 11px;">Details</th>
+          <th style="text-align: right; padding: 10px; border-bottom: 1px solid #e5e7eb; color: #6b7280; font-weight: 600; text-transform: uppercase; font-size: 11px;">Hours</th>
         </tr>
       </thead>
       <tbody>`;
@@ -1182,35 +1228,44 @@ function sendStatusEmail(targetEmail, targetName) {
       let amountDisplay = '';
       
       if (h.type === 'Earned') {
-        amountStyle += 'color: #059669;'; // Green
-        amountDisplay = `+${h.amount}`;
-        typeLabel = `<span style="background-color: #d1fae5; color: #065f46; padding: 2px 6px; border-radius: 4px; font-size: 11px;">EARNED</span>`;
-        details = `Subbed for: <strong>${h.subbedFor}</strong>`;
+        amountStyle += 'color: #2d3f89;'; 
+        amountDisplay = `+${Number(h.amount).toFixed(2)}`;
+        typeLabel = `<span style="background-color: #eaecf5; color: #2d3f89; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">EARNED</span>`;
+        details = `<div style="font-weight: 500; color: #333;">${h.period}</div><div style="font-size: 11px; color: #666;">Covered: ${h.subbedFor}</div>`;
+        rowBg = '#f8fafc';
       } else if (h.type === 'Used') {
-        amountStyle += 'color: #dc2626;'; // Red
-        amountDisplay = `-${h.amount}`;
-        typeLabel = `<span style="background-color: #fee2e2; color: #991b1b; padding: 2px 6px; border-radius: 4px; font-size: 11px;">USED</span>`;
-        details = 'Hours Redeemed';
+        amountStyle += 'color: #ad2122;';
+        amountDisplay = `-${Number(h.amount).toFixed(2)}`;
+        typeLabel = `<span style="background-color: #e5c7c7; color: #ad2122; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">USED</span>`;
+        details = '<div style="font-weight: 500; color: #333;">Redeemed</div>';
+        rowBg = '#fffafa';
+      } else if (h.type === 'Pending') {
+        amountStyle += 'color: #854d0e;';
+        amountDisplay = `${Number(h.amount).toFixed(2)}`;
+        typeLabel = `<span style="background-color: #fef9c3; color: #854d0e; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">PENDING</span>`;
+        details = `<div style="font-weight: 500; color: #333;">${h.period !== 'N/A' ? h.period : 'Usage Request'}</div>`;
+        rowBg = '#ffffff';
       } else { // Denied
-        amountStyle += 'color: #9ca3af; text-decoration: line-through;'; // Gray
-        amountDisplay = `${h.amount}`;
-        typeLabel = `<span style="background-color: #f3f4f6; color: #374151; padding: 2px 6px; border-radius: 4px; font-size: 11px;">DENIED</span>`;
-        details = 'Request Denied';
+        amountStyle += 'color: #999; text-decoration: line-through;';
+        amountDisplay = `${Number(h.amount).toFixed(2)}`;
+        typeLabel = `<span style="background-color: #f2f2f3; color: #666; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">DENIED</span>`;
+        details = `<div style="font-weight: 500; color: #666; text-decoration: line-through;">${h.period}</div>`;
         if (h.denialReason) {
-          details += `: ${h.denialReason}`;
+          details += `<div style="font-size: 11px; color: #ad2122; margin-top: 2px;">Reason: ${h.denialReason}</div>`;
         }
+        rowBg = '#ffffff';
       }
       
       htmlContent += `
-        <tr>
-          <td style="padding: 12px 10px; border-bottom: 1px solid #f3f4f6; vertical-align: top; color: #4b5563;">
+        <tr style="background-color: ${rowBg};">
+          <td style="padding: 10px; border-bottom: 1px solid #f3f4f6; vertical-align: top; color: #4b5563;">
             <div style="margin-bottom: 4px;">${dateStr}</div>
             ${typeLabel}
           </td>
-          <td style="padding: 12px 10px; border-bottom: 1px solid #f3f4f6; vertical-align: top; color: #374151;">
+          <td style="padding: 10px; border-bottom: 1px solid #f3f4f6; vertical-align: top;">
             ${details}
           </td>
-          <td style="padding: 12px 10px; border-bottom: 1px solid #f3f4f6; vertical-align: top; text-align: right; ${amountStyle}">
+          <td style="padding: 10px; border-bottom: 1px solid #f3f4f6; vertical-align: top; text-align: right; ${amountStyle}">
             ${amountDisplay}
           </td>
         </tr>`;
@@ -1221,8 +1276,8 @@ function sendStatusEmail(targetEmail, targetName) {
       </tbody>
     </table>
     
-    <p style="margin-top: 25px; font-size: 13px; color: #6b7280; text-align: center;">
-      This report was generated automatically on ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}.
+    <p style="margin-top: 25px; font-size: 11px; color: #9ca3af; text-align: center;">
+      Generated on ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}
     </p>
   `;
   
@@ -1231,7 +1286,8 @@ function sendStatusEmail(targetEmail, targetName) {
     "Your TST Hours Report",
     `TST Report for ${targetName}`,
     htmlContent,
-    "View Dashboard"
+    "View Full Dashboard",
+    buildingName
   );
   
   return true;
@@ -1329,8 +1385,9 @@ function calculatePeriods(selectedPeriod, amountType, buildingCode) {
 /**
  * Helper to send a styled HTML email.
  */
-function sendStyledEmail(recipient, subject, title, contentHtml, buttonText) {
+function sendStyledEmail(recipient, subject, title, contentHtml, buttonText, buildingName) {
   const appUrl = ScriptApp.getService().getUrl();
+  const headerName = buildingName || 'Orono Schools';
   
   const htmlTemplate = `
     <!DOCTYPE html>
@@ -1417,7 +1474,7 @@ function sendStyledEmail(recipient, subject, title, contentHtml, buttonText) {
     <body>
       <div class="container">
         <div class="header">
-          <h1>Orono Middle School</h1>
+          <h1>${headerName}</h1>
         </div>
         <div class="content">
           <h2>${title}</h2>
@@ -1441,7 +1498,6 @@ function sendStyledEmail(recipient, subject, title, contentHtml, buttonText) {
     htmlBody: htmlTemplate
   });
 }
-
 // --- SCHEDULE / TST AVAILABILITY FEATURE ---
 
 const MONTH_ORDER = ["September", "October", "November", "December", "January", "February", "March", "April", "May", "June"];
@@ -1595,10 +1651,13 @@ function saveAvailability(month, availabilityList) {
 }
 
 function sendCoverageRequest(payload) {
-  // payload: { teacherEmail, teacherName, subbedFor, date, period, amount, amountType }
+  // payload: { teacherEmail, teacherName, subbedFor, date, period, amount, amountType, building }
   const scriptUrl = ScriptApp.getService().getUrl();
   const adminEmail = Session.getActiveUser().getEmail();
-  
+  const building = payload.building || DEFAULT_BUILDING;
+  const config = getConfig();
+  const buildingName = (config[building] && config[building].name) ? config[building].name : (building === 'OMS' ? 'Orono Middle School' : 'Orono Schools');
+
   // Encode params safely
   const params = [
     `action=accept`,
@@ -1609,11 +1668,12 @@ function sendCoverageRequest(payload) {
     `pd=${encodeURIComponent(payload.period)}`,
     `amt=${payload.amount}`,
     `type=${encodeURIComponent(payload.amountType)}`,
-    `adm=${encodeURIComponent(adminEmail)}`
+    `adm=${encodeURIComponent(adminEmail)}`,
+    `bld=${encodeURIComponent(building)}`
   ].join('&');
   
   const acceptLink = `${scriptUrl}?${params}`;
-  const rejectLink = `${scriptUrl}?action=reject&tName=${encodeURIComponent(payload.teacherName)}&sub=${encodeURIComponent(payload.subbedFor)}&pd=${encodeURIComponent(payload.period)}&adm=${encodeURIComponent(adminEmail)}`;
+  const rejectLink = `${scriptUrl}?action=reject&tName=${encodeURIComponent(payload.teacherName)}&sub=${encodeURIComponent(payload.subbedFor)}&pd=${encodeURIComponent(payload.period)}&adm=${encodeURIComponent(adminEmail)}&bld=${encodeURIComponent(building)}`;
 
   const subject = `TST Coverage Request: ${payload.date} - ${payload.period}`;
   
@@ -1623,7 +1683,8 @@ function sendCoverageRequest(payload) {
 
   const htmlBody = `
     <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e5e7eb; border-radius: 8px;">
-      <h2 style="color: #2d3f89; margin-top: 0;">TST Coverage Request</h2>
+      <h2 style="color: #2d3f89; margin-top: 0;">${buildingName}</h2>
+      <h3 style="color: #4b5563; margin-top: 0;">TST Coverage Request</h3>
       <p>Hello <strong>${payload.teacherName}</strong>,</p>
       <p>Can you provide sub coverage?</p>
       
@@ -1661,10 +1722,14 @@ function sendCoverageRequest(payload) {
     <p>This email serves as a record of your request. You will receive another notification if they accept or decline.</p>
   `;
 
-  sendStyledEmail(adminEmail, adminSubject, "Coverage Requested", adminBody, "View Dashboard");
+  sendStyledEmail(adminEmail, adminSubject, "Coverage Requested", adminBody, "View Dashboard", buildingName);
 }
 
 function handleCoverageAccept(p) {
+  const building = p.bld || DEFAULT_BUILDING;
+  const config = getConfig();
+  const buildingName = (config[building] && config[building].name) ? config[building].name : (building === 'OMS' ? 'Orono Middle School' : 'Orono Schools');
+
   // Decode
   const formObj = {
     email: p.tEmail,
@@ -1673,7 +1738,8 @@ function handleCoverageAccept(p) {
     date: p.date,
     period: p.pd,
     amountType: p.type,
-    amountDecimal: parseFloat(p.amt)
+    amountDecimal: parseFloat(p.amt),
+    building: building
   };
   
   // Reuse submit logic
@@ -1691,7 +1757,7 @@ function handleCoverageAccept(p) {
       <p>A pending earned request has been automatically created.</p>
     `;
     
-    sendStyledEmail(p.adm, `TST Coverage Accepted: ${p.tName}`, "Coverage Confirmed", emailBody, "View Dashboard");
+    sendStyledEmail(p.adm, `TST Coverage Accepted: ${p.tName}`, "Coverage Confirmed", emailBody, "View Dashboard", buildingName);
   }
   
   let appUrl = ScriptApp.getService().getUrl();
@@ -1735,7 +1801,7 @@ function handleCoverageAccept(p) {
           <div class="icon-circle">
             <i class="fas fa-check"></i>
           </div>
-          <h1 style="margin:0; font-size:20px; font-weight:600;">Orono Middle School</h1>
+          <h1 style="margin:0; font-size:20px; font-weight:600;">${buildingName}</h1>
           <p style="margin:4px 0 0 0; opacity:0.8; font-size:12px; text-transform:uppercase; letter-spacing:1px;">TST Manager</p>
         </div>
         <div class="content">
@@ -1762,6 +1828,10 @@ function handleCoverageAccept(p) {
 }
 
 function handleCoverageReject(p) {
+  const building = p.bld || DEFAULT_BUILDING;
+  const config = getConfig();
+  const buildingName = (config[building] && config[building].name) ? config[building].name : (building === 'OMS' ? 'Orono Middle School' : 'Orono Schools');
+
   // Notify Admin
   const emailBody = `
     <p>Teacher <strong>${p.tName}</strong> has <span style="color: #ad2122; font-weight: bold;">declined</span> the coverage request for <strong>${p.sub}</strong>.</p>
@@ -1774,7 +1844,7 @@ function handleCoverageReject(p) {
     <p>Please select another teacher from the schedule.</p>
   `;
 
-  sendStyledEmail(p.adm, `TST Request Declined: ${p.tName}`, "Coverage Declined", emailBody, "Find Replacement");
+  sendStyledEmail(p.adm, `TST Request Declined: ${p.tName}`, "Coverage Declined", emailBody, "Find Replacement", buildingName);
   
   return HtmlService.createHtmlOutput(`
     <div style="font-family: sans-serif; text-align: center; padding: 50px;">
