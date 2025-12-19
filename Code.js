@@ -1140,6 +1140,17 @@ function processBatch(queue) {
 function sendBatchStatusEmails(emails) {
   if (!emails || !Array.isArray(emails)) throw new Error("Invalid email list.");
   
+  // Get sender context
+  const ctx = getUserContext();
+  const senderName = ctx.name || "TST Admin";
+  const senderEmail = ctx.email;
+  
+  const emailOptions = {
+    name: `${senderName} (via TST)`,
+    replyTo: senderEmail,
+    buildingCode: primaryBuilding // Pass explicit code to avoid lookup errors
+  };
+
   let successCount = 0;
   let failCount = 0;
   
@@ -1152,7 +1163,7 @@ function sendBatchStatusEmails(emails) {
       const staff = staffDir.find(s => s.email.toLowerCase() === email.toLowerCase());
       const name = staff ? staff.name : "Staff Member";
 
-      sendStatusEmail(email, name);
+      sendStatusEmail(email, name, emailOptions);
       successCount++;
     } catch (e) {
       console.error(`Failed to send email to ${email}:`, e);
@@ -1166,7 +1177,7 @@ function sendBatchStatusEmails(emails) {
 /**
  * Sends an email report to a staff member.
  */
-function sendStatusEmail(targetEmail, targetName) {
+function sendStatusEmail(targetEmail, targetName, emailOptions) {
   const history = getTeacherHistory(targetEmail);
   const staff = getStaffDirectoryData().find(s => s.email.toLowerCase() === targetEmail.toLowerCase());
   
@@ -1287,7 +1298,8 @@ function sendStatusEmail(targetEmail, targetName) {
     `TST Report for ${targetName}`,
     htmlContent,
     "View Full Dashboard",
-    buildingName
+    buildingName,
+    emailOptions // Pass custom options
   );
   
   return true;
@@ -1383,9 +1395,183 @@ function calculatePeriods(selectedPeriod, amountType, buildingCode) {
 }
 
 /**
- * Helper to send a styled HTML email.
+ * Trigger: On Spreadsheet Open.
+ * Adds custom menu for Admins.
  */
-function sendStyledEmail(recipient, subject, title, contentHtml, buttonText, buildingName) {
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('TST Admin')
+    .addItem('Authorize Email Service', 'setupEmailService')
+    .addToUi();
+}
+
+/**
+ * Admin Action: Sets up the email sending trigger for the CURRENT user.
+ * This must be run by the Building Secretary/Admin from the Spreadsheet menu.
+ */
+function setupEmailService() {
+  const ui = SpreadsheetApp.getUi();
+  const userEmail = Session.getActiveUser().getEmail();
+  
+  // 1. Delete ALL existing triggers for this function to prevent duplicates
+  const triggers = ScriptApp.getUserTriggers(SpreadsheetApp.getActiveSpreadsheet());
+  triggers.forEach(t => {
+    if (t.getHandlerFunction() === 'processEmailQueue') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+  
+  // 2. Create 'OnChange' Trigger (Attempts immediate sending)
+  ScriptApp.newTrigger('processEmailQueue')
+    .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
+    .onChange()
+    .create();
+
+  // 3. Create 'Every 1 Minute' Trigger (Guarantees sending if OnChange misses)
+  ScriptApp.newTrigger('processEmailQueue')
+    .timeBased()
+    .everyMinutes(1)
+    .create();
+    
+  ui.alert(
+    'Email Service Authorized',
+    `Success! The script will now check for new emails every minute and send them from: ${userEmail}.\n\n(Triggers installed: OnChange + 1-Minute Timer)`,
+    ui.ButtonSet.OK
+  );
+}
+
+/**
+ * Trigger Handler: Processes the Email Queue.
+ * Runs as the user who installed the trigger (The Admin).
+ */
+function processEmailQueue(e) {
+  const MAX_BATCH = 200; // Process up to 200 at a time to cover full building reports
+  
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) return; 
+
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('Email Queue');
+    if (!sheet) return;
+
+    const data = sheet.getDataRange().getValues();
+    if (data.length <= 1) return;
+
+    const headers = data[0];
+    const statusIdx = headers.indexOf('Status');
+    const buildingIdx = headers.indexOf('Building');
+    const recipientIdx = headers.indexOf('Recipient');
+    const subjectIdx = headers.indexOf('Subject');
+    const bodyIdx = headers.indexOf('Body');
+    const optionsIdx = headers.indexOf('Options');
+    const tsIdx = headers.indexOf('Timestamp');
+
+    if (statusIdx === -1 || buildingIdx === -1) return;
+
+    const ctx = getUserContext();
+    const isSuper = ctx.isSuperAdmin;
+    const assignedBuildings = ctx.buildings || [DEFAULT_BUILDING];
+
+    const rowsToProcess = [];
+    
+    for (let i = 1; i < data.length; i++) {
+      if (rowsToProcess.length >= MAX_BATCH) break;
+
+      const row = data[i];
+      const status = row[statusIdx];
+      const rowBuilding = row[buildingIdx];
+
+      if (status !== 'Pending') continue;
+
+      const canProcess = isSuper || assignedBuildings.includes(rowBuilding);
+      
+      if (canProcess) {
+        rowsToProcess.push({
+          rowIndex: i + 1,
+          recipient: row[recipientIdx],
+          subject: row[subjectIdx],
+          body: row[bodyIdx],
+          options: row[optionsIdx] ? JSON.parse(row[optionsIdx]) : {}
+        });
+      }
+    }
+
+    // 1. Process Emails
+    rowsToProcess.forEach(item => {
+      try {
+        // Mark as Processing IMMEDIATELY to prevent other triggers from grabbing it
+        sheet.getRange(item.rowIndex, statusIdx + 1).setValue('Processing');
+        SpreadsheetApp.flush(); // Force update to sheet
+        
+        MailApp.sendEmail({
+          to: item.recipient,
+          subject: item.subject,
+          htmlBody: item.body,
+          name: ctx.name || "TST Admin",
+          replyTo: ctx.email
+        });
+        
+        sheet.getRange(item.rowIndex, statusIdx + 1).setValue('Sent');
+        sheet.getRange(item.rowIndex, statusIdx + 2).setValue(new Date());
+      } catch (err) {
+        console.error("Email Send Error", err);
+        sheet.getRange(item.rowIndex, statusIdx + 1).setValue('Error: ' + err.message);
+      }
+    });
+
+    // 2. Automatic Cleanup
+    // Remove rows marked 'Sent' or 'Error' that are older than 24 hours
+    const now = new Date().getTime();
+    const oneDay = 24 * 60 * 60 * 1000;
+    
+    // We iterate backwards to delete rows without messing up indices
+    for (let i = data.length - 1; i >= 1; i--) {
+      const status = data[i][statusIdx];
+      const timestamp = new Date(data[i][tsIdx]).getTime();
+      
+      if ((status === 'Sent' || status.toString().startsWith('Error')) && (now - timestamp > oneDay)) {
+        sheet.deleteRow(i + 1);
+      }
+    }
+
+  } catch (e) {
+    console.error("Queue Error", e);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Adds an email to the queue for processing.
+ */
+function addToEmailQueue(recipient, subject, body, building, options) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName('Email Queue');
+  
+  if (!sheet) {
+    sheet = ss.insertSheet('Email Queue');
+    sheet.appendRow(['Timestamp', 'Recipient', 'Subject', 'Body', 'Building', 'Status', 'LastUpdated', 'Options']);
+    sheet.hideSheet(); // Hide from clutter
+  }
+  
+  sheet.appendRow([
+    new Date(),
+    recipient,
+    subject,
+    body,
+    building || DEFAULT_BUILDING,
+    'Pending',
+    '',
+    JSON.stringify(options || {})
+  ]);
+}
+
+/**
+ * Helper to send a styled HTML email.
+ * NOW UPDATED to use the Queue System.
+ */
+function sendStyledEmail(recipient, subject, title, contentHtml, buttonText, buildingName, options) {
   const appUrl = ScriptApp.getService().getUrl();
   const headerName = buildingName || 'Orono Schools';
   
@@ -1492,11 +1678,30 @@ function sendStyledEmail(recipient, subject, title, contentHtml, buttonText, bui
     </html>
   `;
   
-  MailApp.sendEmail({
-    to: recipient,
-    subject: subject,
-    htmlBody: htmlTemplate
-  });
+  // Use the Config/Building Name to resolve building code for the queue
+  // buildingName is passed in as "Orono Middle School", we need 'OMS'.
+  // We can try to reverse lookup or just fallback to Default.
+  // Actually, 'buildingName' arg in this function is usually the Full Name.
+  // The 'options' might contain the code? Or we guess.
+  // The Queue needs the CODE to match with Admin's context.
+  
+  let buildingCode = DEFAULT_BUILDING;
+  
+  if (options && options.buildingCode) {
+    buildingCode = options.buildingCode;
+  } else {
+    // Fallback: Try to find key by name
+    const config = getConfig();
+    for (const [code, conf] of Object.entries(config)) {
+       if (conf.name === buildingName) {
+         buildingCode = code;
+         break;
+       }
+    }
+  }
+
+  // Queue the email instead of sending directly
+  addToEmailQueue(recipient, subject, htmlTemplate, buildingCode, options);
 }
 // --- SCHEDULE / TST AVAILABILITY FEATURE ---
 
