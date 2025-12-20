@@ -2140,14 +2140,22 @@
     }
     
     function submitImmediate(type) {
-      // 1. Try to add current form to queue
-      // Note: We check if form has data. If user clicks "Submit All" but hasn't filled the form, 
-      // but there are items in the queue, we should probably just submit the queue?
-      // Or assume "Submit All" includes the current form.
-      // Let's assume standard behavior: validate and add current form, then submit batch.
+      const teacherSelectId = type === 'earn' ? 'earn-teacher-select' : 'use-teacher-select';
+      const teacherSelect = document.getElementById(teacherSelectId);
       
-      if (addToQueue(type)) {
-         submitBatch();
+      // If user has started filling out the form (selected a teacher), try to add to queue.
+      if (teacherSelect && teacherSelect.value) {
+         if (addToQueue(type)) {
+            submitBatch();
+         }
+      } else {
+         // If no teacher selected, check if queue has items to submit
+         if (STATE.requestQueue.length > 0) {
+            submitBatch();
+         } else {
+            // If queue is empty AND form is empty, try to add to queue to trigger validation errors
+            addToQueue(type);
+         }
       }
     }
 
