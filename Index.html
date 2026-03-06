@@ -2187,12 +2187,17 @@
     function submitBatch() {
       if (STATE.requestQueue.length === 0) return;
       
-      const queue = [...STATE.requestQueue]; // Copy
+      const queue = [...STATE.requestQueue]; // Copy the queue
+
+      // FIX: Clear the queue immediately to prevent double-submissions
+      // if the user double-clicks the Submit All button.
+      STATE.requestQueue = [];
+      renderQueue(); // Update the UI to show the queue is empty
+
       showLoading(true);
 
       google.script.run.withSuccessHandler(() => {
         showLoading(false);
-        STATE.requestQueue = [];
         closeModal();
         // Refresh both views
         loadAdminEarned();
@@ -2202,6 +2207,11 @@
         showToast(`Successfully processed ${queue.length} requests.`, "success");
       }).withFailureHandler(err => {
          showLoading(false);
+
+         // Optional: If it fails, put the items back in the queue so they aren't lost
+         STATE.requestQueue = queue;
+         renderQueue();
+
          showToast("Error processing batch: " + err, "error");
       }).processBatch(queue);
     }

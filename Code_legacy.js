@@ -2,12 +2,9 @@
  * Middle School TST Time Tracking System - Period-Based
  * Adds a custom menu to the spreadsheet when it's opened.
  */
-function onOpen() {
-  const ui = SpreadsheetApp.getUi();
-  ui.createMenu('TST Time')
-      .addItem('Process Approved Time', 'processApprovedTime')
-      .addToUi();
-}
+/**
+ * Redundant onOpen removed. Consolidated in Code.js.
+ */
 
 /**
  * Adds a hidden "TeacherData" sheet to the spreadsheet.
@@ -364,7 +361,7 @@ function calculatePeriods(selectedPeriod, amount) {
  * Runs automatically when a form is submitted.
  * Calculates and populates the decimal periods based on period selection and full/half choice.
  */
-function onFormSubmit(e) {
+function onFormSubmitLegacy(e) {
   try {
     // Validate event object first
     if (!e || !e.source) {
