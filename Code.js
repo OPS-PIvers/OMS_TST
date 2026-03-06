@@ -1401,15 +1401,13 @@ function calculatePeriods(selectedPeriod, amountType, buildingCode) {
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
 
-  // Modern App Menu
+  // Consolidate menus for better UX
   ui.createMenu('TST Admin')
     .addItem('Authorize Email Service', 'setupEmailService')
+    .addSeparator()
+    .addSubMenu(ui.createMenu('Legacy Actions')
+        .addItem('Process Approved Time', 'processApprovedTime'))
     .addToUi();
-
-  // Legacy Logic Menu
-  ui.createMenu('TST Time (Legacy)')
-      .addItem('Process Approved Time', 'processApprovedTime')
-      .addToUi();
 }
 
 /**
