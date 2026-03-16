@@ -1020,7 +1020,9 @@ function submitUsage(formObj) {
 function submitEarned(formObj) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   
-  // 1. Archive to Form Responses 1 (Keep as backup)
+  // 1. Archive to Form Responses 1
+  // This will trigger onFormSubmit(e) which handles the rest of the logic
+  // (Lookup, Building resolve, and Append to TST Approvals (New))
   const formSheet = ss.getSheetByName('Form Responses 1');
   const timestamp = new Date();
   
@@ -1033,40 +1035,6 @@ function submitEarned(formObj) {
     formObj.period,
     formObj.amountType, 
     formObj.amountDecimal
-  ]);
-
-  // 2. Append to TST Approvals (New) - Decoupled
-  const approvalSheet = ss.getSheetByName('TST Approvals (New)');
-  
-  // Lookup Name from Staff Directory
-  const staffSheet = ss.getSheetByName('Staff Directory');
-  const staffData = staffSheet.getDataRange().getValues();
-  // Col A=Name, Col B=Email. Find row where B matches email.
-  const staffRow = staffData.find(r => r[1].toString().toLowerCase() === formObj.email.toLowerCase());
-  const earnerName = staffRow ? staffRow[0] : formObj.email; // Fallback to email if name not found
-
-  // Resolve Building: Use provided OR Primary
-  let building = formObj.building;
-  if (!building) {
-     const staff = getStaffDirectoryData().find(s => s.email.toLowerCase() === formObj.email.toLowerCase());
-     building = staff ? (staff.building.includes(',') ? staff.building.split(',')[0].trim() : staff.building) : DEFAULT_BUILDING;
-  }
-
-  approvalSheet.appendRow([
-    formObj.email,                    // A: Email
-    earnerName,                       // B: Name
-    formObj.subbedForName,            // C: Subbed For (Name or Manual Text)
-    '',                               // D: Other Details (Always empty now)
-    formObj.date,                     // E: Date
-    formObj.period,                   // F: Period
-    formObj.amountType,               // G: Time Type
-    formObj.amountDecimal,            // H: Hours
-    false,                            // I: Approved (Default False)
-    "",                               // J: Approved TS
-    false,                            // K: Denied (Default False)
-    "",                               // L: Denied TS
-    "",                               // M: Denial Reason
-    building                          // N: Building
   ]);
   
   return true;
@@ -1148,7 +1116,7 @@ function sendBatchStatusEmails(emails) {
   const emailOptions = {
     name: `${senderName} (via TST)`,
     replyTo: senderEmail,
-    buildingCode: primaryBuilding // Pass explicit code to avoid lookup errors
+    buildingCode: ctx.building // Fixed: Use ctx.building instead of undefined primaryBuilding
   };
 
   let successCount = 0;
