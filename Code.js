@@ -1020,22 +1020,35 @@ function submitUsage(formObj) {
 function submitEarned(formObj) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   
-  // 1. Archive to Form Responses 1
-  // This will trigger onFormSubmit(e) which handles the rest of the logic
-  // (Lookup, Building resolve, and Append to TST Approvals (New))
+  // 1. Archive to Form Responses 1 (Keep as backup)
   const formSheet = ss.getSheetByName('Form Responses 1');
   const timestamp = new Date();
-  
+  const subbedForName = formObj.subbedForName;
+  const otherText = formObj.subbedForType === 'Other' ? 'Other' : '';
+
   formSheet.appendRow([
     timestamp,
     formObj.email,
-    formObj.subbedForName,                               // Col C: Name or Manual Text
-    formObj.subbedForType === 'Other' ? 'Other' : '',    // Col D: 'Other' flag or empty
+    subbedForName,
+    otherText,
     formObj.date,
     formObj.period,
     formObj.amountType, 
     formObj.amountDecimal
   ]);
+
+  // 2. Process submission immediately (Decoupled from Form Trigger)
+  // This ensures script-initiated submissions appear in the app.
+  processEarnedSubmission({
+    email: formObj.email,
+    subbedFor: subbedForName,
+    otherText: otherText,
+    dateStr: formObj.date,
+    period: formObj.period,
+    amountType: formObj.amountType,
+    amountDecimal: formObj.amountDecimal,
+    building: formObj.building
+  });
   
   return true;
 }
@@ -1274,40 +1287,43 @@ function sendStatusEmail(targetEmail, targetName, emailOptions) {
 }
 
 /**
- * Trigger: On Form Submit
- * Syncs new rows from 'Form Responses 1' to 'TST Approvals (New)'.
- * Must be manually set up as an Installable Trigger in Apps Script editor.
+ * Core Logic for Processing an Earned Time Submission.
+ * Handles Name Lookup, Building Resolution, and Appending to TST Approvals (New).
+ * This is used by both onFormSubmit (Triggers) and submitEarned (Web App).
+ * 
+ * @param {Object} data - Standardized submission data.
  */
-function onFormSubmit(e) {
-  if (!e || !e.values) return; // Safety check
-  
+function processEarnedSubmission(data) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const approvalSheet = ss.getSheetByName('TST Approvals (New)');
-  
-  // Parse Form Data (Array indices based on Form Responses 1 columns)
-  // [0] Timestamp, [1] Email, [2] SubbedFor, [3] Other, [4] Date, [5] Period, [6] Type, [7] Decimal
-  const email = e.values[1];
-  let subbedFor = e.values[2];
-  
+
+  let { 
+    email, 
+    subbedFor, 
+    otherText, 
+    dateStr, 
+    period, 
+    amountType, 
+    amountDecimal, 
+    building 
+  } = data;
+
   // Clean Subbed For Name (Remove Titles for Legacy Form compatibility)
   if (subbedFor) {
     subbedFor = subbedFor.replace(/^(Mr\.|Ms\.|Mrs\.|Miss|Dr\.)\s*/i, "").trim();
   }
 
-  const otherText = e.values[3];
-  const dateStr = e.values[4]; 
-  const period = e.values[5];
-  const amountType = e.values[6];
-  let amountDecimal = e.values[7];
-  
   // Lookup Name & Building using helper
   const staff = getStaffDirectoryData().find(s => s.email.toLowerCase() === email.toString().toLowerCase());
   const earnerName = staff ? staff.name : email;
-  
-  // Resolve Building
-  let earnerBuilding = DEFAULT_BUILDING;
-  if (staff && staff.building) {
-     earnerBuilding = staff.building.includes(',') ? staff.building.split(',')[0].trim() : staff.building;
+
+  // Resolve Building: Use provided OR Staff Primary
+  let earnerBuilding = building;
+  if (!earnerBuilding) {
+    earnerBuilding = DEFAULT_BUILDING;
+    if (staff && staff.building) {
+      earnerBuilding = staff.building.includes(',') ? staff.building.split(',')[0].trim() : staff.building;
+    }
   }
 
   // Legacy Form Support: Calculate missing decimal if needed
@@ -1315,23 +1331,48 @@ function onFormSubmit(e) {
     amountDecimal = calculatePeriods(period, amountType, earnerBuilding);
   }
 
-  // Append to Approvals
+  // Append to Approvals (Col A:N)
   approvalSheet.appendRow([
-    email,
-    earnerName,
-    subbedFor,
-    otherText,
-    dateStr,
-    period,
-    amountType,
-    amountDecimal,
-    false, // Approved
-    "",    // TS
-    false, // Denied
-    "",    // TS
-    "",    // Denial Reason
-    earnerBuilding // Building
+    email,          // A: Email
+    earnerName,     // B: Name
+    subbedFor,      // C: Subbed For
+    otherText || "",// D: Other Details
+    dateStr,        // E: Date
+    period,         // F: Period
+    amountType,     // G: Time Type
+    amountDecimal,  // H: Hours
+    false,          // I: Approved (Default)
+    "",             // J: Approved TS
+    false,          // K: Denied (Default)
+    "",             // L: Denied TS
+    "",             // M: Denial Reason
+    earnerBuilding  // N: Building
   ]);
+  
+  return true;
+}
+
+/**
+ * Trigger: On Form Submit
+ * Syncs new rows from 'Form Responses 1' to 'TST Approvals (New)'.
+ * Must be manually set up as an Installable Trigger in Apps Script editor.
+ */
+function onFormSubmit(e) {
+  if (!e || !e.values) return; // Safety check
+  
+  // [0] Timestamp, [1] Email, [2] SubbedFor, [3] Other, [4] Date, [5] Period, [6] Type, [7] Decimal
+  const data = {
+    email: e.values[1],
+    subbedFor: e.values[2],
+    otherText: e.values[3],
+    dateStr: e.values[4],
+    period: e.values[5],
+    amountType: e.values[6],
+    amountDecimal: e.values[7],
+    building: null // Will be resolved by staff lookup
+  };
+
+  processEarnedSubmission(data);
 }
 
 /**
@@ -2138,4 +2179,67 @@ function updateStaffCarryOver(email, newAmount) {
 
   sheet.getRange(rowIndex, safeCarryIdx + 1).setValue(newAmount);
   return true;
+}
+
+/**
+ * MAINTENANCE UTILITY: Use this to sync any submissions that were archived
+ * to 'Form Responses 1' but failed to copy to 'TST Approvals (New)'.
+ * Safe to run multiple times; it checks for duplicates.
+ */
+function syncMissingSubmissions() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const formSheet = ss.getSheetByName('Form Responses 1');
+  const approvalSheet = ss.getSheetByName('TST Approvals (New)');
+  
+  if (!formSheet || !approvalSheet) return "Error: Sheets not found.";
+  
+  const formDataRaw = formSheet.getDataRange().getValues();
+  formDataRaw.shift(); // Remove headers
+  
+  const approvalDataRaw = approvalSheet.getDataRange().getValues();
+  approvalDataRaw.shift();
+  
+  // Create a lookup set of existing submissions in Approvals
+  // Key: Email + Date + Period
+  const existingKeys = new Set(approvalDataRaw.map(r => {
+    if (!r[0]) return "";
+    const email = r[0].toString().toLowerCase().trim();
+    // Normalize date for comparison
+    const dateStr = r[4] instanceof Date ? r[4].toISOString().split('T')[0] : r[4].toString().split('T')[0];
+    const period = r[5] ? r[5].toString().trim() : "";
+    return `${email}|${dateStr}|${period}`;
+  }));
+  
+  let syncCount = 0;
+  
+  formDataRaw.forEach(r => {
+    const email = r[1] ? r[1].toString().toLowerCase().trim() : "";
+    if (!email) return;
+
+    const dateRaw = r[4];
+    if (!dateRaw) return;
+    const dateStr = dateRaw instanceof Date ? dateRaw.toISOString().split('T')[0] : dateRaw.toString().split('T')[0];
+    const period = r[5] ? r[5].toString().trim() : "";
+    
+    const key = `${email}|${dateStr}|${period}`;
+    
+    if (!existingKeys.has(key)) {
+      // Missing! Process it using the shared logic
+      processEarnedSubmission({
+        email: email,
+        subbedFor: r[2],
+        otherText: r[3],
+        dateStr: dateStr,
+        period: period,
+        amountType: r[6],
+        amountDecimal: r[7],
+        building: null // Will be resolved by staff lookup
+      });
+      syncCount++;
+    }
+  });
+  
+  const msg = "Synced " + syncCount + " missing submissions.";
+  Logger.log(msg);
+  return msg;
 }
