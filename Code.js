@@ -37,7 +37,7 @@ function getUserContext() {
   const safeEmailIdx = emailIdx > -1 ? emailIdx : 1;
   const safeNameIdx = nameIdx > -1 ? nameIdx : 0;
   const safeRoleIdx = roleIdx > -1 ? roleIdx : 2;
-  const safeBuildingIdx = buildingIdx > -1 ? buildingIdx : 7; // Fallback to Col H
+  const safeBuildingIdx = buildingIdx > -1 ? buildingIdx : 8; // Fallback to Col I (Index 8)
 
   let currentUserRole = 'Guest';
   let currentUserName = '';
@@ -300,6 +300,49 @@ function batchDeleteUsed(indices) {
 }
 
 /**
+ * Batch update function for Staff Directory (Carry Over & Paid Out).
+ */
+function updateStaffBatch(updates, type) {
+  // updates: { "email@domain.com": 10.5, ... }
+  // type: 'carryOver' | 'paidOut'
+  
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('Staff Directory');
+  const data = sheet.getDataRange().getValues();
+  const headers = data[0]; // Row 1 is header
+  
+  let targetColIdx = -1;
+  
+  if (type === 'carryOver') {
+     targetColIdx = headers.findIndex(h => h.toString().toLowerCase().includes('carry'));
+     if (targetColIdx === -1) targetColIdx = 5; // Default F (Index 5)
+  } else if (type === 'paidOut') {
+     targetColIdx = headers.findIndex(h => h.toString().toLowerCase().includes('paid'));
+     if (targetColIdx === -1) targetColIdx = 6; // Default G (Index 6)
+  }
+  
+  if (targetColIdx === -1) throw new Error("Target column not found");
+
+  const emailIdx = headers.findIndex(h => h.toString().toLowerCase().includes('email'));
+  const safeEmailIdx = emailIdx > -1 ? emailIdx : 1;
+
+  // Process updates
+  // Iterate through data rows (skip header)
+  for (let i = 1; i < data.length; i++) {
+    const email = data[i][safeEmailIdx].toString().toLowerCase();
+    
+    if (updates.hasOwnProperty(email)) {
+       // Update this row
+       // +1 for 1-based row index, +1 for 1-based col index
+       // targetColIdx is 0-based from getValues
+       sheet.getRange(i + 1, targetColIdx + 1).setValue(updates[email]);
+    }
+  }
+  
+  return true;
+}
+
+/**
  * Helper to get clean object array of Staff Directory with DYNAMIC balances.
  */
 function getStaffDirectoryData(buildingFilter, targetEmail) {
@@ -313,13 +356,15 @@ function getStaffDirectoryData(buildingFilter, targetEmail) {
   const emailIdx = headers.findIndex(h => h.toString().toLowerCase().includes('email'));
   const roleIdx = headers.findIndex(h => h.toString().toLowerCase().includes('role'));
   const carryOverIdx = headers.findIndex(h => h.toString().toLowerCase().includes('carry'));
+  const paidOutIdx = headers.findIndex(h => h.toString().toLowerCase().includes('paid'));
   const buildingIdx = headers.findIndex(h => h.toString().toLowerCase().includes('building'));
 
   const iName = nameIdx > -1 ? nameIdx : 0;
   const iEmail = emailIdx > -1 ? emailIdx : 1;
   const iRole = roleIdx > -1 ? roleIdx : 2;
-  const iCarry = carryOverIdx > -1 ? carryOverIdx : 6;
-  const iBuilding = buildingIdx > -1 ? buildingIdx : 7;
+  const iCarry = carryOverIdx > -1 ? carryOverIdx : 5; // Default F (5)
+  const iPaidOut = paidOutIdx > -1 ? paidOutIdx : 6;   // Default G (6)
+  const iBuilding = buildingIdx > -1 ? buildingIdx : 8; // Default I (8)
 
   // 1. Calculate Balances Dynamically
   // We need to sum Earned and Used from the transaction sheets, potentially filtered by building.
@@ -338,6 +383,7 @@ function getStaffDirectoryData(buildingFilter, targetEmail) {
 
     const dynStats = balances[email] || { earned: 0, used: 0 };
     const carryOver = Number(r[iCarry]) || 0;
+    const paidOut = Number(r[iPaidOut]) || 0;
 
     return {
       name: r[iName],
@@ -346,8 +392,9 @@ function getStaffDirectoryData(buildingFilter, targetEmail) {
       earned: dynStats.earned,
       used: dynStats.used,
       carryOver: carryOver,
+      paidOut: paidOut,
       building: assignedBuildings, // Keep raw string or array? Frontend expects string usually.
-      total: carryOver + dynStats.earned - dynStats.used,
+      total: carryOver + dynStats.earned - dynStats.used - paidOut,
       rowIndex: i + 2
     };
   }).filter(r => r !== null && r.email !== "");
@@ -1168,7 +1215,7 @@ function sendStatusEmail(targetEmail, targetName, emailOptions) {
   const primaryBuilding = staff.building.includes(',') ? staff.building.split(',')[0].trim() : staff.building;
   const buildingName = (config[primaryBuilding] && config[primaryBuilding].name) ? config[primaryBuilding].name : primaryBuilding;
 
-  // Summary Section (4 Cards)
+  // Summary Section (5 Cards)
   let htmlContent = `
     <div style="display: table; width: 100%; border-spacing: 10px; margin-bottom: 20px; table-layout: fixed;">
       <div style="display: table-row;">
@@ -1186,13 +1233,19 @@ function sendStatusEmail(targetEmail, targetName, emailOptions) {
           <div style="color: #991b1b; font-size: 10px; font-weight: bold; text-transform: uppercase; margin-bottom: 4px;">Used</div>
           <div style="color: #7f1d1d; font-size: 18px; font-weight: bold;">${Number(staff.used || 0).toFixed(2)}</div>
         </div>
+        <div style="display: table-cell; background-color: #fffbeb; border: 1px solid #fef3c7; border-radius: 8px; padding: 12px; text-align: center;">
+          <div style="color: #92400e; font-size: 10px; font-weight: bold; text-transform: uppercase; margin-bottom: 4px;">Paid Out</div>
+          <div style="color: #78350f; font-size: 18px; font-weight: bold;">${Number(staff.paidOut || 0).toFixed(2)}</div>
+        </div>
+      </div>
+      <div style="display: table-row;">
         <div style="display: table-cell; background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; text-align: center;">
           <div style="color: #4b5563; font-size: 10px; font-weight: bold; text-transform: uppercase; margin-bottom: 4px;">Balance</div>
           <div style="color: #111827; font-size: 18px; font-weight: bold;">${Number(staff.total || 0).toFixed(2)}</div>
         </div>
+        <div style="display: table-cell; visibility: hidden;"></div>
       </div>
-    </div>
-    
+    </div>    
     <h3 style="color: #374151; font-size: 16px; margin-bottom: 15px; border-bottom: 1px solid #e5e7eb; padding-bottom: 10px; font-weight: 600;">Activity History</h3>
     
     <table cellpadding="0" cellspacing="0" style="width: 100%; border-collapse: collapse; font-size: 13px;">

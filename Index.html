@@ -328,7 +328,9 @@
       building: null, // Current active building code
       config: null,   // Loaded from server
       defaultBuilding: 'OMS', // Fallback until loaded
-      sortOption: 'first_name' // Global sorting preference
+      sortOption: 'first_name', // Global sorting preference
+      editMode: { carryOver: false, paidOut: false },
+      pendingUpdates: {}
     };
     
         // --- Sorting Utility ---
@@ -1477,6 +1479,57 @@
       );
     }
 
+    function toggleColumnEdit(col) {
+       // Toggle logic
+       STATE.editMode[col] = !STATE.editMode[col];
+       
+       // Clear pending updates if cancelling or starting fresh
+       STATE.pendingUpdates = {};
+       
+       // Re-render
+       renderAdminTotalsTable(STATE.user.staffData);
+    }
+
+    function handleInputChange(email, col, value) {
+       STATE.pendingUpdates[email] = value;
+    }
+
+    function saveColumnUpdates(col) {
+       const updates = STATE.pendingUpdates;
+       if (Object.keys(updates).length === 0) {
+          toggleColumnEdit(col); // Just exit
+          return;
+       }
+       
+       showLoading(true);
+       google.script.run.withSuccessHandler(() => {
+          showLoading(false);
+          showToast("Updates saved successfully.", "success");
+          STATE.editMode[col] = false;
+          STATE.pendingUpdates = {};
+          loadAdminTotals(); // Reload fresh data
+       }).withFailureHandler(err => {
+          showLoading(false);
+          showToast("Update failed: " + err, "error");
+       }).updateStaffBatch(updates, col);
+    }
+
+    function sendSingleReport(email, name) {
+       openConfirmModal(
+          "Send Report?",
+          `Send current TST balance report to <strong>${name}</strong>?`,
+          () => {
+             showLoading(true);
+             google.script.run.withSuccessHandler(res => {
+                showLoading(false);
+                if (res.success > 0) showToast("Report sent successfully.", "success");
+                else showToast("Failed to send report.", "error");
+             }).sendBatchStatusEmails([email]);
+          },
+          "Send Email"
+       );
+    }
+
     function renderAdminTotalsTable(staffList) {
        // Preserve search query if re-rendering
        const searchInput = document.querySelector('#view-container input[type="text"]');
@@ -1484,6 +1537,12 @@
        
        const isSel = STATE.selectionMode;
        const sortedStaff = sortStaffData(staffList, STATE.sortOption);
+       
+       const wName = 'width: 28%;';
+       const wCol = 'width: 12%;';
+       
+       const editCarry = STATE.editMode.carryOver;
+       const editPaid = STATE.editMode.paidOut;
        
        const html = `
           <div class="bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
@@ -1500,6 +1559,7 @@
                     <option value="first_name" ${STATE.sortOption === 'first_name' ? 'selected' : ''}>Sort: First Name</option>
                     <option value="last_name" ${STATE.sortOption === 'last_name' ? 'selected' : ''}>Sort: Last Name</option>
                     <option value="balance" ${STATE.sortOption === 'balance' ? 'selected' : ''}>Sort: Balance (High-Low)</option>
+                    <option value="carry_over" ${STATE.sortOption === 'carry_over' ? 'selected' : ''}>Sort: Carry Over (High-Low)</option>
                     <option value="earned" ${STATE.sortOption === 'earned' ? 'selected' : ''}>Sort: Earned (High-Low)</option>
                     <option value="used" ${STATE.sortOption === 'used' ? 'selected' : ''}>Sort: Used (High-Low)</option>
                  </select>
@@ -1521,29 +1581,98 @@
                </div>
             </div>
             <div class="overflow-x-auto max-h-[70vh]">
-              <table class="min-w-full divide-y divide-gray-200" id="staff-totals-table">
+              <table class="min-w-full divide-y divide-gray-200" id="staff-totals-table" style="table-layout: fixed;">
                     <thead class="bg-gray-50 sticky top-0 z-10 shadow-sm">
                       <tr>
-                        ${isSel ? `<th class="px-6 py-3 text-left bg-gray-50"><input type="checkbox" onchange="toggleDirectorySelectAll(this)" ${STATE.selectedEmails.size > 0 && STATE.selectedEmails.size === STATE.user.staffData.length ? 'checked' : ''} class="rounded text-ops-blue focus:ring-ops-blue border-gray-300"></th>` : ''}
-                        <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50">Name</th>                    <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50">Earned</th>
-                    <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50">Used</th>
-                    <th class="px-6 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50">Balance</th>
-                  </tr>
+                        ${isSel ? `<th class="px-2 py-3 text-left bg-gray-50 w-12"><input type="checkbox" onchange="toggleDirectorySelectAll(this)" ${STATE.selectedEmails.size > 0 && STATE.selectedEmails.size === STATE.user.staffData.length ? 'checked' : ''} class="rounded text-ops-blue focus:ring-ops-blue border-gray-300"></th>` : ''}
+                        
+                        <th class="px-2 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50" style="${wName}">Name</th>
+                        
+                        <!-- Carry Over Header -->
+                        <th class="px-2 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50 group cursor-pointer hover:bg-gray-100 transition-colors" style="${wCol}">
+                           <div class="flex items-center justify-between">
+                              <span>Carry Over</span>
+                              ${editCarry ? 
+                                `<div class="flex gap-1" onclick="event.stopPropagation()">
+                                   <button onclick="saveColumnUpdates('carryOver')" class="text-green-600 hover:text-green-800" title="Save Changes"><i class="fas fa-save text-base"></i></button>
+                                   <button onclick="toggleColumnEdit('carryOver')" class="text-red-400 hover:text-red-600" title="Cancel"><i class="fas fa-times text-base"></i></button>
+                                 </div>` : 
+                                `<button onclick="toggleColumnEdit('carryOver')" class="text-gray-400 hover:text-ops-blue opacity-0 group-hover:opacity-100 transition-opacity" title="Edit Column"><i class="fas fa-pencil-alt"></i></button>`
+                              }
+                           </div>
+                        </th>
+
+                        <th class="px-2 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50" style="${wCol}">Earned</th>
+                        <th class="px-2 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50" style="${wCol}">Used</th>
+
+                        <!-- Paid Out Header -->
+                        <th class="px-2 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50 group cursor-pointer hover:bg-gray-100 transition-colors" style="${wCol}">
+                           <div class="flex items-center justify-between">
+                              <span>Paid Out</span>
+                              ${editPaid ? 
+                                `<div class="flex gap-1" onclick="event.stopPropagation()">
+                                   <button onclick="saveColumnUpdates('paidOut')" class="text-green-600 hover:text-green-800" title="Save Changes"><i class="fas fa-save text-base"></i></button>
+                                   <button onclick="toggleColumnEdit('paidOut')" class="text-red-400 hover:text-red-600" title="Cancel"><i class="fas fa-times text-base"></i></button>
+                                 </div>` : 
+                                `<button onclick="toggleColumnEdit('paidOut')" class="text-gray-400 hover:text-ops-blue opacity-0 group-hover:opacity-100 transition-opacity" title="Edit Column"><i class="fas fa-pencil-alt"></i></button>`
+                              }
+                           </div>
+                        </th>
+
+                        <th class="px-2 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50" style="${wCol}">Balance</th>
+                        <th class="px-2 py-3 text-center text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50" style="${wCol}">Actions</th>
+                      </tr>
                 </thead>
                 <tbody class="bg-white divide-y divide-gray-200">
                   ${sortedStaff.map(s => {
                     const isChecked = STATE.selectedEmails && STATE.selectedEmails.has(s.email);
+                    const safeName = s.name.replace(/'/g, "\\'");
+                    
+                    // Value for inputs: prioritize pendingUpdate if exists
+                    const carryVal = (STATE.pendingUpdates[s.email] !== undefined && editCarry) ? STATE.pendingUpdates[s.email] : Number(s.carryOver);
+                    const paidVal = (STATE.pendingUpdates[s.email] !== undefined && editPaid) ? STATE.pendingUpdates[s.email] : Number(s.paidOut);
+
                     return `
-                    <tr onclick="openStaffDetail('${s.email}', '${s.name}')" class="cursor-pointer hover:bg-ops-blue-lighter transition-colors group">
+                    <tr onclick="openStaffDetail('${s.email}', '${safeName}')" class="cursor-pointer hover:bg-ops-blue-lighter transition-colors group">
                       ${isSel ? `
-                        <td class="px-6 py-4 whitespace-nowrap" onclick="event.stopPropagation()">
+                        <td class="px-2 py-4 whitespace-nowrap" onclick="event.stopPropagation()">
                           <input type="checkbox" onchange="toggleStaffSelection('${s.email}', this)" ${isChecked ? 'checked' : ''} class="rounded text-ops-blue focus:ring-ops-blue border-gray-300">
                         </td>
                       ` : ''}
-                      <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-ops-blue-dark group-hover:text-ops-blue">${s.name}</td>
-                      <td class="px-6 py-4 whitespace-nowrap text-sm text-ops-blue font-semibold">${Number(s.earned).toFixed(2)}</td>
-                      <td class="px-6 py-4 whitespace-nowrap text-sm text-ops-red font-semibold">${Number(s.used).toFixed(2)}</td>
-                      <td class="px-6 py-4 whitespace-nowrap text-sm font-bold ${s.total < 0 ? 'text-ops-red' : 'text-ops-gray-dark'} bg-gray-50">${Number(s.total).toFixed(2)}</td>
+                      
+                      <!-- Name -->
+                      <td class="px-2 py-4 whitespace-nowrap text-sm font-medium text-ops-blue-dark truncate" style="${wName}" title="${s.name}">
+                         <div>${s.name}</div>
+                         <div class="text-xs text-gray-400 font-normal truncate">${s.email}</div>
+                      </td>
+
+                      <!-- Carry Over -->
+                      <td class="px-2 py-4 whitespace-nowrap text-sm text-gray-600" style="${wCol}" onclick="event.stopPropagation()">
+                         ${editCarry ? 
+                           `<input type="number" step="0.1" value="${carryVal}" onchange="handleInputChange('${s.email}', 'carryOver', this.value)" class="w-full p-1 border border-gray-300 rounded text-sm focus:ring-ops-blue focus:border-ops-blue">` :
+                           Number(s.carryOver).toFixed(2)
+                         }
+                      </td>
+
+                      <td class="px-2 py-4 whitespace-nowrap text-sm text-ops-blue font-semibold" style="${wCol}">${Number(s.earned).toFixed(2)}</td>
+                      <td class="px-2 py-4 whitespace-nowrap text-sm text-ops-red font-semibold" style="${wCol}">${Number(s.used).toFixed(2)}</td>
+
+                      <!-- Paid Out -->
+                      <td class="px-2 py-4 whitespace-nowrap text-sm text-gray-600" style="${wCol}" onclick="event.stopPropagation()">
+                         ${editPaid ? 
+                           `<input type="number" step="0.1" value="${paidVal}" onchange="handleInputChange('${s.email}', 'paidOut', this.value)" class="w-full p-1 border border-gray-300 rounded text-sm focus:ring-ops-blue focus:border-ops-blue">` :
+                           Number(s.paidOut).toFixed(2)
+                         }
+                      </td>
+
+                      <td class="px-2 py-4 whitespace-nowrap text-sm font-bold ${s.total < 0 ? 'text-ops-red' : 'text-ops-gray-dark'} bg-gray-50" style="${wCol}">${Number(s.total).toFixed(2)}</td>
+                      
+                      <!-- Actions -->
+                      <td class="px-2 py-4 whitespace-nowrap text-center" style="${wCol}" onclick="event.stopPropagation()">
+                         <button onclick="sendSingleReport('${s.email}', '${safeName}')" class="text-ops-blue hover:text-ops-blue-dark hover:bg-blue-50 p-2 rounded-full transition" title="Send Report">
+                            <i class="fas fa-paper-plane"></i>
+                         </button>
+                      </td>
                     </tr>
                   `}).join('')}
                 </tbody>
@@ -2418,7 +2547,7 @@
         
         // 1. KPI Cards
         const kpiHtml = `
-          <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+          <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
               <div class="bg-white border border-ops-gray-lighter rounded-lg p-3 text-center shadow-sm">
                   <div class="text-xs font-bold text-ops-gray uppercase tracking-wide mb-1">Carry Over</div>
                   <div class="text-2xl font-bold text-ops-gray-dark">${Number(staff.carryOver || 0).toFixed(2)}</div>
@@ -2430,6 +2559,10 @@
               <div class="bg-ops-red-lighter border border-ops-red-light/20 rounded-lg p-3 text-center shadow-sm">
                   <div class="text-xs font-bold text-ops-red-dark uppercase tracking-wide mb-1">Used</div>
                   <div class="text-2xl font-bold text-ops-red-dark">${Number(staff.used || 0).toFixed(2)}</div>
+              </div>
+              <div class="bg-ops-yellow-lighter border border-ops-yellow-light/20 rounded-lg p-3 text-center shadow-sm">
+                  <div class="text-xs font-bold text-ops-yellow-dark uppercase tracking-wide mb-1">Paid Out</div>
+                  <div class="text-2xl font-bold text-ops-yellow-dark">${Number(staff.paidOut || 0).toFixed(2)}</div>
               </div>
               <div class="bg-ops-gray-lightest border border-ops-gray-lighter rounded-lg p-3 text-center shadow-sm">
                   <div class="text-xs font-bold text-ops-gray uppercase tracking-wide mb-1">Balance</div>

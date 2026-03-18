@@ -17,9 +17,10 @@ This document outlines the required structure for the Google Sheet used by the O
 | **C** | Role | String | Values: `Admin`, `Super Admin`, `Teacher` (or empty) |
 | **D** | Earned | Number | **Critical**. Application writes to this column (Hardcoded Index 4). |
 | **E** | Used | Number | **Critical**. Application writes to this column (Hardcoded Index 5). |
-| **F** | Running Total | Number | =ARRAYFORMULA(IF(B2:B="", "", N(D2:D) + N(G2:G) - N(E2:E))) |
-| **G** | Carry Over | Number | Legacy starting balance (Optional). |
-| **H** | Building | String | **Required for Multi-Building**. Codes: `OMS`, `OHS`, etc. (Matches config.js) |
+| **F** | Carry Over | Number | Legacy starting balance (Optional). |
+| **G** | Paid Out | Number | Hours cashed in. Subtracts from total. |
+| **H** | Running Total | Number | =ARRAYFORMULA(IF(B2:B="", "", (N(D2:D) + N(F2:F)) - (N(E2:E) + N(G2:G)))) |
+| **I** | Building | String | **Required for Multi-Building**. Codes: `OMS`, `OHS`, etc. (Matches config.js) |
 
 ---
 
