@@ -327,9 +327,56 @@
       dataCache: {},
       building: null, // Current active building code
       config: null,   // Loaded from server
-      defaultBuilding: 'OMS' // Fallback until loaded
+      defaultBuilding: 'OMS', // Fallback until loaded
+      sortOption: 'first_name' // Global sorting preference
     };
     
+        // --- Sorting Utility ---
+    function sortStaffData(data, sortBy) {
+       if (!data || data.length === 0) return data;
+
+       const getLastName = (name) => name ? name.split(' ').pop().toLowerCase() : '';
+       const getFirstName = (name) => name ? name.toLowerCase() : '';
+
+       return [...data].sort((a, b) => {
+          if (sortBy === 'last_name') {
+             return getLastName(a.name).localeCompare(getLastName(b.name));
+          } else if (sortBy === 'first_name') {
+             return getFirstName(a.name).localeCompare(getFirstName(b.name));
+          } else if (sortBy === 'earned') {
+             return (Number(b.earned) || 0) - (Number(a.earned) || 0);
+          } else if (sortBy === 'used') {
+             return (Number(b.used) || 0) - (Number(a.used) || 0);
+          } else if (sortBy === 'carry_over') {
+             return (Number(b.carryOver) || 0) - (Number(a.carryOver) || 0);
+          } else if (sortBy === 'balance' || sortBy === 'total') {
+             return (Number(b.total) || 0) - (Number(a.total) || 0);
+          } else if (sortBy === 'amount') {
+             const valA = a.hours !== undefined ? a.hours : (a.used !== undefined ? a.used : 0);
+             const valB = b.hours !== undefined ? b.hours : (b.used !== undefined ? b.used : 0);
+             return Number(valB) - Number(valA);
+          } else if (sortBy === 'date_newest') {
+             return new Date(b.date) - new Date(a.date);
+          } else if (sortBy === 'date_oldest') {
+             return new Date(a.date) - new Date(b.date);
+          }
+          // Default to first name
+          return getFirstName(a.name).localeCompare(getFirstName(b.name));
+       });
+    }
+
+    function updateGlobalSort(val) {
+       STATE.sortOption = val;
+
+       // Re-render the current view based on tab
+       if (STATE.currentTab === 'admin-earned') loadAdminEarned();
+       else if (STATE.currentTab === 'admin-used') loadAdminUsed();
+       else if (STATE.currentTab === 'admin-totals') renderAdminTotalsTable(STATE.user.staffData);
+       else if (STATE.currentTab === 'teacher-submit') renderTeacherSubmit();
+       // Note: Carry Over modal handles its own re-rendering.
+       // Note: Admin Create Request modal handles its own re-rendering via closing/reopening or updating DOM if needed. For now it re-reads state on open.
+    }
+
     // --- Constants & Helpers ---
     function getPeriodOptions(selectedVal) {
       // Use periods from Config based on current building
@@ -556,9 +603,14 @@
        }).getStaffDirectoryData(STATE.building);
     }
 
+    function updateCarryOverSort(val) {
+       STATE.sortOption = val;
+       renderCarryOverModal(STATE.user.staffData);
+    }
+
     function renderCarryOverModal(staffList) {
-       // Sort by name
-       const sorted = staffList.sort((a,b) => a.name.localeCompare(b.name));
+       // Sort using global utility
+       const sorted = sortStaffData(staffList, STATE.sortOption);
        
        const html = `
          <div class="flex flex-col h-full max-h-[80vh]">
@@ -566,11 +618,20 @@
                <div class="p-3 bg-blue-50 border border-blue-100 rounded text-sm text-blue-800">
                   <i class="fas fa-info-circle mr-2"></i> Update starting balances for <strong>${STATE.config[STATE.building]?.name || STATE.building}</strong>.
                </div>
-               <div class="mt-4 relative">
-                 <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400">
-                   <i class="fas fa-search"></i>
-                 </span>
-                 <input type="text" placeholder="Search staff..." onkeyup="filterCarryOverTable(this.value)" class="w-full pl-10 px-4 py-2 border border-gray-300 rounded focus:ring-ops-blue focus:border-ops-blue text-sm">
+               <div class="mt-4 flex gap-2">
+                 <div class="relative flex-grow">
+                   <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400">
+                     <i class="fas fa-search"></i>
+                   </span>
+                   <input type="text" placeholder="Search staff..." onkeyup="filterCarryOverTable(this.value)" class="w-full pl-10 px-4 py-2 border border-gray-300 rounded focus:ring-ops-blue focus:border-ops-blue text-sm">
+                 </div>
+                 <div class="flex-shrink-0">
+                    <select onchange="updateCarryOverSort(this.value)" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue text-sm">
+                       <option value="first_name" ${STATE.sortOption === 'first_name' ? 'selected' : ''}>Sort: First Name</option>
+                       <option value="last_name" ${STATE.sortOption === 'last_name' ? 'selected' : ''}>Sort: Last Name</option>
+                       <option value="carry_over" ${STATE.sortOption === 'carry_over' ? 'selected' : ''}>Sort: Carry Over (High-Low)</option>
+                    </select>
+                 </div>
                </div>
             </div>
 
@@ -1028,7 +1089,8 @@
     }
     
     function renderEarnedTable() {
-       const data = STATE.pendingEarned || [];
+       const rawData = STATE.pendingEarned || [];
+       const data = sortStaffData(rawData, STATE.sortOption);
        const isSel = STATE.earnedSelectionMode;
        
        // Batch Action Bar
@@ -1050,12 +1112,19 @@
 
         const html = `
           <div class="bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
-            <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-ops-blue-lighter">
+            <div class="px-6 py-4 border-b border-gray-200 flex flex-wrap justify-between items-center gap-4 bg-ops-blue-lighter">
               <div>
                 <h2 class="text-xl font-bold text-ops-blue-dark">Pending Earned Approvals</h2>
                 <p class="text-xs text-ops-gray uppercase tracking-wider mt-1">Review & Release to Directory</p>
               </div>
               <div class="flex items-center gap-2 h-10">
+                 <select onchange="updateGlobalSort(this.value)" class="block w-40 rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue text-sm h-full">
+                    <option value="first_name" ${STATE.sortOption === 'first_name' ? 'selected' : ''}>Sort: First Name</option>
+                    <option value="last_name" ${STATE.sortOption === 'last_name' ? 'selected' : ''}>Sort: Last Name</option>
+                    <option value="date_newest" ${STATE.sortOption === 'date_newest' ? 'selected' : ''}>Sort: Date (Newest)</option>
+                    <option value="date_oldest" ${STATE.sortOption === 'date_oldest' ? 'selected' : ''}>Sort: Date (Oldest)</option>
+                    <option value="amount" ${STATE.sortOption === 'amount' ? 'selected' : ''}>Sort: Hours (High-Low)</option>
+                 </select>
                  <button onclick="loadAdminEarned()" class="bg-white text-ops-gray hover:text-ops-blue border border-transparent hover:border-ops-blue-lighter px-3 py-2 rounded shadow-sm transition h-full flex items-center" title="Refresh Data">
                     <i class="fas fa-sync-alt text-lg"></i>
                  </button>
@@ -1139,7 +1208,8 @@
     }
     
     function renderUsedTable() {
-       const data = STATE.pendingUsed || [];
+       const rawData = STATE.pendingUsed || [];
+       const data = sortStaffData(rawData, STATE.sortOption);
        const isSel = STATE.usedSelectionMode;
        
        const batchActions = isSel ? `
@@ -1160,12 +1230,19 @@
 
         const html = `
           <div class="bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
-            <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-ops-red-lighter">
+            <div class="px-6 py-4 border-b border-gray-200 flex flex-wrap justify-between items-center gap-4 bg-ops-red-lighter">
               <div>
                 <h2 class="text-xl font-bold text-ops-red-dark">Pending Usage Requests</h2>
                 <p class="text-xs text-ops-red-dark opacity-75 uppercase tracking-wider mt-1">Deduct from Balance</p>
               </div>
               <div class="flex items-center gap-2 h-10">
+                 <select onchange="updateGlobalSort(this.value)" class="block w-40 rounded border-gray-300 p-2 border focus:ring-ops-red focus:border-ops-red text-sm h-full">
+                    <option value="first_name" ${STATE.sortOption === 'first_name' ? 'selected' : ''}>Sort: First Name</option>
+                    <option value="last_name" ${STATE.sortOption === 'last_name' ? 'selected' : ''}>Sort: Last Name</option>
+                    <option value="date_newest" ${STATE.sortOption === 'date_newest' ? 'selected' : ''}>Sort: Date (Newest)</option>
+                    <option value="date_oldest" ${STATE.sortOption === 'date_oldest' ? 'selected' : ''}>Sort: Date (Oldest)</option>
+                    <option value="amount" ${STATE.sortOption === 'amount' ? 'selected' : ''}>Sort: Hours (High-Low)</option>
+                 </select>
                  <button onclick="loadAdminUsed()" class="bg-white text-ops-gray hover:text-ops-blue border border-transparent hover:border-ops-blue-lighter px-3 py-2 rounded shadow-sm transition h-full flex items-center" title="Refresh Data">
                     <i class="fas fa-sync-alt text-lg"></i>
                  </button>
@@ -1406,11 +1483,12 @@
        const currentQuery = searchInput ? searchInput.value : "";
        
        const isSel = STATE.selectionMode;
+       const sortedStaff = sortStaffData(staffList, STATE.sortOption);
        
        const html = `
           <div class="bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
-            <div class="px-6 py-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center gap-4">
-               <div class="relative flex-grow">
+            <div class="px-6 py-4 border-b border-gray-200 bg-gray-50 flex flex-wrap justify-between items-center gap-4">
+               <div class="relative flex-grow min-w-[200px]">
                  <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400">
                    <i class="fas fa-search"></i>
                  </span>
@@ -1418,6 +1496,13 @@
                </div>
                
                <div class="flex items-center gap-2 h-10">
+                 <select onchange="updateGlobalSort(this.value)" class="block w-40 rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue text-sm h-full">
+                    <option value="first_name" ${STATE.sortOption === 'first_name' ? 'selected' : ''}>Sort: First Name</option>
+                    <option value="last_name" ${STATE.sortOption === 'last_name' ? 'selected' : ''}>Sort: Last Name</option>
+                    <option value="balance" ${STATE.sortOption === 'balance' ? 'selected' : ''}>Sort: Balance (High-Low)</option>
+                    <option value="earned" ${STATE.sortOption === 'earned' ? 'selected' : ''}>Sort: Earned (High-Low)</option>
+                    <option value="used" ${STATE.sortOption === 'used' ? 'selected' : ''}>Sort: Used (High-Low)</option>
+                 </select>
                  <button onclick="loadAdminTotals()" class="bg-white text-ops-gray hover:text-ops-blue border border-transparent hover:border-ops-blue-lighter px-3 py-2 rounded shadow-sm transition h-full flex items-center" title="Refresh Directory">
                     <i class="fas fa-sync-alt text-lg"></i>
                  </button>
@@ -1446,7 +1531,7 @@
                   </tr>
                 </thead>
                 <tbody class="bg-white divide-y divide-gray-200">
-                  ${staffList.map(s => {
+                  ${sortedStaff.map(s => {
                     const isChecked = STATE.selectedEmails && STATE.selectedEmails.has(s.email);
                     return `
                     <tr onclick="openStaffDetail('${s.email}', '${s.name}')" class="cursor-pointer hover:bg-ops-blue-lighter transition-colors group">
@@ -1483,7 +1568,8 @@
     // --- Teacher Views ---
 
     function renderTeacherSubmit() {
-      const staffOptions = STATE.user.staffData.map(s => `<option value="${s.name}">${s.name}</option>`).join('');
+      const sortedStaff = sortStaffData(STATE.user.staffData, STATE.sortOption);
+      const staffOptions = sortedStaff.map(s => `<option value="${s.name}">${s.name}</option>`).join('');
       const bConfig = STATE.config[STATE.building] || STATE.config[STATE.defaultBuilding];
       const isPeriods = bConfig && bConfig.scheduleType === 'periods';
 
@@ -1551,7 +1637,13 @@
 
               <div class="mb-6 p-4 bg-gray-50 rounded border border-gray-200">
                 <div id="div-sub-dropdown">
-                  <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Select Staff Member</label>
+                  <div class="flex justify-between items-end mb-2">
+                     <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider">Select Staff Member</label>
+                     <select onchange="updateGlobalSort(this.value)" class="text-xs bg-transparent text-ops-blue font-bold border-0 p-0 focus:ring-0 cursor-pointer">
+                        <option value="first_name" ${STATE.sortOption === 'first_name' ? 'selected' : ''}>Sort: First Name</option>
+                        <option value="last_name" ${STATE.sortOption === 'last_name' ? 'selected' : ''}>Sort: Last Name</option>
+                     </select>
+                  </div>
                   <select name="subbedNameDropdown" class="block w-full rounded border-gray-300 p-2 border">
                      ${staffOptions}
                   </select>
@@ -1897,7 +1989,7 @@
     function openAdminCreateRequestModal() {
       STATE.requestQueue = []; // Reset Queue
       
-      const staffList = STATE.user.staffData.sort((a,b) => a.name.localeCompare(b.name));
+      const staffList = sortStaffData(STATE.user.staffData, STATE.sortOption);
       const staffOptions = staffList.map(s => `<option value="${s.email}" data-name="${s.name}" data-max="${s.total}">${s.name}</option>`).join('');
       
       const html = `
@@ -1919,7 +2011,13 @@
                
                <!-- Who Earned It? -->
                <div class="mb-4 bg-blue-50 p-4 rounded-lg border border-blue-100">
-                  <label class="block text-xs font-bold text-ops-blue-dark uppercase tracking-wider mb-2">Teacher Earning Hours</label>
+                  <div class="flex justify-between items-end mb-2">
+                     <label class="block text-xs font-bold text-ops-blue-dark uppercase tracking-wider">Teacher Earning Hours</label>
+                     <select onchange="STATE.sortOption=this.value; openAdminCreateRequestModal();" class="text-xs bg-transparent text-ops-blue font-bold border-0 p-0 focus:ring-0 cursor-pointer">
+                        <option value="first_name" ${STATE.sortOption === 'first_name' ? 'selected' : ''}>Sort: First Name</option>
+                        <option value="last_name" ${STATE.sortOption === 'last_name' ? 'selected' : ''}>Sort: Last Name</option>
+                     </select>
+                  </div>
                   <div class="mb-2">
                      <select id="earn-teacher-select" class="block w-full rounded border-gray-300 p-2 border bg-white focus:ring-ops-blue focus:border-ops-blue">
                        <option value="">-- Select Staff Member --</option>
