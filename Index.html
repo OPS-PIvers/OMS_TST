@@ -336,7 +336,7 @@
        if (!data || data.length === 0) return data;
 
        const getLastName = (name) => name ? name.split(' ').pop().toLowerCase() : '';
-       const getFirstName = (name) => name ? name.toLowerCase() : '';
+       const getFirstName = (name) => name ? name.split(' ')[0].toLowerCase() : '';
 
        return [...data].sort((a, b) => {
           if (sortBy === 'last_name') {
@@ -1639,7 +1639,7 @@
                 <div id="div-sub-dropdown">
                   <div class="flex justify-between items-end mb-2">
                      <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider">Select Staff Member</label>
-                     <select onchange="updateGlobalSort(this.value)" class="text-xs bg-transparent text-ops-blue font-bold border-0 p-0 focus:ring-0 cursor-pointer">
+                     <select onchange="updateTeacherSubmitSort(this.value)" class="text-xs bg-transparent text-ops-blue font-bold border-0 p-0 focus:ring-0 cursor-pointer">
                         <option value="first_name" ${STATE.sortOption === 'first_name' ? 'selected' : ''}>Sort: First Name</option>
                         <option value="last_name" ${STATE.sortOption === 'last_name' ? 'selected' : ''}>Sort: Last Name</option>
                      </select>
@@ -1727,6 +1727,41 @@
       }
     }
 
+
+        function updateAdminCreateSort(val) {
+      STATE.sortOption = val;
+      const staffList = sortStaffData(STATE.user.staffData, STATE.sortOption);
+      const staffOptions = staffList.map(s => `<option value="${s.email}" data-name="${s.name}" data-max="${s.total}">${s.name}</option>`).join('');
+
+      const earnTeacher = document.getElementById('earn-teacher-select');
+      const earnSubStaff = document.getElementById('earn-sub-staff-select');
+      const useTeacher = document.getElementById('use-teacher-select');
+
+      const prevEarnTeacher = earnTeacher ? earnTeacher.value : '';
+      const prevEarnSubStaff = earnSubStaff ? earnSubStaff.value : '';
+      const prevUseTeacher = useTeacher ? useTeacher.value : '';
+
+      if(earnTeacher) earnTeacher.innerHTML = `<option value="">-- Select Staff Member --</option>` + staffOptions;
+      if(earnSubStaff) earnSubStaff.innerHTML = `<option value="">-- Select Staff --</option>` + staffOptions;
+      if(useTeacher) useTeacher.innerHTML = `<option value="">-- Select Staff Member --</option>` + staffOptions;
+
+      if(earnTeacher) earnTeacher.value = prevEarnTeacher;
+      if(earnSubStaff) earnSubStaff.value = prevEarnSubStaff;
+      if(useTeacher) useTeacher.value = prevUseTeacher;
+    }
+
+        function updateTeacherSubmitSort(val) {
+      STATE.sortOption = val;
+      const sortedStaff = sortStaffData(STATE.user.staffData, STATE.sortOption);
+      const staffOptions = sortedStaff.map(s => `<option value="${s.name}">${s.name}</option>`).join('');
+
+      const dropdown = document.querySelector('select[name="subbedNameDropdown"]');
+      if(dropdown) {
+        const prevVal = dropdown.value;
+        dropdown.innerHTML = staffOptions;
+        dropdown.value = prevVal;
+      }
+    }
 
     // --- Actions & Handlers ---
 
@@ -2013,7 +2048,7 @@
                <div class="mb-4 bg-blue-50 p-4 rounded-lg border border-blue-100">
                   <div class="flex justify-between items-end mb-2">
                      <label class="block text-xs font-bold text-ops-blue-dark uppercase tracking-wider">Teacher Earning Hours</label>
-                     <select onchange="STATE.sortOption=this.value; openAdminCreateRequestModal();" class="text-xs bg-transparent text-ops-blue font-bold border-0 p-0 focus:ring-0 cursor-pointer">
+                     <select onchange="updateAdminCreateSort(this.value)" class="text-xs bg-transparent text-ops-blue font-bold border-0 p-0 focus:ring-0 cursor-pointer">
                         <option value="first_name" ${STATE.sortOption === 'first_name' ? 'selected' : ''}>Sort: First Name</option>
                         <option value="last_name" ${STATE.sortOption === 'last_name' ? 'selected' : ''}>Sort: Last Name</option>
                      </select>
