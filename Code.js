@@ -724,18 +724,21 @@ function revertUsedToPending(rowIndex) {
  */
 function deleteApprovedEarned(rowIndex) {
   try {
+    const row = Math.floor(Number(rowIndex));
+    if (!Number.isFinite(row)) throw new Error("Invalid row index.");
+
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const approvalSheet = ss.getSheetByName('TST Approvals (New)');
     if (!approvalSheet) throw new Error("Sheet 'TST Approvals (New)' not found.");
     const formSheet = ss.getSheetByName('Form Responses 1');
     if (!formSheet) throw new Error("Sheet 'Form Responses 1' not found.");
 
-    if (rowIndex < 2 || rowIndex > approvalSheet.getLastRow()) {
-      throw new Error("Invalid row: this transaction may have already been deleted.");
+    if (row < 2 || row > approvalSheet.getLastRow()) {
+      throw new Error("This transaction may have already been deleted.");
     }
 
-    // Get row data
-    const rowData = approvalSheet.getRange(rowIndex, 1, 1, 13).getValues()[0];
+    // Get row data — Col H (index 7) = Hours
+    const rowData = approvalSheet.getRange(row, 1, 1, 13).getValues()[0];
     const email = rowData[0];
     const date = new Date(rowData[4]);
     const period = rowData[5];
@@ -757,12 +760,12 @@ function deleteApprovedEarned(rowIndex) {
     }
 
     // Delete from TST Approvals (New)
-    approvalSheet.deleteRow(rowIndex);
+    approvalSheet.deleteRow(row);
 
     return { success: true, hoursAdjusted: hours };
   } catch (e) {
     console.error("deleteApprovedEarned error:", e);
-    throw new Error("Failed to delete earned transaction: " + e.message);
+    throw e;
   }
 }
 
@@ -772,25 +775,28 @@ function deleteApprovedEarned(rowIndex) {
  */
 function deleteApprovedUsed(rowIndex) {
   try {
+    const row = Math.floor(Number(rowIndex));
+    if (!Number.isFinite(row)) throw new Error("Invalid row index.");
+
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const sheet = ss.getSheetByName('TST Usage (New)');
     if (!sheet) throw new Error("Sheet 'TST Usage (New)' not found.");
 
-    if (rowIndex < 2 || rowIndex > sheet.getLastRow()) {
-      throw new Error("Invalid row: this transaction may have already been deleted.");
+    if (row < 2 || row > sheet.getLastRow()) {
+      throw new Error("This transaction may have already been deleted.");
     }
 
-    // Read row data before deletion to extract hours
-    const rowData = sheet.getRange(rowIndex, 1, 1, 5).getValues()[0];
+    // Read row data before deletion — Col D (index 3) = Hours/Amount
+    const rowData = sheet.getRange(row, 1, 1, 5).getValues()[0];
     const hours = Number(rowData[3]) || 0;
 
     // Delete row
-    sheet.deleteRow(rowIndex);
+    sheet.deleteRow(row);
 
     return { success: true, hoursAdjusted: hours };
   } catch (e) {
     console.error("deleteApprovedUsed error:", e);
-    throw new Error("Failed to delete used transaction: " + e.message);
+    throw e;
   }
 }
 
