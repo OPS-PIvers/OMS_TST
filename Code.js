@@ -866,7 +866,7 @@ function deleteEarnedRow(rowIndex) {
   const formSheet = ss.getSheetByName('Form Responses 1');
   if (!formSheet) throw new Error("Sheet 'Form Responses 1' not found.");
 
-  if (row < 2 || row > approvalSheet.getLastRow()) {
+  if (row > approvalSheet.getLastRow()) {
     throw new Error("This transaction may have already been deleted.");
   }
 
@@ -978,7 +978,7 @@ function deleteUsedRow(rowIndex) {
   const sheet = ss.getSheetByName('TST Usage (New)');
   if (!sheet) throw new Error("Sheet 'TST Usage (New)' not found.");
 
-  if (row < 2 || row > sheet.getLastRow()) {
+  if (row > sheet.getLastRow()) {
     throw new Error("This transaction may have already been deleted.");
   }
 
