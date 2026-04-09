@@ -858,7 +858,7 @@ function denyEarnedRow(rowIndex, emailData) {
  */
 function deleteEarnedRow(rowIndex) {
   const row = Number(rowIndex);
-  if (!Number.isInteger(row)) throw new Error("Invalid row index.");
+  if (!Number.isInteger(row) || row < 2) throw new Error("Invalid row index.");
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const approvalSheet = ss.getSheetByName('TST Approvals (New)');
@@ -972,7 +972,7 @@ function approveUsedRow(rowIndex) {
  */
 function deleteUsedRow(rowIndex) {
   const row = Number(rowIndex);
-  if (!Number.isInteger(row)) throw new Error("Invalid row index.");
+  if (!Number.isInteger(row) || row < 2) throw new Error("Invalid row index.");
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Usage (New)');
