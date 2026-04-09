@@ -2782,13 +2782,13 @@
         `Are you sure you want to permanently DELETE this ${typeLabel} transaction?${balanceWarning}<br><br>This action cannot be undone.`,
         () => {
           showLoading(true);
-          const handler = type === 'earned' ? 'deleteApprovedEarned' : 'deleteApprovedUsed';
+          const handler = type === 'earned' ? 'deleteEarnedRow' : 'deleteUsedRow';
 
           google.script.run
-            .withSuccessHandler((result) => {
+            .withSuccessHandler(() => {
               showLoading(false);
               const msg = wasApproved
-                ? `Transaction deleted. Balance adjusted: -${result.hoursAdjusted} hrs`
+                ? `Transaction deleted. Balance adjusted: -${Number(hours).toFixed(1)} hrs`
                 : 'Transaction deleted successfully.';
               showToast(msg, "success");
 

@@ -718,55 +718,6 @@ function revertUsedToPending(rowIndex) {
   return { success: true };
 }
 
-/**
- * Admin Action: Delete an Approved Earned request.
- * Removes from sheets.
- */
-function deleteApprovedEarned(rowIndex) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const approvalSheet = ss.getSheetByName('TST Approvals (New)');
-  const formSheet = ss.getSheetByName('Form Responses 1');
-
-  // Get row data
-  const rowData = approvalSheet.getRange(rowIndex, 1, 1, 13).getValues()[0];
-  const email = rowData[0];
-  const date = new Date(rowData[4]);
-  const period = rowData[5];
-
-  // Delete from Form Responses 1
-  const formData = formSheet.getDataRange().getValues();
-  for (let i = formData.length - 1; i >= 1; i--) {
-    const r = formData[i];
-    const rDate = new Date(r[4]);
-    const isDateMatch = rDate.getFullYear() === date.getFullYear() &&
-                        rDate.getMonth() === date.getMonth() &&
-                        rDate.getDate() === date.getDate();
-
-    if (r[1] === email && isDateMatch && r[5] == period) {
-      formSheet.deleteRow(i + 1);
-      break;
-    }
-  }
-
-  // Delete from TST Approvals (New)
-  approvalSheet.deleteRow(rowIndex);
-
-  return { success: true };
-}
-
-/**
- * Admin Action: Delete an Approved Used request.
- * Removes from sheet.
- */
-function deleteApprovedUsed(rowIndex) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName('TST Usage (New)');
-
-  // Delete row
-  sheet.deleteRow(rowIndex);
-
-  return { success: true };
-}
 
 /**
  * Admin Action: Approve an Earned request.
@@ -906,17 +857,26 @@ function denyEarnedRow(rowIndex, emailData) {
  * Deletes from BOTH 'TST Approvals (New)' and 'Form Responses 1'.
  */
 function deleteEarnedRow(rowIndex) {
+  const row = Number(rowIndex);
+  if (!Number.isInteger(row) || row < 2) throw new Error("Invalid row index.");
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const approvalSheet = ss.getSheetByName('TST Approvals (New)');
+  if (!approvalSheet) throw new Error("Sheet 'TST Approvals (New)' not found.");
   const formSheet = ss.getSheetByName('Form Responses 1');
-  
+  if (!formSheet) throw new Error("Sheet 'Form Responses 1' not found.");
+
+  if (row > approvalSheet.getLastRow()) {
+    throw new Error("This transaction may have already been deleted.");
+  }
+
   // 1. Get details from Approval Sheet to find match
   // Indexes: 0=Email, 1=Name, 2=SubbedFor, 4=Date, 5=Period
-  const rowValues = approvalSheet.getRange(rowIndex, 1, 1, 6).getValues()[0];
+  const rowValues = approvalSheet.getRange(row, 1, 1, 6).getValues()[0];
   const email = rowValues[0];
   const date = new Date(rowValues[4]);
   const period = rowValues[5];
-  
+
   // 2. Find and Delete in Form Responses 1
   const formData = formSheet.getDataRange().getValues();
   // Form Responses: Col B=Email (1), E=Date (4), F=Period (5)
@@ -924,23 +884,21 @@ function deleteEarnedRow(rowIndex) {
   for (let i = formData.length - 1; i >= 1; i--) { // Skip header
     const r = formData[i];
     const rDate = new Date(r[4]);
-    
+
     // Loose date comparison (checking year, month, day)
     const isDateMatch = rDate.getFullYear() === date.getFullYear() &&
                         rDate.getMonth() === date.getMonth() &&
                         rDate.getDate() === date.getDate();
-                        
+
     if (r[1] === email && isDateMatch && r[5] == period) {
        formSheet.deleteRow(i + 1);
-       // We stop after first match? Or continue? usually one entry.
-       // Let's break to be safe/efficient, assuming duplicates aren't common or handled elsewhere.
-       break; 
+       break;
     }
   }
 
   // 3. Delete from TST Approvals (New)
-  approvalSheet.deleteRow(rowIndex);
-  
+  approvalSheet.deleteRow(row);
+
   return true;
 }
 
@@ -1013,9 +971,18 @@ function approveUsedRow(rowIndex) {
  * Admin Action: Delete a Used request.
  */
 function deleteUsedRow(rowIndex) {
+  const row = Number(rowIndex);
+  if (!Number.isInteger(row) || row < 2) throw new Error("Invalid row index.");
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Usage (New)');
-  sheet.deleteRow(rowIndex);
+  if (!sheet) throw new Error("Sheet 'TST Usage (New)' not found.");
+
+  if (row > sheet.getLastRow()) {
+    throw new Error("This transaction may have already been deleted.");
+  }
+
+  sheet.deleteRow(row);
   return true;
 }
 
