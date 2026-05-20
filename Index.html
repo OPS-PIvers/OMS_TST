@@ -330,7 +330,9 @@
       defaultBuilding: 'OMS', // Fallback until loaded
       sortOption: 'first_name', // Global sorting preference
       editMode: { carryOver: false, paidOut: false },
-      pendingUpdates: {}
+      pendingUpdates: {},
+      manageMode: false,   // Staff add/edit/archive controls
+      showArchived: false  // Include archived staff in the directory
     };
     
         // --- Sorting Utility ---
@@ -516,6 +518,12 @@
          menuContent += `
            <button onclick="openCarryOverModal()" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-ops-blue transition border-b border-gray-100">
              <i class="fas fa-history w-5 text-gray-400"></i> Update Carry Over
+           </button>
+           <button onclick="openFinalizeYearModal()" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-ops-blue transition border-b border-gray-100">
+             <i class="fas fa-flag-checkered w-5 text-gray-400"></i> Finalize School Year
+           </button>
+           <button onclick="openArchivedYearsModal()" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-ops-blue transition border-b border-gray-100">
+             <i class="fas fa-box-archive w-5 text-gray-400"></i> View Archived Years
            </button>
            <button onclick="openSettingsModal()" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-ops-blue transition">
              <i class="fas fa-cog w-5 text-gray-400"></i> Settings
@@ -759,6 +767,15 @@
           `;
        }
 
+       // Super Admins can permanently delete archived staff from here.
+       const archivedSection = isSuper ? `
+         <div class="mt-2 mb-4">
+            <h4 class="text-sm font-bold text-ops-red border-b border-gray-200 pb-2 mb-4">Archived Staff</h4>
+            <p class="text-xs text-gray-500 mb-3">Permanently delete archived staff. This removes their spreadsheet row and cannot be undone.</p>
+            <div id="archived-staff-list"></div>
+         </div>
+       ` : '';
+
        const html = `
          <div class="flex flex-col h-full max-h-[80vh]">
             ${selectorHtml}
@@ -838,6 +855,7 @@
                 </div>
 
               </form>
+              ${archivedSection}
             </div>
 
             <div class="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-2">
@@ -848,8 +866,55 @@
             </div>
          </div>
        `;
-       
+
        showModal("Application Settings", html, 'max-w-4xl');
+       if (isSuper) renderArchivedStaffList();
+    }
+
+    function renderArchivedStaffList() {
+       const container = document.getElementById('archived-staff-list');
+       if (!container) return;
+       container.innerHTML = '<p class="text-sm text-gray-400">Loading archived staff...</p>';
+       google.script.run.withSuccessHandler(list => {
+          if (!list || list.length === 0) {
+             container.innerHTML = '<p class="text-sm text-gray-400">No archived staff.</p>';
+             return;
+          }
+          container.innerHTML = list.map(s => {
+             const safeName = s.name.replace(/'/g, "\\'");
+             return `<div class="flex items-center justify-between py-2 border-b border-gray-100">
+                <div>
+                  <div class="text-sm font-medium text-ops-gray-dark">${s.name}</div>
+                  <div class="text-xs text-gray-400">${s.email}${s.building ? ' &middot; ' + s.building : ''}</div>
+                </div>
+                <button onclick="permanentlyDeleteStaff('${s.email}', '${safeName}')" class="text-ops-red hover:text-red-700 hover:bg-red-50 px-3 py-1 rounded text-sm font-bold transition">
+                  <i class="fas fa-trash mr-1"></i> Delete
+                </button>
+             </div>`;
+          }).join('');
+       }).withFailureHandler(err => {
+          container.innerHTML = `<p class="text-sm text-ops-red">Failed to load: ${(err.message || err)}</p>`;
+       }).getArchivedStaff();
+    }
+
+    function permanentlyDeleteStaff(email, name) {
+       openConfirmModal(
+          "Permanently Delete Staff?",
+          `Permanently delete <strong>${name}</strong>? This removes their spreadsheet row and <strong>cannot be undone</strong>.`,
+          () => {
+             showLoading(true);
+             google.script.run.withSuccessHandler(() => {
+                showLoading(false);
+                showToast(name + " permanently deleted.", "success");
+                openSettingsModal(); // reopen settings with refreshed archived list
+             }).withFailureHandler(err => {
+                showLoading(false);
+                showToast("Delete failed: " + (err.message || err), "error");
+             }).deleteStaffMemberPermanent(email);
+          },
+          "Delete Permanently",
+          "bg-ops-red hover:bg-red-700"
+       );
     }
 
     function toggleScheduleSettings(val) {
@@ -1011,10 +1076,11 @@
       document.querySelectorAll('#nav-tabs button').forEach(b => {
         // Remove Active Classes
         b.classList.remove('bg-gray-50', 'border-ops-blue-dark');
-        
-        // Add Inactive Styling (Transparent bg, light blue text)
-        // Note: 'hover:bg-ops-blue-light' is already on the base class in renderNav
-        
+
+        // Restore inactive hover background (blue tint over the blue navbar)
+        b.classList.remove('hover:bg-gray-100');
+        b.classList.add('hover:bg-ops-blue-light');
+
         // Reset Label Color to light blue
         const label = b.querySelector('.font-bold');
         if (label) {
@@ -1029,37 +1095,40 @@
             sub.classList.add('text-blue-200', 'group-hover:text-blue-50');
         }
 
-        // Reset Icon Color
+        // Reset Icon Color (and restore the white-on-hover behavior for inactive tabs)
         const icon = b.querySelector('i');
         if (icon) {
             icon.classList.remove('text-ops-blue');
-            icon.classList.add('text-blue-200');
+            icon.classList.add('text-blue-200', 'group-hover:text-white');
         }
       });
 
       const activeBtn = document.getElementById(`btn-${tabId}`);
       if (!activeBtn) return; // Guard clause
 
-      // Apply Active Classes
-      activeBtn.classList.remove('hover:bg-ops-blue-light'); // Remove hover effect for active tab
-      activeBtn.classList.add('bg-gray-50', 'border-ops-blue-dark'); // Active styling
-      
+      // Apply Active Classes — swap the blue-tint hover for a subtle light-gray
+      // hover so the active (white) tab still gives feedback on hover.
+      activeBtn.classList.remove('hover:bg-ops-blue-light');
+      activeBtn.classList.add('bg-gray-50', 'border-ops-blue-dark', 'hover:bg-gray-100');
+
       // Update Inner Text Colors for Active State
       const label = activeBtn.querySelector('.font-bold');
       if (label) {
         label.classList.remove('text-blue-100', 'group-hover:text-white');
         label.classList.add('text-ops-blue');
       }
-      
+
       const sub = activeBtn.querySelector('.uppercase');
       if (sub) {
         sub.classList.remove('text-blue-200', 'group-hover:text-blue-50');
         sub.classList.add('text-ops-gray');
       }
 
+      // Keep the active icon dark on hover (remove the white-on-hover rule that
+      // otherwise makes it vanish against the light active-tab background).
       const icon = activeBtn.querySelector('i');
       if (icon) {
-        icon.classList.remove('text-blue-200');
+        icon.classList.remove('text-blue-200', 'group-hover:text-white');
         icon.classList.add('text-ops-blue');
       }
 
@@ -1313,17 +1382,35 @@
       // Reset selection state on load
       STATE.selectionMode = false;
       STATE.selectedEmails = new Set();
-      
+
       google.script.run.withSuccessHandler(staffData => {
         STATE.user.staffData = staffData;
         renderAdminTotalsTable(staffData);
-      }).getStaffDirectoryData(STATE.building);
+      }).getStaffDirectoryData(STATE.building, null, STATE.showArchived);
     }
 
     function toggleSelectionMode() {
       STATE.selectionMode = !STATE.selectionMode;
+      STATE.manageMode = false; // mutually exclusive
       STATE.selectedEmails = new Set(); // Reset selection
       renderAdminTotalsTable(STATE.user.staffData);
+    }
+
+    function toggleManageMode() {
+      STATE.manageMode = !STATE.manageMode;
+      STATE.selectionMode = false; // mutually exclusive
+      if (!STATE.manageMode && STATE.showArchived) {
+        // Leaving manage mode hides archived again
+        STATE.showArchived = false;
+        loadAdminTotals();
+        return;
+      }
+      renderAdminTotalsTable(STATE.user.staffData);
+    }
+
+    function toggleShowArchived() {
+      STATE.showArchived = !STATE.showArchived;
+      loadAdminTotals(); // archived inclusion is decided server-side
     }
 
     function toggleDirectorySelectAll(checkbox) {
@@ -1536,11 +1623,13 @@
        const currentQuery = searchInput ? searchInput.value : "";
        
        const isSel = STATE.selectionMode;
+       const isManage = STATE.manageMode;
+       const showArchived = STATE.showArchived;
        const sortedStaff = sortStaffData(staffList, STATE.sortOption);
-       
+
        const wName = 'width: 28%;';
        const wCol = 'width: 12%;';
-       
+
        const editCarry = STATE.editMode.carryOver;
        const editPaid = STATE.editMode.paidOut;
        
@@ -1573,7 +1662,20 @@
                    <button id="btn-send-reports" onclick="sendSelectedReports()" disabled class="bg-gray-300 text-gray-500 px-4 py-2 rounded shadow-sm cursor-not-allowed text-sm font-medium transition-colors h-full flex items-center">
                      <i class="fas fa-paper-plane mr-2"></i> Send to Selected (0)
                    </button>
+                 ` : isManage ? `
+                   <label class="flex items-center gap-2 text-sm font-medium text-ops-gray-dark px-2 cursor-pointer select-none h-full">
+                     <input type="checkbox" onchange="toggleShowArchived()" ${showArchived ? 'checked' : ''} class="rounded text-ops-blue focus:ring-ops-blue border-gray-300"> Show archived
+                   </label>
+                   <button onclick="openAddStaffModal()" class="bg-ops-blue text-white px-4 py-2 rounded shadow hover:bg-ops-blue-dark text-sm font-bold uppercase tracking-wide transition flex items-center h-full">
+                     <i class="fas fa-user-plus mr-2 text-base"></i> ADD STAFF
+                   </button>
+                   <button onclick="toggleManageMode()" class="bg-white text-gray-600 border border-gray-300 px-4 py-2 rounded shadow-sm hover:bg-gray-50 text-sm font-bold uppercase tracking-wide transition flex items-center h-full">
+                     DONE
+                   </button>
                  ` : `
+                   <button onclick="toggleManageMode()" class="bg-white text-ops-gray-dark border border-gray-300 px-4 py-2 rounded shadow-sm hover:bg-gray-50 text-sm font-bold uppercase tracking-wide transition flex items-center h-full" title="Add, edit, or archive staff">
+                     <i class="fas fa-user-gear mr-2 text-lg"></i> MANAGE STAFF
+                   </button>
                    <button onclick="toggleSelectionMode()" class="bg-white text-ops-blue border border-ops-blue px-4 py-2 rounded shadow-sm hover:bg-blue-50 text-sm font-bold uppercase tracking-wide transition flex items-center h-full">
                      <i class="fas fa-check-square mr-2 text-lg"></i> SELECT / SEND REPORTS
                    </button>
@@ -1584,9 +1686,9 @@
               <table class="min-w-full divide-y divide-gray-200" id="staff-totals-table" style="table-layout: fixed;">
                     <thead class="bg-gray-50 sticky top-0 z-10 shadow-sm">
                       <tr>
-                        ${isSel ? `<th class="px-2 py-3 text-left bg-gray-50 w-12"><input type="checkbox" onchange="toggleDirectorySelectAll(this)" ${STATE.selectedEmails.size > 0 && STATE.selectedEmails.size === STATE.user.staffData.length ? 'checked' : ''} class="rounded text-ops-blue focus:ring-ops-blue border-gray-300"></th>` : ''}
-                        
-                        <th class="px-2 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50" style="${wName}">Name</th>
+                        ${isSel ? `<th class="pl-6 pr-2 py-3 text-left bg-gray-50 w-12"><input type="checkbox" onchange="toggleDirectorySelectAll(this)" ${STATE.selectedEmails.size > 0 && STATE.selectedEmails.size === STATE.user.staffData.length ? 'checked' : ''} class="rounded text-ops-blue focus:ring-ops-blue border-gray-300"></th>` : ''}
+
+                        <th class="pl-6 pr-2 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50" style="${wName}">Name</th>
                         
                         <!-- Carry Over Header -->
                         <th class="px-2 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50 group cursor-pointer hover:bg-gray-100 transition-colors" style="${wCol}">
@@ -1633,16 +1735,16 @@
                     const paidVal = (STATE.pendingUpdates[s.email] !== undefined && editPaid) ? STATE.pendingUpdates[s.email] : Number(s.paidOut);
 
                     return `
-                    <tr onclick="openStaffDetail('${s.email}', '${safeName}')" class="cursor-pointer hover:bg-ops-blue-lighter transition-colors group">
+                    <tr onclick="openStaffDetail('${s.email}', '${safeName}')" class="cursor-pointer hover:bg-ops-blue-lighter transition-colors group ${s.archived ? 'bg-gray-50 opacity-60' : ''}">
                       ${isSel ? `
-                        <td class="px-2 py-4 whitespace-nowrap" onclick="event.stopPropagation()">
+                        <td class="pl-6 pr-2 py-4 whitespace-nowrap" onclick="event.stopPropagation()">
                           <input type="checkbox" onchange="toggleStaffSelection('${s.email}', this)" ${isChecked ? 'checked' : ''} class="rounded text-ops-blue focus:ring-ops-blue border-gray-300">
                         </td>
                       ` : ''}
-                      
+
                       <!-- Name -->
-                      <td class="px-2 py-4 whitespace-nowrap text-sm font-medium text-ops-blue-dark truncate" style="${wName}" title="${s.name}">
-                         <div>${s.name}</div>
+                      <td class="pl-6 pr-2 py-4 whitespace-nowrap text-sm font-medium text-ops-blue-dark truncate" style="${wName}" title="${s.name}">
+                         <div>${s.name} ${s.archived ? '<span class="ml-1 text-[10px] font-bold uppercase tracking-wide text-gray-500 bg-gray-200 px-1.5 py-0.5 rounded">Archived</span>' : ''}</div>
                          <div class="text-xs text-gray-400 font-normal truncate">${s.email}</div>
                       </td>
 
@@ -1669,9 +1771,22 @@
                       
                       <!-- Actions -->
                       <td class="px-2 py-4 whitespace-nowrap text-center" style="${wCol}" onclick="event.stopPropagation()">
-                         <button onclick="sendSingleReport('${s.email}', '${safeName}')" class="text-ops-blue hover:text-ops-blue-dark hover:bg-blue-50 p-2 rounded-full transition" title="Send Report">
-                            <i class="fas fa-paper-plane"></i>
-                         </button>
+                         ${isManage ? (
+                           s.archived ?
+                           `<button onclick="restoreStaffMember('${s.email}', '${safeName}')" class="text-green-600 hover:text-green-800 hover:bg-green-50 p-2 rounded-full transition" title="Restore Staff">
+                              <i class="fas fa-rotate-left"></i>
+                            </button>` :
+                           `<button onclick="openEditStaffModal('${s.email}')" class="text-ops-blue hover:text-ops-blue-dark hover:bg-blue-50 p-2 rounded-full transition" title="Edit Staff">
+                              <i class="fas fa-pencil-alt"></i>
+                            </button>
+                            <button onclick="archiveStaffMember('${s.email}', '${safeName}')" class="text-ops-red hover:text-red-700 hover:bg-red-50 p-2 rounded-full transition" title="Archive Staff">
+                              <i class="fas fa-times"></i>
+                            </button>`
+                         ) : `
+                           <button onclick="sendSingleReport('${s.email}', '${safeName}')" class="text-ops-blue hover:text-ops-blue-dark hover:bg-blue-50 p-2 rounded-full transition" title="Send Report">
+                              <i class="fas fa-paper-plane"></i>
+                           </button>
+                         `}
                       </td>
                     </tr>
                   `}).join('')}
@@ -1691,7 +1806,298 @@
           }
         }
         
-        if(isSel) updateSendButton(); 
+        if(isSel) updateSendButton();
+    }
+
+    // --- Staff Management (Add / Edit / Archive / Restore) ---
+
+    function roleOptionsHtml(current) {
+       return ['Teacher', 'Admin', 'Super Admin']
+         .map(r => `<option value="${r}" ${r === current ? 'selected' : ''}>${r}</option>`).join('');
+    }
+
+    function buildingCheckboxesHtml(selectedCsv) {
+       const selected = (selectedCsv || '').split(',').map(b => b.trim()).filter(Boolean);
+       return Object.keys(STATE.config || {}).map(code => {
+          const name = STATE.config[code].name || code;
+          const checked = selected.includes(code) ? 'checked' : '';
+          return `<label class="flex items-center gap-2 text-sm text-ops-gray-dark py-1 cursor-pointer">
+             <input type="checkbox" name="building" value="${code}" ${checked} class="rounded text-ops-blue focus:ring-ops-blue border-gray-300">
+             ${code} - ${name}
+          </label>`;
+       }).join('');
+    }
+
+    function getSelectedBuildings() {
+       const boxes = document.querySelectorAll('#staff-form input[name="building"]:checked');
+       return Array.from(boxes).map(b => b.value).join(', ');
+    }
+
+    function staffFormFieldsHtml(s) {
+       // s is undefined for Add, or a staff object for Edit (email locked).
+       const isEdit = !!s;
+       const name = s ? (s.name || '').replace(/"/g, '&quot;') : '';
+       const email = s ? s.email : '';
+       const role = s ? s.role : 'Teacher';
+       const carry = s ? Number(s.carryOver) : 0;
+       const paid = s ? Number(s.paidOut) : 0;
+       const buildingCsv = s ? s.building : STATE.building;
+
+       const isSuper = STATE.user.isSuperAdmin;
+       const myBuildingName = (STATE.config[STATE.building] && STATE.config[STATE.building].name) ? STATE.config[STATE.building].name : STATE.building;
+       const buildingBlock = isSuper ? `
+           <div>
+             <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Building(s)</label>
+             <div class="border border-gray-200 rounded p-3 grid grid-cols-1 sm:grid-cols-2 gap-1">${buildingCheckboxesHtml(buildingCsv)}</div>
+             <p class="text-xs text-gray-500 mt-1">Staff appear in the directory for every building they're assigned to.</p>
+           </div>
+         ` : `
+           <div>
+             <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Building</label>
+             <div class="p-2 bg-gray-100 rounded border border-gray-200 font-bold text-ops-gray-dark">${isEdit ? (buildingCsv || myBuildingName) : (myBuildingName + ' (' + STATE.building + ')')}</div>
+             <p class="text-xs text-gray-500 mt-1">${isEdit ? "Building assignment is managed per building. To add this person to another building, that building's admin adds them there." : "New staff are added to your building. If they also work in another building, that building's admin adds them separately."}</p>
+           </div>
+         `;
+
+       return `
+         <form id="staff-form" class="space-y-4" onsubmit="return false;">
+           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+             <div>
+               <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Full Name *</label>
+               <input type="text" name="name" value="${name}" required class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+             </div>
+             <div>
+               <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Email ${isEdit ? '(locked)' : '*'}</label>
+               <input type="email" name="email" value="${email}" ${isEdit ? 'readonly' : 'required'} class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue ${isEdit ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}">
+             </div>
+           </div>
+           <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+             <div>
+               <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Role</label>
+               <select name="role" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">${roleOptionsHtml(role)}</select>
+             </div>
+             <div>
+               <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Carry Over</label>
+               <input type="number" step="0.1" name="carryOver" value="${carry}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+             </div>
+             <div>
+               <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Paid Out</label>
+               <input type="number" step="0.1" name="paidOut" value="${paid}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+             </div>
+           </div>
+           ${buildingBlock}
+         </form>`;
+    }
+
+    function openAddStaffModal() {
+       const html = `
+         <div class="p-1">
+           ${staffFormFieldsHtml(null)}
+           <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-100">
+             <button onclick="closeModal()" class="px-4 py-2 border border-gray-300 rounded text-gray-600 hover:bg-gray-50 font-bold text-sm">Cancel</button>
+             <button onclick="submitAddStaff()" class="px-4 py-2 bg-ops-blue text-white rounded hover:bg-ops-blue-dark font-bold text-sm shadow"><i class="fas fa-user-plus mr-2"></i>Add Staff</button>
+           </div>
+         </div>`;
+       showModal("Add Staff Member", html, 'max-w-2xl');
+    }
+
+    function openEditStaffModal(email) {
+       const s = (STATE.user.staffData || []).find(x => x.email === email);
+       if (!s) { showToast("Staff member not found.", "error"); return; }
+       const html = `
+         <div class="p-1">
+           ${staffFormFieldsHtml(s)}
+           <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-100">
+             <button onclick="closeModal()" class="px-4 py-2 border border-gray-300 rounded text-gray-600 hover:bg-gray-50 font-bold text-sm">Cancel</button>
+             <button onclick="submitEditStaff('${s.email}')" class="px-4 py-2 bg-ops-blue text-white rounded hover:bg-ops-blue-dark font-bold text-sm shadow"><i class="fas fa-save mr-2"></i>Save Changes</button>
+           </div>
+         </div>`;
+       showModal("Edit Staff Member", html, 'max-w-2xl');
+    }
+
+    function submitAddStaff() {
+       const form = document.getElementById('staff-form');
+       const name = form.name.value.trim();
+       const email = form.email.value.trim();
+       if (!name || !email) { showToast("Name and email are required.", "error"); return; }
+
+       const data = {
+          name: name,
+          email: email,
+          role: form.role.value,
+          building: getSelectedBuildings(),
+          carryOver: form.carryOver.value,
+          paidOut: form.paidOut.value
+       };
+
+       showLoading(true);
+       google.script.run.withSuccessHandler(() => {
+          showLoading(false);
+          showToast("Staff member added.", "success");
+          closeModal();
+          loadAdminTotals();
+       }).withFailureHandler(err => {
+          showLoading(false);
+          showToast("Add failed: " + (err.message || err), "error");
+       }).addStaffMember(data);
+    }
+
+    function submitEditStaff(email) {
+       const form = document.getElementById('staff-form');
+       const name = form.name.value.trim();
+       if (!name) { showToast("Name is required.", "error"); return; }
+
+       const data = {
+          name: name,
+          role: form.role.value,
+          building: getSelectedBuildings(),
+          carryOver: form.carryOver.value,
+          paidOut: form.paidOut.value
+       };
+
+       showLoading(true);
+       google.script.run.withSuccessHandler(() => {
+          showLoading(false);
+          showToast("Staff member updated.", "success");
+          closeModal();
+          loadAdminTotals();
+       }).withFailureHandler(err => {
+          showLoading(false);
+          showToast("Update failed: " + (err.message || err), "error");
+       }).updateStaffMember(email, data);
+    }
+
+    function archiveStaffMember(email, name) {
+       const bName = (STATE.config[STATE.building] && STATE.config[STATE.building].name) ? STATE.config[STATE.building].name : STATE.building;
+       openConfirmModal(
+          "Archive Staff Member?",
+          `Archive <strong>${name}</strong> from <strong>${bName}</strong>? They'll be removed from this building's directory (but stay active in any other building they're assigned to). You can restore them anytime with the "Show archived" toggle.`,
+          () => {
+             showLoading(true);
+             google.script.run.withSuccessHandler(() => {
+                showLoading(false);
+                showToast(name + " archived from " + STATE.building + ".", "success");
+                loadAdminTotals();
+             }).withFailureHandler(err => {
+                showLoading(false);
+                showToast("Archive failed: " + (err.message || err), "error");
+             }).archiveStaffMember(email, STATE.building);
+          },
+          "Archive",
+          "bg-ops-red hover:bg-red-700"
+       );
+    }
+
+    function restoreStaffMember(email, name) {
+       showLoading(true);
+       google.script.run.withSuccessHandler(() => {
+          showLoading(false);
+          showToast(name + " restored to " + STATE.building + ".", "success");
+          loadAdminTotals();
+       }).withFailureHandler(err => {
+          showLoading(false);
+          showToast("Restore failed: " + (err.message || err), "error");
+       }).restoreStaffMember(email, STATE.building);
+    }
+
+    // --- Year-End Finalize / Archived Years ---
+
+    function suggestSchoolYearName() {
+       const now = new Date();
+       const y = now.getFullYear();
+       const startYear = (now.getMonth() >= 6) ? y : y - 1; // July onward = new school year
+       const yr = startYear + '-' + (startYear + 1);
+       const code = STATE.building || STATE.defaultBuilding;
+       return yr + ' ' + code + ' TST Totals';
+    }
+
+    function openFinalizeYearModal() {
+       document.getElementById('profile-dropdown').classList.add('hidden');
+       const bName = (STATE.config[STATE.building] && STATE.config[STATE.building].name) ? STATE.config[STATE.building].name : STATE.building;
+       const suggested = suggestSchoolYearName();
+       const html = `
+         <div class="p-1">
+           <div class="bg-ops-red-lighter border border-ops-red rounded p-3 mb-4 text-sm text-ops-red">
+             <i class="fas fa-exclamation-triangle mr-2"></i>
+             This finalizes <strong>${bName}</strong>: each staff member's remaining balance rolls into Carry Over, Paid Out resets to 0, and this year's approved transactions move to an archive (Earned/Used reset to 0). This cannot be undone from the app.
+           </div>
+           <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Archive name</label>
+           <input type="text" id="finalize-name" value="${suggested}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+           <p class="text-xs text-gray-500 mt-1">A new sheet tab with this name will hold the year-end totals for ${bName}.</p>
+           <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-100">
+             <button onclick="closeModal()" class="px-4 py-2 border border-gray-300 rounded text-gray-600 hover:bg-gray-50 font-bold text-sm">Cancel</button>
+             <button onclick="submitFinalizeYear()" class="px-4 py-2 bg-ops-red text-white rounded hover:bg-red-700 font-bold text-sm shadow"><i class="fas fa-flag-checkered mr-2"></i>Finalize Year</button>
+           </div>
+         </div>`;
+       showModal("Finalize School Year", html, 'max-w-xl');
+    }
+
+    function submitFinalizeYear() {
+       const name = document.getElementById('finalize-name').value.trim();
+       if (!name) { showToast("Please enter a name for the archive.", "error"); return; }
+       openConfirmModal(
+          "Finalize and roll over?",
+          `This will create <strong>${name}</strong>, roll balances into Carry Over, and archive this year's transactions. This cannot be undone. Continue?`,
+          () => {
+             showLoading(true);
+             google.script.run.withSuccessHandler(res => {
+                showLoading(false);
+                showToast(`Finalized ${res.count} staff into "${res.name}".`, "success");
+                loadAdminTotals();
+             }).withFailureHandler(err => {
+                showLoading(false);
+                showToast("Finalize failed: " + (err.message || err), "error");
+             }).finalizeSchoolYear(name, STATE.building);
+          },
+          "Finalize",
+          "bg-ops-red hover:bg-red-700"
+       );
+    }
+
+    function openArchivedYearsModal() {
+       document.getElementById('profile-dropdown').classList.add('hidden');
+       showModal("Archived Years", '<div id="archived-years-body" class="p-1"><p class="text-sm text-gray-400">Loading...</p></div>', 'max-w-4xl');
+       google.script.run.withSuccessHandler(list => {
+          const body = document.getElementById('archived-years-body');
+          if (!body) return;
+          if (!list || list.length === 0) {
+             body.innerHTML = '<p class="text-sm text-gray-400">No archived years yet. Use "Finalize School Year" at the end of a school year.</p>';
+             return;
+          }
+          body.innerHTML = list.map(a => {
+             const safe = a.name.replace(/'/g, "\\'");
+             return `<button onclick="viewArchivedYear('${safe}')" class="w-full text-left flex items-center justify-between px-4 py-3 border border-gray-200 rounded mb-2 hover:bg-ops-blue-lighter transition">
+                <span class="text-sm font-medium text-ops-gray-dark"><i class="fas fa-box-archive mr-2 text-ops-blue"></i>${a.name}</span>
+                <span class="text-xs text-gray-400">${a.building}</span>
+             </button>`;
+          }).join('');
+       }).withFailureHandler(err => {
+          const body = document.getElementById('archived-years-body');
+          if (body) body.innerHTML = `<p class="text-sm text-ops-red">Failed to load: ${(err.message || err)}</p>`;
+       }).listArchivedYears(STATE.building);
+    }
+
+    function viewArchivedYear(name) {
+       showLoading(true);
+       google.script.run.withSuccessHandler(data => {
+          showLoading(false);
+          const headerCells = data.headers.map(h => `<th class="px-3 py-2 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50">${h}</th>`).join('');
+          const bodyRows = data.rows.map(r => `<tr class="border-t border-gray-100">${r.map((c, ci) => `<td class="px-3 py-2 text-sm ${ci === 0 ? 'font-medium text-ops-blue-dark' : 'text-gray-600'}">${typeof c === 'number' ? Number(c).toFixed(2) : c}</td>`).join('')}</tr>`).join('');
+          const html = `
+            <div class="p-1">
+              <div class="flex items-center justify-between mb-3">
+                <h3 class="text-sm font-bold text-ops-blue-dark">${data.name}</h3>
+                <button onclick="openArchivedYearsModal()" class="text-xs text-ops-blue hover:underline"><i class="fas fa-arrow-left mr-1"></i>Back to list</button>
+              </div>
+              <div class="overflow-x-auto max-h-[60vh] border border-gray-200 rounded">
+                <table class="min-w-full"><thead class="sticky top-0">${headerCells ? '<tr>' + headerCells + '</tr>' : ''}</thead><tbody>${bodyRows}</tbody></table>
+              </div>
+            </div>`;
+          showModal("Archived Year", html, 'max-w-5xl');
+       }).withFailureHandler(err => {
+          showLoading(false);
+          showToast("Failed to load archive: " + (err.message || err), "error");
+       }).getArchivedYearData(name);
     }
 
     // --- Teacher Views ---

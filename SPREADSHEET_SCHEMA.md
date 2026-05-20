@@ -20,7 +20,16 @@ This document outlines the required structure for the Google Sheet used by the O
 | **F** | Carry Over | Number | Legacy starting balance (Optional). |
 | **G** | Paid Out | Number | Hours cashed in. Subtracts from total. |
 | **H** | Running Total | Number | =ARRAYFORMULA(IF(B2:B="", "", (N(D2:D) + N(F2:F)) - (N(E2:E) + N(G2:G)))) |
-| **I** | Building | String | **Required for Multi-Building**. Codes: `OMS`, `OHS`, etc. (Matches config.js) |
+| **I** | Building | String | **Required for Multi-Building**. Codes: `OMS`, `OHS`, etc. (Matches config.js). Supports comma-separated multi-building assignment (e.g. `OMS, OHS`). |
+| **J** | Archived | String | **Per-building** soft-delete: comma-separated list of building codes the staff member is archived FROM (e.g. `OMS`). Empty = active everywhere. A person is "fully archived" only when this list covers every building in column I. (Legacy `TRUE` is treated as archived from all buildings.) Auto-created if missing. |
+| **K** | Last Finalized | String | School-year name of the most recent year-end finalize for this person (e.g. `2025-2026`). Prevents a balance from being rolled twice when staff span buildings. Auto-created if missing. |
+
+> **Note:** When adding a new staff row programmatically, write the individual cells (A–C, F, G, I, J) rather than `appendRow`, leaving column **H** blank so the Running Total ARRAYFORMULA fills it (writing into H collides with the spilling formula).
+
+### Year-End Archive Sheets (created by `finalizeSchoolYear`)
+
+- **`<year> <building> TST Totals`** (e.g. `2025-2026 OMS TST Totals`) — one per building per finalized year. Columns: Name, Email, Building(s), Carry Over (start), Earned, Used, Paid Out, Balance. Tagged with developer metadata (`tstArchiveBuilding`, `tstArchiveYear`) so the app can find it regardless of the chosen name.
+- **`TST Approvals Archive` / `TST Usage Archive`** — permanent, accumulating backups. On finalize, the building's approved/processed transaction rows are moved here (original columns + a trailing `School Year`), which is what makes live Earned/Used recompute to 0 for the new year.
 
 ---
 

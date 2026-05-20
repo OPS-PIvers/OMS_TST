@@ -338,19 +338,458 @@ function updateStaffBatch(updates, type) {
        sheet.getRange(i + 1, targetColIdx + 1).setValue(updates[email]);
     }
   }
-  
+
+  return true;
+}
+
+// ===== Staff Management (Add / Edit / Archive / Restore / Delete) =====
+
+function getStaffSheet_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Staff Directory');
+  if (!sheet) throw new Error("Sheet 'Staff Directory' not found.");
+  return sheet;
+}
+
+function getStaffIndices_(sheet) {
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const find = (kw, fb) => {
+    const i = headers.findIndex(h => h.toString().toLowerCase().includes(kw));
+    return i > -1 ? i : fb;
+  };
+  return {
+    name: find('name', 0),
+    email: find('email', 1),
+    role: find('role', 2),
+    carry: find('carry', 5),
+    paid: find('paid', 6),
+    building: find('building', 8),
+    archived: ensureColumn_(sheet, 'archiv', 'Archived'),           // creates J if missing
+    lastFinalized: ensureColumn_(sheet, 'finaliz', 'Last Finalized') // creates K if missing
+  };
+}
+
+// Parses the Archived (J) cell into a list of building codes the staff member is
+// archived from. Handles the legacy boolean form (TRUE = archived everywhere).
+function parseArchivedList_(cellValue, userBuildings) {
+  const raw = (cellValue || '').toString().trim();
+  const low = raw.toLowerCase();
+  if (low === 'true') return (userBuildings || []).slice();
+  if (low === 'false' || raw === '') return [];
+  return raw.split(',').map(b => b.trim()).filter(Boolean);
+}
+
+function splitBuildings_(buildingCell) {
+  return (buildingCell || '').toString().split(',').map(b => b.trim()).filter(Boolean);
+}
+
+function assertAdmin_(ctx) {
+  if (ctx.role !== 'Admin' && ctx.role !== 'Super Admin') {
+    throw new Error('Unauthorized: admin access required.');
+  }
+}
+
+// Non-super admins may only touch staff who share at least one of their buildings.
+function assertCanManageRow_(ctx, buildingCell) {
+  if (ctx.isSuperAdmin) return;
+  const staffBuildings = (buildingCell || '').toString().split(',').map(b => b.trim()).filter(Boolean);
+  if (!staffBuildings.some(b => ctx.buildings.includes(b))) {
+    throw new Error('You can only manage staff in your own building(s).');
+  }
+}
+
+// Non-super admins may only assign buildings within their own assignment.
+function assertCanAssignBuildings_(ctx, buildingStr) {
+  if (ctx.isSuperAdmin) return;
+  const requested = (buildingStr || '').toString().split(',').map(b => b.trim()).filter(Boolean);
+  if (!requested.every(b => ctx.buildings.includes(b))) {
+    throw new Error('You can only assign staff to your own building(s).');
+  }
+}
+
+function findStaffRowByEmail_(allValues, emailIdx, email) {
+  const target = email.toString().trim().toLowerCase();
+  for (let i = 1; i < allValues.length; i++) {
+    if (allValues[i][emailIdx].toString().trim().toLowerCase() === target) {
+      return i; // 0-based array index (row number = i + 1)
+    }
+  }
+  return -1;
+}
+
+/**
+ * Adds a new staff member. Writes individual cells (never appendRow) so the
+ * Running Total ARRAYFORMULA in column H is not clobbered.
+ */
+function addStaffMember(data) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+
+  const name = (data.name || '').toString().trim();
+  const email = (data.email || '').toString().trim();
+  if (!name || !email) throw new Error('Name and email are required.');
+
+  const role = (data.role || 'Teacher').toString().trim() || 'Teacher';
+  // Building admins always add to their own building; only Super Admins choose.
+  const building = ctx.isSuperAdmin
+    ? ((data.building || '').toString().trim() || ctx.building)
+    : ctx.building;
+  const carryOver = Number(data.carryOver) || 0;
+  const paidOut = Number(data.paidOut) || 0;
+
+  assertCanAssignBuildings_(ctx, building);
+
+  const sheet = getStaffSheet_();
+  const idx = getStaffIndices_(sheet);
+  const all = sheet.getDataRange().getValues();
+
+  const existing = findStaffRowByEmail_(all, idx.email, email);
+  if (existing > -1) {
+    // Super Admins manage existing people via Edit. A building admin re-adding an
+    // existing person (e.g. staff who work across buildings) simply gets their
+    // building merged into that person's assignment instead of a duplicate row.
+    if (ctx.isSuperAdmin) {
+      throw new Error('A staff member with that email already exists. Edit them instead.');
+    }
+    const currentBuildings = (all[existing][idx.building] || '').toString()
+      .split(',').map(b => b.trim()).filter(Boolean);
+    if (!currentBuildings.includes(building)) {
+      currentBuildings.push(building);
+      sheet.getRange(existing + 1, idx.building + 1).setValue(currentBuildings.join(', '));
+    }
+    return true;
+  }
+
+  // Insert immediately after the last row that has an email, so the new row
+  // stays inside the H column's B2:B ARRAYFORMULA range.
+  let lastDataRow = 1; // header row
+  for (let i = 1; i < all.length; i++) {
+    if (all[i][idx.email].toString().trim() !== '') lastDataRow = i + 1;
+  }
+  const newRow = lastDataRow + 1;
+
+  sheet.getRange(newRow, idx.name + 1).setValue(name);
+  sheet.getRange(newRow, idx.email + 1).setValue(email);
+  sheet.getRange(newRow, idx.role + 1).setValue(role);
+  sheet.getRange(newRow, idx.carry + 1).setValue(carryOver);
+  sheet.getRange(newRow, idx.paid + 1).setValue(paidOut);
+  sheet.getRange(newRow, idx.building + 1).setValue(building);
+  sheet.getRange(newRow, idx.archived + 1).setValue(false);
+
   return true;
 }
 
 /**
- * Helper to get clean object array of Staff Directory with DYNAMIC balances.
+ * Updates an existing staff member matched by (unchanged) email. Email is never
+ * rewritten because it keys all transaction history.
  */
-function getStaffDirectoryData(buildingFilter, targetEmail) {
+function updateStaffMember(email, data) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+
+  const sheet = getStaffSheet_();
+  const idx = getStaffIndices_(sheet);
+  const all = sheet.getDataRange().getValues();
+
+  const i = findStaffRowByEmail_(all, idx.email, email);
+  if (i === -1) throw new Error('Staff member not found.');
+
+  assertCanManageRow_(ctx, all[i][idx.building]);
+
+  // Only Super Admins reassign buildings. Building admins leave the assignment
+  // untouched (their form has no building selector), so we keep the existing
+  // value and skip the assignment check — otherwise editing a cross-building
+  // person would fail on the buildings they don't own.
+  const provided = (data.building || '').toString().trim();
+  const newBuilding = provided || all[i][idx.building].toString();
+  if (provided) assertCanAssignBuildings_(ctx, newBuilding);
+
+  const row = i + 1;
+  if (data.name !== undefined) sheet.getRange(row, idx.name + 1).setValue(data.name.toString().trim());
+  if (data.role !== undefined) sheet.getRange(row, idx.role + 1).setValue(data.role);
+  sheet.getRange(row, idx.building + 1).setValue(newBuilding);
+  if (data.carryOver !== undefined) sheet.getRange(row, idx.carry + 1).setValue(Number(data.carryOver) || 0);
+  if (data.paidOut !== undefined) sheet.getRange(row, idx.paid + 1).setValue(Number(data.paidOut) || 0);
+
+  return true;
+}
+
+/**
+ * Archives/restores a staff member for a SINGLE building. Archiving only removes
+ * them from that building's directory; they remain active in any other building
+ * they're assigned to. Defaults to the caller's current building.
+ */
+function setStaffArchived_(email, building, archived) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+
+  const sheet = getStaffSheet_();
+  const idx = getStaffIndices_(sheet);
+  const all = sheet.getDataRange().getValues();
+
+  const i = findStaffRowByEmail_(all, idx.email, email);
+  if (i === -1) throw new Error('Staff member not found.');
+
+  const bldg = (building || ctx.building).toString().trim();
+  assertCanManageRow_(ctx, all[i][idx.building]);
+  if (!ctx.isSuperAdmin && !ctx.buildings.includes(bldg)) {
+    throw new Error('You can only archive within your own building(s).');
+  }
+
+  const userBuildings = splitBuildings_(all[i][idx.building]);
+  let list = parseArchivedList_(all[i][idx.archived], userBuildings);
+
+  if (archived) {
+    if (!list.includes(bldg)) list.push(bldg);
+  } else {
+    list = list.filter(b => b !== bldg);
+  }
+
+  sheet.getRange(i + 1, idx.archived + 1).setValue(list.join(', '));
+  return true;
+}
+
+function archiveStaffMember(email, building) { return setStaffArchived_(email, building, true); }
+function restoreStaffMember(email, building) { return setStaffArchived_(email, building, false); }
+
+/**
+ * Permanently removes a staff member's spreadsheet row. Super Admin only, and
+ * only for staff archived from EVERY building they're assigned to (fully gone).
+ */
+function deleteStaffMemberPermanent(email) {
+  const ctx = getUserContext();
+  if (!ctx.isSuperAdmin) throw new Error('Unauthorized: Super Admin access required.');
+
+  const sheet = getStaffSheet_();
+  const idx = getStaffIndices_(sheet);
+  const all = sheet.getDataRange().getValues();
+
+  const i = findStaffRowByEmail_(all, idx.email, email);
+  if (i === -1) throw new Error('Staff member not found.');
+
+  const userBuildings = splitBuildings_(all[i][idx.building]);
+  const list = parseArchivedList_(all[i][idx.archived], userBuildings);
+  const fullyArchived = userBuildings.length === 0 || userBuildings.every(b => list.includes(b));
+  if (!fullyArchived) {
+    throw new Error('Only fully-archived staff (archived from all their buildings) can be permanently deleted.');
+  }
+
+  sheet.deleteRow(i + 1);
+  return true;
+}
+
+/**
+ * Returns fully-archived staff (archived from every building) for the Settings
+ * permanent-delete list. Super Admin only.
+ */
+function getArchivedStaff() {
+  const ctx = getUserContext();
+  if (!ctx.isSuperAdmin) throw new Error('Unauthorized: Super Admin access required.');
+  return getStaffDirectoryData(null, null, true).filter(s => s.archived);
+}
+
+// ===== Year-End Finalize / Archived Years =====
+
+/**
+ * Finalizes a school year for one building:
+ *  - Snapshots each active staff member's totals into a new sheet (tagged with
+ *    developer metadata so it can be found later).
+ *  - Rolls each person's remaining balance into Carry Over and zeros Paid Out —
+ *    but only ONCE per person per school year (tracked via the Last Finalized
+ *    column), so staff who span buildings aren't rolled twice.
+ *  - Moves this building's counted (approved) transactions into archive sheets
+ *    so live Earned/Used recompute to 0.
+ */
+function finalizeSchoolYear(yearName, building) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+
+  const name = (yearName || '').toString().trim();
+  if (!name) throw new Error('A name for the archive is required.');
+
+  const bldg = ctx.isSuperAdmin ? (building || ctx.building).toString().trim() : ctx.building;
+  if (!ctx.isSuperAdmin && !ctx.buildings.includes(bldg)) {
+    throw new Error('You can only finalize your own building.');
+  }
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (ss.getSheetByName(name)) {
+    throw new Error('A sheet named "' + name + '" already exists. Choose a different name.');
+  }
+
+  // 1. Building-filtered balances, computed BEFORE any transactions are moved.
+  const balances = calculateDynamicBalances(bldg);
+
+  // 2. Build the snapshot + roll plan from active staff in this building.
+  const sheet = getStaffSheet_();
+  const idx = getStaffIndices_(sheet);
+  const all = sheet.getDataRange().getValues();
+
+  const snapshotRows = [];
+  const rolls = [];
+
+  for (let i = 1; i < all.length; i++) {
+    const r = all[i];
+    const email = (r[idx.email] || '').toString().trim();
+    if (!email) continue;
+
+    const userBuildings = splitBuildings_(r[idx.building]);
+    if (!userBuildings.includes(bldg)) continue;
+
+    const archivedList = parseArchivedList_(r[idx.archived], userBuildings);
+    if (archivedList.includes(bldg)) continue; // already archived from this building
+
+    const stat = balances[email.toLowerCase()] || { earned: 0, used: 0 };
+    const e = Number(stat.earned) || 0;
+    const u = Number(stat.used) || 0;
+    const priorCarry = Number(r[idx.carry]) || 0;
+    const paidOut = Number(r[idx.paid]) || 0;
+    const balance = priorCarry + e - u - paidOut;
+
+    snapshotRows.push([r[idx.name], email, r[idx.building], priorCarry, e, u, paidOut, balance]);
+
+    const lastFin = (r[idx.lastFinalized] || '').toString().trim();
+    const firstThisYear = lastFin !== name;
+    const rem = e - u;
+    const newCarry = priorCarry + rem - (firstThisYear ? paidOut : 0);
+    rolls.push({ row: i + 1, newCarry: newCarry, firstThisYear: firstThisYear });
+  }
+
+  if (snapshotRows.length === 0) {
+    throw new Error('No active staff found for ' + bldg + ' to finalize.');
+  }
+
+  // 3. Write the snapshot sheet and tag it.
+  const snap = ss.insertSheet(name);
+  snap.appendRow(['Name', 'Email', 'Building(s)', 'Carry Over (start)', 'Earned', 'Used', 'Paid Out', 'Balance']);
+  snap.getRange(2, 1, snapshotRows.length, 8).setValues(snapshotRows);
+  snap.setFrozenRows(1);
+  snap.addDeveloperMetadata('tstArchiveBuilding', bldg);
+  snap.addDeveloperMetadata('tstArchiveYear', name);
+
+  // 4. Roll balances.
+  rolls.forEach(rr => {
+    sheet.getRange(rr.row, idx.carry + 1).setValue(rr.newCarry);
+    if (rr.firstThisYear) {
+      sheet.getRange(rr.row, idx.paid + 1).setValue(0);
+      sheet.getRange(rr.row, idx.lastFinalized + 1).setValue(name);
+    }
+  });
+
+  // 5. Move this building's counted transactions out so Earned/Used reset to 0.
+  archiveBuildingTransactions_(bldg, name);
+
+  return { building: bldg, name: name, count: snapshotRows.length };
+}
+
+function archiveBuildingTransactions_(building, yearName) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  // Earned: building col N(13), approved col I(8). Used: building col H(7), status col E(4).
+  archiveRowsByBuilding_(ss, 'TST Approvals (New)', 'TST Approvals Archive', 13, 8, building, yearName);
+  archiveRowsByBuilding_(ss, 'TST Usage (New)', 'TST Usage Archive', 7, 4, building, yearName);
+}
+
+function archiveRowsByBuilding_(ss, srcName, archName, buildingIdx, approvedIdx, building, yearName) {
+  const src = ss.getSheetByName(srcName);
+  if (!src) return;
+  const data = src.getDataRange().getValues();
+  if (data.length < 2) return;
+  const headers = data[0];
+
+  let arch = ss.getSheetByName(archName);
+  if (!arch) {
+    arch = ss.insertSheet(archName);
+    arch.appendRow(headers.concat(['School Year']));
+    arch.setFrozenRows(1);
+  }
+
+  const toArchive = [];
+  const rowsToDelete = [];
+  for (let i = 1; i < data.length; i++) {
+    const r = data[i];
+    if (!r[0]) continue; // no email
+    const isApproved = r[approvedIdx] === true || r[approvedIdx] === 'TRUE';
+    const rowBuilding = (r[buildingIdx] || 'OMS').toString();
+    if (isApproved && rowBuilding === building) {
+      toArchive.push(r.concat([yearName]));
+      rowsToDelete.push(i + 1); // 1-based
+    }
+  }
+
+  if (toArchive.length) {
+    arch.getRange(arch.getLastRow() + 1, 1, toArchive.length, toArchive[0].length).setValues(toArchive);
+    rowsToDelete.sort((a, b) => b - a).forEach(rn => src.deleteRow(rn));
+  }
+}
+
+/**
+ * Lists year-end archive sheets, scoped to the caller's building (Super Admins
+ * may pass a building or get all). Identified by developer metadata, not name.
+ */
+function listArchivedYears(building) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const wanted = ctx.isSuperAdmin ? (building || null) : ctx.building;
+
+  const result = [];
+  ss.getSheets().forEach(sh => {
+    const md = sh.getDeveloperMetadata().filter(m => m.getKey() === 'tstArchiveBuilding');
+    if (md.length === 0) return;
+    const sheetBuilding = md[0].getValue();
+    if (wanted && sheetBuilding !== wanted) return;
+    if (!ctx.isSuperAdmin && sheetBuilding !== ctx.building) return;
+    result.push({ name: sh.getName(), building: sheetBuilding });
+  });
+  return result;
+}
+
+function getArchivedYearData(sheetName) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(sheetName);
+  if (!sh) throw new Error('Archive not found.');
+
+  const md = sh.getDeveloperMetadata().filter(m => m.getKey() === 'tstArchiveBuilding');
+  if (md.length === 0) throw new Error('That sheet is not a TST year-end archive.');
+  const sheetBuilding = md[0].getValue();
+  if (!ctx.isSuperAdmin && sheetBuilding !== ctx.building) {
+    throw new Error('You can only view archives for your own building.');
+  }
+
+  const values = sh.getDataRange().getValues();
+  const headers = values.shift();
+  return { name: sheetName, building: sheetBuilding, headers: headers, rows: values };
+}
+
+/**
+ * Ensures the Staff Directory has an "Archived" column, creating it after the
+ * last used column if missing. Returns its 0-based index.
+ */
+function ensureColumn_(sheet, keyword, headerName) {
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const idx = headers.findIndex(h => h.toString().toLowerCase().includes(keyword));
+  if (idx > -1) return idx;
+
+  const newColNum = sheet.getLastColumn() + 1;
+  sheet.getRange(1, newColNum).setValue(headerName);
+  return newColNum - 1; // 0-based
+}
+
+function ensureArchivedColumn(sheet) {
+  return ensureColumn_(sheet, 'archiv', 'Archived');
+}
+
+/**
+ * Helper to get clean object array of Staff Directory with DYNAMIC balances.
+ * When includeArchived is falsy, archived staff are omitted.
+ */
+function getStaffDirectoryData(buildingFilter, targetEmail, includeArchived) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('Staff Directory');
   const data = sheet.getDataRange().getValues();
   const headers = data.shift();
-  
+
   // Dynamic Header Lookup
   const nameIdx = headers.findIndex(h => h.toString().toLowerCase().includes('name'));
   const emailIdx = headers.findIndex(h => h.toString().toLowerCase().includes('email'));
@@ -358,6 +797,7 @@ function getStaffDirectoryData(buildingFilter, targetEmail) {
   const carryOverIdx = headers.findIndex(h => h.toString().toLowerCase().includes('carry'));
   const paidOutIdx = headers.findIndex(h => h.toString().toLowerCase().includes('paid'));
   const buildingIdx = headers.findIndex(h => h.toString().toLowerCase().includes('building'));
+  const archivedIdx = headers.findIndex(h => h.toString().toLowerCase().includes('archiv'));
 
   const iName = nameIdx > -1 ? nameIdx : 0;
   const iEmail = emailIdx > -1 ? emailIdx : 1;
@@ -373,13 +813,19 @@ function getStaffDirectoryData(buildingFilter, targetEmail) {
   return data.map((r, i) => {
     const email = r[iEmail].toString().toLowerCase();
     const assignedBuildings = (iBuilding > -1 && r[iBuilding]) ? r[iBuilding].toString() : DEFAULT_BUILDING;
-    
-    // Check if user belongs to the filtered building (if provided)
-    // If buildingFilter is 'OMS', and user is 'OMS, OHS', they should appear.
-    if (buildingFilter) {
-       const userBuildings = assignedBuildings.split(',').map(b => b.trim());
-       if (!userBuildings.includes(buildingFilter)) return null;
-    }
+    const userBuildings = assignedBuildings.split(',').map(b => b.trim()).filter(Boolean);
+    const archivedList = archivedIdx > -1 ? parseArchivedList_(r[archivedIdx], userBuildings) : [];
+
+    // Building membership: with a filter, only show staff assigned to it.
+    if (buildingFilter && !userBuildings.includes(buildingFilter)) return null;
+
+    // Archived status is per-building. With a building filter it means "archived
+    // from THIS building"; without one, it means "archived from every building".
+    const isArchivedView = buildingFilter
+      ? archivedList.includes(buildingFilter)
+      : (userBuildings.length > 0 && userBuildings.every(b => archivedList.includes(b)));
+
+    if (isArchivedView && !includeArchived) return null;
 
     const dynStats = balances[email] || { earned: 0, used: 0 };
     const carryOver = Number(r[iCarry]) || 0;
@@ -394,6 +840,8 @@ function getStaffDirectoryData(buildingFilter, targetEmail) {
       carryOver: carryOver,
       paidOut: paidOut,
       building: assignedBuildings, // Keep raw string or array? Frontend expects string usually.
+      archived: isArchivedView,
+      archivedBuildings: archivedList.join(', '),
       total: carryOver + dynStats.earned - dynStats.used - paidOut,
       rowIndex: i + 2
     };
@@ -1351,25 +1799,66 @@ function processEarnedSubmission(data) {
     amountDecimal = calculatePeriods(period, amountType, earnerBuilding);
   }
 
-  // Append to Approvals (Col A:N)
-  approvalSheet.appendRow([
-    email,          // A: Email
-    earnerName,     // B: Name
-    subbedFor,      // C: Subbed For
-    otherText || "",// D: Other Details
-    dateStr,        // E: Date
-    period,         // F: Period
-    amountType,     // G: Time Type
-    amountDecimal,  // H: Hours
-    false,          // I: Approved (Default)
-    "",             // J: Approved TS
-    false,          // K: Denied (Default)
-    "",             // L: Denied TS
-    "",             // M: Denial Reason
-    earnerBuilding  // N: Building
-  ]);
-  
+  // Idempotency guard. The same earned submission can reach this function twice
+  // (the web app writes the row directly AND a Form Responses 1 trigger/sync can
+  // reprocess the same row), which previously produced duplicate pending rows.
+  // A person cannot sub the same period twice on the same date, so a matching
+  // non-denied row for email + date + period is always a duplicate. A script lock
+  // serializes the direct write against the trigger so they can't race.
+  const lock = LockService.getScriptLock();
+  try { lock.waitLock(20000); } catch (e) { /* proceed unlocked rather than drop the request */ }
+  try {
+    const keyEmail = email.toString().toLowerCase().trim();
+    const keyDate = normDateKey_(dateStr);
+    const keyPeriod = (period || '').toString().trim();
+
+    const existing = approvalSheet.getDataRange().getValues();
+    for (let i = 1; i < existing.length; i++) {
+      const r = existing[i];
+      if (!r[0]) continue;
+      const isDenied = r[10] === true || r[10] === 'TRUE';
+      if (isDenied) continue; // a denied row shouldn't block a genuine re-entry
+      if (r[0].toString().toLowerCase().trim() === keyEmail &&
+          normDateKey_(r[4]) === keyDate &&
+          (r[5] || '').toString().trim() === keyPeriod) {
+        return false; // duplicate — skip
+      }
+    }
+
+    // Append to Approvals (Col A:N)
+    approvalSheet.appendRow([
+      email,          // A: Email
+      earnerName,     // B: Name
+      subbedFor,      // C: Subbed For
+      otherText || "",// D: Other Details
+      dateStr,        // E: Date
+      period,         // F: Period
+      amountType,     // G: Time Type
+      amountDecimal,  // H: Hours
+      false,          // I: Approved (Default)
+      "",             // J: Approved TS
+      false,          // K: Denied (Default)
+      "",             // L: Denied TS
+      "",             // M: Denial Reason
+      earnerBuilding  // N: Building
+    ]);
+  } finally {
+    try { lock.releaseLock(); } catch (e) {}
+  }
+
   return true;
+}
+
+/**
+ * Normalizes a date cell/string to a yyyy-MM-dd key for duplicate detection.
+ * Keeps plain date strings as-is (avoids UTC off-by-one) and formats real Dates
+ * in the script timezone.
+ */
+function normDateKey_(d) {
+  if (d instanceof Date) {
+    return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  }
+  return (d ? d.toString().trim() : '').split('T')[0];
 }
 
 /**

@@ -76,8 +76,12 @@ STATE = {
 The application relies on four key sheets within the bound Google Spreadsheet:
 
 1. **Staff Directory** - User directory with roles and balances
-   - Columns: Name (A), Email (B), Role (C), Earned (D), Used (E), Carry Over (G)
-   - Role determines access level: "Admin" or "Teacher"
+   - Columns: Name (A), Email (B), Role (C), Earned (D), Used (E), Carry Over (F), Paid Out (G), Running Total (H, ARRAYFORMULA), Building (I), Archived (J), Last Finalized (K)
+   - Role determines access level: "Teacher", "Admin", or "Super Admin"
+   - Building (I) supports comma-separated multi-building assignment (e.g. `OMS, OHS`)
+   - Archived (J): **per-building** soft-delete — a comma-separated list of buildings the person is archived FROM. Archiving from one building doesn't affect others; "fully archived" = archived from all assigned buildings. Auto-created if missing.
+   - Last Finalized (K): school-year name of the last year-end roll for this person; prevents double-rolling staff who span buildings. Auto-created if missing.
+   - When adding rows programmatically, set individual cells and leave H blank so the ARRAYFORMULA fills it (do NOT use `appendRow`).
 
 2. **TST Approvals (New)** - Pending and processed earned requests
    - Columns: Email (A), Name (B), SubbedFor (C), Date (E), Period (F), TimeType (G), Hours (H), Approved (I), ApprovedTS (J), Denied (K), DeniedTS (L), DenialReason (M)
@@ -102,6 +106,26 @@ The application relies on four key sheets within the bound Google Spreadsheet:
 - **submitEarned(formObj) / submitUsage(formObj)** - Create new requests
 - **batch* functions** - Process multiple actions at once (batchApproveEarned, batchDenyEarned, etc.)
 - **sendStatusEmail(email, name)** - Generate and send TST report email
+
+#### Staff Management (admin-only, self-authorizing via `getUserContext`)
+
+- **addStaffMember(data)** - Add a staff member. `data = { name, email, role, building, carryOver, paidOut }`. Building accepts comma-separated codes. Writes individual cells (never `appendRow`) to preserve the column-H ARRAYFORMULA.
+- **updateStaffMember(email, data)** - Edit a staff member matched by (unchanged) email. Email is never rewritten because it keys all transaction history.
+- **archiveStaffMember(email, building) / restoreStaffMember(email, building)** - Add/remove a building from the per-building Archived (J) list. Defaults to the caller's current building.
+- **deleteStaffMemberPermanent(email)** - **Super Admin only.** Deletes the spreadsheet row; only permitted for fully-archived staff (archived from every assigned building).
+- **getArchivedStaff()** - **Super Admin only.** Returns fully-archived staff (for the Settings permanent-delete list).
+- **getStaffDirectoryData(buildingFilter, targetEmail, includeArchived)** - Reads the directory; the returned `archived` flag is per-building when `buildingFilter` is set. Archived staff are excluded unless `includeArchived` is true.
+
+#### Year-End Finalize
+
+- **finalizeSchoolYear(yearName, building)** - Snapshots a building's staff totals into a new metadata-tagged sheet, rolls each person's remaining balance into Carry Over and zeros Paid Out (once per person per year, via Last Finalized), and moves the building's approved transactions to archive sheets so Earned/Used reset to 0. Building admins finalize their own building; Super Admins may pass a building.
+- **listArchivedYears(building) / getArchivedYearData(sheetName)** - List and read the year-end snapshot sheets (scoped to the caller's building; identified by developer metadata, not name).
+
+Authorization: add/edit/archive/restore/finalize require Admin or Super Admin; non-Super-Admins are scoped to their own building(s). Permanent delete and archived-staff listing require Super Admin.
+
+### Profile Menu (admins)
+
+Switch School (multi-building) · Update Carry Over · Finalize School Year · View Archived Years · Settings (Settings also hosts the Super-Admin "Archived Staff" permanent-delete list).
 
 ### Row Index Convention
 
