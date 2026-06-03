@@ -776,8 +776,9 @@ function finalizeSchoolYear(yearName, building) {
 // both are kept so existing callers/signatures are unaffected.
 function archiveTransactionsByEmails_(emailsLower, yearName) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const emailSet = {};
-  (emailsLower || []).forEach(e => { emailSet[e.toString().trim().toLowerCase()] = true; });
+  // Use a real Set so membership can't be confused by inherited Object.prototype
+  // keys (e.g. a stray 'constructor'/'__proto__' value in the email column).
+  const emailSet = new Set((emailsLower || []).map(e => e.toString().trim().toLowerCase()));
   // Earned: approved col I(8). Used: status col E(4).
   archiveRowsByEmails_(ss, 'TST Approvals (New)', 'TST Approvals Archive', 8, emailSet, yearName);
   archiveRowsByEmails_(ss, 'TST Usage (New)', 'TST Usage Archive', 4, emailSet, yearName);
@@ -804,7 +805,7 @@ function archiveRowsByEmails_(ss, srcName, archName, approvedIdx, emailSet, year
     if (!r[0]) continue; // no email
     const isApproved = r[approvedIdx] === true || r[approvedIdx] === 'TRUE';
     const emailLower = r[0].toString().trim().toLowerCase();
-    if (isApproved && emailSet[emailLower]) {
+    if (isApproved && emailSet.has(emailLower)) {
       toArchive.push(r.concat([yearName]));
       rowsToDelete.push(i + 1); // 1-based
     }
@@ -2847,7 +2848,9 @@ function updateStaffCarryOver(email, newAmount) {
   assertCanManageRow_(ctx, buildingCell);
   assertPrimaryAdminFor_(ctx, buildingCell, 'Carry Over');
 
-  sheet.getRange(rowIndex, safeCarryIdx + 1).setValue(newAmount);
+  // Coerce to a number so a blank/garbage value can't poison the Running Total
+  // ARRAYFORMULA (consistent with the other owned-column writers).
+  sheet.getRange(rowIndex, safeCarryIdx + 1).setValue(Number(newAmount) || 0);
   return true;
 }
 

@@ -721,7 +721,7 @@
 
     function saveCarryOver(email) {
        const input = document.getElementById(`co-${email}`);
-       if (!input) { showToast("Carry Over for this staff member is managed by their primary building.", "warning"); return; }
+       if (!input) { showToast("Couldn't save — please reopen the Update Carry Over dialog and try again.", "warning"); return; }
        const val = parseFloat(input.value);
        
        if (isNaN(val)) {
@@ -2101,9 +2101,17 @@
              showLoading(true);
              google.script.run.withSuccessHandler(res => {
                 showLoading(false);
-                let msg = `Finalized ${res.count} staff into "${res.name}".`;
-                if (res.pending && res.pending > 0) {
-                   msg += ` ${res.pending} shared staff flagged for their primary building.`;
+                let msg;
+                if (res.count > 0) {
+                   msg = `Finalized ${res.count} staff into "${res.name}".`;
+                   if (res.pending && res.pending > 0) {
+                      msg += ` ${res.pending} shared staff flagged for their primary building.`;
+                   }
+                } else if (res.pending && res.pending > 0) {
+                   // No staff are based here (all shared from elsewhere) — only flags were set.
+                   msg = `${res.pending} shared staff flagged for their primary building to finalize. No staff are based in this building.`;
+                } else {
+                   msg = `Nothing to finalize for this building.`;
                 }
                 showToast(msg, "success");
                 loadAdminTotals();
