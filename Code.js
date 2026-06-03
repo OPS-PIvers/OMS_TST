@@ -1004,7 +1004,7 @@ function createSnapshot(building, title, description, date) {
   snap.addDeveloperMetadata('tstSnapshotId', id);
   snap.addDeveloperMetadata('tstSnapshotBuilding', bldg);
   snap.addDeveloperMetadata('tstSnapshotTitle', snapTitle);
-  snap.addDeveloperMetadata('tstSnapshotDescription', snapDesc);
+  if (snapDesc) snap.addDeveloperMetadata('tstSnapshotDescription', snapDesc);
   snap.addDeveloperMetadata('tstSnapshotDate', snapDate);
   snap.addDeveloperMetadata('tstSnapshotCreated', created);
 
@@ -1106,7 +1106,7 @@ function updateSnapshot(id, data) {
   const setMeta = (key, value) => {
     const md = sh.getDeveloperMetadata().filter(m => m.getKey() === key);
     if (md.length) md[0].setValue(value);
-    else sh.addDeveloperMetadata(key, value);
+    else if (value !== '') sh.addDeveloperMetadata(key, value); // GAS may reject empty metadata values
   };
 
   if (data.title !== undefined) setMeta('tstSnapshotTitle', (data.title || '').toString().trim() || meta.title);
