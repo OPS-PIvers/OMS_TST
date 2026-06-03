@@ -40,10 +40,12 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
 
       - name: Install clasp
-        run: npm install -g @google/clasp@2.4.2
+        # Pinned to the 3.3.x line to match the locally-authed clasp that wrote
+        # the CLASPRC_JSON secret (clasp 3's ~/.clasprc.json schema differs from 2.x).
+        run: npm install -g @google/clasp@3.3
 
       - name: Authenticate clasp
         env:
