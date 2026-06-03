@@ -55,7 +55,17 @@ jobs:
             echo "::error::Missing CLASPRC_JSON secret. Add your ~/.clasprc.json contents as a repo secret named CLASPRC_JSON (Settings → Secrets and variables → Actions)."
             exit 1
           fi
-          printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          # Strip a leading UTF-8 BOM (PowerShell's Get-Content | gh secret set can
+          # add one) and validate the JSON before clasp tries to read it.
+          node -e '
+            const fs = require("fs");
+            const s = process.env.CLASPRC_JSON.replace(/^\uFEFF/, "");
+            try { JSON.parse(s); } catch (e) {
+              console.error("::error::CLASPRC_JSON is not valid JSON after BOM strip: " + e.message);
+              process.exit(1);
+            }
+            fs.writeFileSync(`${process.env.HOME}/.clasprc.json`, s);
+          '
 
       - name: Push source to Apps Script
         run: clasp push --force
