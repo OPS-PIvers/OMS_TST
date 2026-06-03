@@ -1,0 +1,62 @@
+name: Deploy to Apps Script
+
+# Pushes the repo to the bound Google Apps Script project and redeploys the
+# existing web-app deployment whenever deployable source lands on main.
+# Also runnable on demand via the "Run workflow" button (workflow_dispatch).
+#
+# REQUIRED SETUP (one time):
+#   Add a repository secret named CLASPRC_JSON containing the FULL contents of
+#   your local ~/.clasprc.json (created by `clasp login`). The job uses its
+#   refresh token to authenticate clasp non-interactively.
+#   Settings → Secrets and variables → Actions → New repository secret.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.js'
+      - '**.gs'
+      - '**.html'
+      - 'appsscript.json'
+      - '.clasp.json'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch: {}
+
+# Never let two deploys run at once; let an in-flight deploy finish.
+concurrency:
+  group: clasp-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install clasp
+        run: npm install -g @google/clasp@2.4.2
+
+      - name: Authenticate clasp
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+        run: |
+          if [ -z "$CLASPRC_JSON" ]; then
+            echo "::error::Missing CLASPRC_JSON secret. Add your ~/.clasprc.json contents as a repo secret named CLASPRC_JSON (Settings → Secrets and variables → Actions)."
+            exit 1
+          fi
+          printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+
+      - name: Push source to Apps Script
+        run: clasp push --force
+
+      - name: Redeploy web app
+        run: clasp deploy -i AKfycbzPvaCCovRLEUVSe05KfRaDlXEs9k64oMCtpcXdOnYzVpP2BW16PaXV5SJVHNk3Ea3TBQ --description "CI deploy ${{ github.sha }}"
