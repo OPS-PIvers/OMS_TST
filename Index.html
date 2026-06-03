@@ -347,8 +347,8 @@
     // for this staff member: Super Admins always; otherwise the user must be
     // assigned to the staff member's primary building. Mirrors the server check.
     function canEditOwnedColumns(staff) {
-       if (!staff) return false;
-       if (STATE.user && STATE.user.isSuperAdmin) return true;
+       if (!staff || !STATE.user) return false;
+       if (STATE.user.isSuperAdmin) return true;
        const primary = staff.primaryBuilding || primaryBuildingOf(staff.building);
        return !!primary && (STATE.user.buildings || []).indexOf(primary) > -1;
     }
@@ -721,6 +721,7 @@
 
     function saveCarryOver(email) {
        const input = document.getElementById(`co-${email}`);
+       if (!input) { showToast("Carry Over for this staff member is managed by their primary building.", "warning"); return; }
        const val = parseFloat(input.value);
        
        if (isNaN(val)) {
