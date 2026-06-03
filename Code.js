@@ -1020,10 +1020,42 @@ function createSnapshot(building, title, description, date) {
   snap.addDeveloperMetadata('tstSnapshotDate', snapDate);
   snap.addDeveloperMetadata('tstSnapshotCreated', created);
 
+  // Capture the building's counted (approved) transactions so the snapshot can
+  // later be restored to identical totals. Predicate matches calculateDynamicBalances:
+  //   Approvals: building col N(13), approved col I(8).
+  //   Usage:     building col H(7),  status   col E(4).
+  captureBuildingTransactions_(ss, 'TST Approvals (New)', 13, 8, bldg, '__snap_' + id + '_appr');
+  captureBuildingTransactions_(ss, 'TST Usage (New)', 7, 4, bldg, '__snap_' + id + '_use');
+
   return {
     id: id, building: bldg, title: snapTitle, description: snapDesc,
     date: snapDate, created: created, count: built.rows.length
   };
+}
+
+/**
+ * Copies a source transaction sheet's approved rows for one building into a new
+ * hidden companion sheet (header + matching rows). Used to make snapshots
+ * restorable. Predicate mirrors archiveRowsByBuilding_ / calculateDynamicBalances.
+ */
+function captureBuildingTransactions_(ss, srcName, buildingIdx, approvedIdx, bldg, destName) {
+  const dest = ss.insertSheet(destName);
+  dest.hideSheet();
+  const src = ss.getSheetByName(srcName);
+  if (!src) return dest;
+  const data = src.getDataRange().getValues();
+  if (data.length < 1) return dest;
+
+  const out = [data[0]]; // header
+  for (let i = 1; i < data.length; i++) {
+    const r = data[i];
+    if (!r[0]) continue;
+    const isApproved = r[approvedIdx] === true || r[approvedIdx] === 'TRUE';
+    const rowBuilding = (r[buildingIdx] || 'OMS').toString();
+    if (isApproved && rowBuilding === bldg) out.push(r);
+  }
+  dest.getRange(1, 1, out.length, out[0].length).setValues(out);
+  return dest;
 }
 
 /**
@@ -1096,7 +1128,7 @@ function updateSnapshot(id, data) {
   return getSnapshotMeta_(sh);
 }
 
-/** Permanently deletes a snapshot (removes the underlying sheet). */
+/** Permanently deletes a snapshot (the main sheet and its companion sheets). */
 function deleteSnapshot(id) {
   const ctx = getUserContext();
   assertAdmin_(ctx);
@@ -1105,8 +1137,96 @@ function deleteSnapshot(id) {
   if (!sh) throw new Error('Snapshot not found.');
   const meta = getSnapshotMeta_(sh);
   assertCanAccessSnapshot_(ctx, meta.building);
+
+  ['_appr', '_use'].forEach(suffix => {
+    const c = ss.getSheetByName('__snap_' + id + suffix);
+    if (c) ss.deleteSheet(c);
+  });
   ss.deleteSheet(sh);
   return { ok: true, id: id };
+}
+
+/** Appends a captured companion sheet's rows (minus header) into a live sheet. */
+function restoreCapturedTransactions_(ss, snapName, liveName) {
+  const snap = ss.getSheetByName(snapName);
+  const live = ss.getSheetByName(liveName);
+  if (!snap || !live) return;
+  const data = snap.getDataRange().getValues();
+  if (data.length < 2) return; // header only — nothing to restore
+  const rows = data.slice(1).filter(r => r[0]);
+  if (!rows.length) return;
+  live.getRange(live.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
+}
+
+/**
+ * Reverts a building to the state captured by a snapshot — building-scoped and
+ * with no effect on other buildings. After restoring, every column of each row
+ * in the directory matches the snapshot:
+ *  1. The building's current approved transactions are archived (recoverable)
+ *     and removed, then the snapshot's captured transactions are re-inserted, so
+ *     Earned/Used recompute to the snapshot values.
+ *  2. Carry Over / Paid Out are reset to the snapshot values for staff assigned
+ *     ONLY to this building. Multi-building staff share these cells, so they are
+ *     left untouched to avoid impacting their other building(s).
+ * Staff not present in the snapshot are left unchanged; no staff rows are deleted.
+ */
+function restoreSnapshot(id) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const main = findSnapshotSheet_(ss, id);
+  if (!main) throw new Error('Snapshot not found.');
+  const meta = getSnapshotMeta_(main);
+  const bldg = meta.building;
+  assertCanAccessSnapshot_(ctx, bldg);
+
+  const apprSnap = ss.getSheetByName('__snap_' + id + '_appr');
+  const useSnap = ss.getSheetByName('__snap_' + id + '_use');
+  if (!apprSnap || !useSnap) {
+    throw new Error('This snapshot was created before Restore was supported and cannot be restored.');
+  }
+
+  // 1. Archive + clear the building's CURRENT approved transactions, then put the
+  //    snapshot's captured transactions back.
+  const label = 'Restore backup ' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm') + ' (' + bldg + ')';
+  archiveBuildingTransactions_(bldg, label);
+  restoreCapturedTransactions_(ss, '__snap_' + id + '_appr', 'TST Approvals (New)');
+  restoreCapturedTransactions_(ss, '__snap_' + id + '_use', 'TST Usage (New)');
+
+  // 2. Restore Carry Over / Paid Out for single-building staff in the snapshot.
+  const snapVals = main.getDataRange().getValues();
+  snapVals.shift(); // drop header; cols: 0 Name,1 Email,2 Building(s),3 Carry,4 Earned,5 Used,6 Paid,7 Balance
+
+  const sheet = getStaffSheet_();
+  const idx = getStaffIndices_(sheet);
+  const all = sheet.getDataRange().getValues();
+
+  const emailToRow = {};
+  const emailToBuildings = {};
+  for (let i = 1; i < all.length; i++) {
+    const em = (all[i][idx.email] || '').toString().trim().toLowerCase();
+    if (!em) continue;
+    emailToRow[em] = i + 1;
+    emailToBuildings[em] = splitBuildings_(all[i][idx.building]);
+  }
+
+  let restored = 0;
+  let multiBuildingSkipped = 0;
+  snapVals.forEach(r => {
+    const email = (r[1] || '').toString().trim().toLowerCase();
+    if (!email) return;
+    const rowNum = emailToRow[email];
+    if (!rowNum) return; // person no longer in the directory
+    if ((emailToBuildings[email] || []).length > 1) { multiBuildingSkipped++; return; }
+    sheet.getRange(rowNum, idx.carry + 1).setValue(Number(r[3]) || 0);
+    sheet.getRange(rowNum, idx.paid + 1).setValue(Number(r[6]) || 0);
+    restored++;
+  });
+
+  return {
+    building: bldg, title: meta.title, count: snapVals.length,
+    restored: restored, multiBuildingSkipped: multiBuildingSkipped
+  };
 }
 
 /**
