@@ -702,11 +702,17 @@ function finalizeSchoolYear(yearName, building) {
 
     if (!isPrimaryHere) {
       // Shared staff whose primary is elsewhere: leave their data untouched.
-      // Only flag them if they still have combined activity awaiting their primary
-      // building's finalize. This keeps the flag order-independent: if the primary
-      // already finalized them their combined totals are 0, so we don't re-flag.
+      // Flag them as pending only if they still have combined activity awaiting
+      // their primary building's finalize. Two guards keep the flag from getting
+      // stuck: (a) order-independence — if the primary already finalized them their
+      // combined totals are 0, so we don't re-flag; (b) if they're archived from
+      // their primary building, that primary will never finalize them, so a chip
+      // would never clear — don't set it.
       const hasActivity = (Number(stat.earned) || 0) + (Number(stat.used) || 0) > 0;
-      if (hasActivity && pendingCur !== name) pendingFlags.push({ row: i + 1, year: name });
+      const archivedFromPrimary = archivedList.includes(userBuildings[0]);
+      if (hasActivity && !archivedFromPrimary && pendingCur !== name) {
+        pendingFlags.push({ row: i + 1, year: name });
+      }
       continue;
     }
 
