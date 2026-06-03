@@ -305,14 +305,17 @@ function batchDeleteUsed(indices) {
 function updateStaffBatch(updates, type) {
   // updates: { "email@domain.com": 10.5, ... }
   // type: 'carryOver' | 'paidOut'
-  
+
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('Staff Directory');
   const data = sheet.getDataRange().getValues();
   const headers = data[0]; // Row 1 is header
-  
+
   let targetColIdx = -1;
-  
+
   if (type === 'carryOver') {
      targetColIdx = headers.findIndex(h => h.toString().toLowerCase().includes('carry'));
      if (targetColIdx === -1) targetColIdx = 5; // Default F (Index 5)
@@ -320,24 +323,37 @@ function updateStaffBatch(updates, type) {
      targetColIdx = headers.findIndex(h => h.toString().toLowerCase().includes('paid'));
      if (targetColIdx === -1) targetColIdx = 6; // Default G (Index 6)
   }
-  
+
   if (targetColIdx === -1) throw new Error("Target column not found");
 
   const emailIdx = headers.findIndex(h => h.toString().toLowerCase().includes('email'));
   const safeEmailIdx = emailIdx > -1 ? emailIdx : 1;
+  const buildingIdx = headers.findIndex(h => h.toString().toLowerCase().includes('building'));
+  const safeBuildingIdx = buildingIdx > -1 ? buildingIdx : 8;
 
-  // Process updates
-  // Iterate through data rows (skip header)
+  const label = type === 'paidOut' ? 'Paid Out' : 'Carry Over';
+
+  // Normalize update keys to lowercase so matching is case-insensitive.
+  const updatesLower = {};
+  Object.keys(updates || {}).forEach(k => { updatesLower[k.toLowerCase()] = updates[k]; });
+
+  // Carry Over / Paid Out are owned by the primary building. Validate every
+  // targeted row up front so the whole batch fails cleanly if any row is not
+  // editable by this admin (rather than partially applying).
+  const writes = [];
   for (let i = 1; i < data.length; i++) {
     const email = data[i][safeEmailIdx].toString().toLowerCase();
-    
-    if (updates.hasOwnProperty(email)) {
-       // Update this row
-       // +1 for 1-based row index, +1 for 1-based col index
-       // targetColIdx is 0-based from getValues
-       sheet.getRange(i + 1, targetColIdx + 1).setValue(updates[email]);
-    }
+    if (!updatesLower.hasOwnProperty(email)) continue;
+
+    const buildingCell = data[i][safeBuildingIdx];
+    assertCanManageRow_(ctx, buildingCell);
+    assertPrimaryAdminFor_(ctx, buildingCell, label);
+
+    writes.push({ row: i + 1, value: updatesLower[email] });
   }
+
+  // +1 for 1-based row index, +1 for 1-based col index; targetColIdx is 0-based.
+  writes.forEach(w => sheet.getRange(w.row, targetColIdx + 1).setValue(w.value));
 
   return true;
 }
@@ -363,8 +379,9 @@ function getStaffIndices_(sheet) {
     carry: find('carry', 5),
     paid: find('paid', 6),
     building: find('building', 8),
-    archived: ensureColumn_(sheet, 'archiv', 'Archived'),           // creates J if missing
-    lastFinalized: ensureColumn_(sheet, 'finaliz', 'Last Finalized') // creates K if missing
+    archived: ensureColumn_(sheet, 'archiv', 'Archived'),             // creates J if missing
+    lastFinalized: ensureColumn_(sheet, 'last final', 'Last Finalized'), // creates K if missing
+    pendingFinalize: ensureColumn_(sheet, 'pending', 'Pending Finalize') // creates L if missing
   };
 }
 
@@ -394,6 +411,26 @@ function assertCanManageRow_(ctx, buildingCell) {
   const staffBuildings = (buildingCell || '').toString().split(',').map(b => b.trim()).filter(Boolean);
   if (!staffBuildings.some(b => ctx.buildings.includes(b))) {
     throw new Error('You can only manage staff in your own building(s).');
+  }
+}
+
+// The PRIMARY building is the first one listed in a staff member's Building cell.
+// Carry Over, Paid Out and finalize are "owned" by the primary building's admin.
+// Returns true when the caller may edit those owned columns for this person:
+// Super Admins always may; otherwise the caller must be assigned to that person's
+// primary building. (Earned submit/approve stays open to any building admin.)
+function isPrimaryAdminFor_(ctx, buildingCell) {
+  if (ctx.isSuperAdmin) return true;
+  const primary = splitBuildings_(buildingCell)[0];
+  if (!primary) return false;
+  return ctx.buildings.includes(primary);
+}
+
+function assertPrimaryAdminFor_(ctx, buildingCell, what) {
+  if (!isPrimaryAdminFor_(ctx, buildingCell)) {
+    const primary = splitBuildings_(buildingCell)[0] || '(unknown)';
+    throw new Error('Only the primary building (' + primary + ') administrator can edit ' +
+      (what || 'this field') + ' for this staff member.');
   }
 }
 
@@ -507,8 +544,16 @@ function updateStaffMember(email, data) {
   if (data.name !== undefined) sheet.getRange(row, idx.name + 1).setValue(data.name.toString().trim());
   if (data.role !== undefined) sheet.getRange(row, idx.role + 1).setValue(data.role);
   sheet.getRange(row, idx.building + 1).setValue(newBuilding);
-  if (data.carryOver !== undefined) sheet.getRange(row, idx.carry + 1).setValue(Number(data.carryOver) || 0);
-  if (data.paidOut !== undefined) sheet.getRange(row, idx.paid + 1).setValue(Number(data.paidOut) || 0);
+
+  // Carry Over / Paid Out are owned by the primary building. Only the primary
+  // admin (or a Super Admin) may change them; for non-primary admins we leave
+  // the existing values untouched (the edit form makes those fields read-only).
+  // Ownership is judged by the person's CURRENT primary building.
+  if ((data.carryOver !== undefined || data.paidOut !== undefined) &&
+      isPrimaryAdminFor_(ctx, all[i][idx.building])) {
+    if (data.carryOver !== undefined) sheet.getRange(row, idx.carry + 1).setValue(Number(data.carryOver) || 0);
+    if (data.paidOut !== undefined) sheet.getRange(row, idx.paid + 1).setValue(Number(data.paidOut) || 0);
+  }
 
   return true;
 }
@@ -590,14 +635,23 @@ function getArchivedStaff() {
 // ===== Year-End Finalize / Archived Years =====
 
 /**
- * Finalizes a school year for one building:
- *  - Snapshots each active staff member's totals into a new sheet (tagged with
- *    developer metadata so it can be found later).
- *  - Rolls each person's remaining balance into Carry Over and zeros Paid Out —
- *    but only ONCE per person per school year (tracked via the Last Finalized
- *    column), so staff who span buildings aren't rolled twice.
- *  - Moves this building's counted (approved) transactions into archive sheets
- *    so live Earned/Used recompute to 0.
+ * Finalizes a school year for one building, PRIMARY-AWARE.
+ *
+ * Under the ownership model, a person's Carry Over / Paid Out / Used (and the
+ * year-end roll) belong to their PRIMARY building (the first listed). Earned can
+ * be contributed by any building, and totals are COMBINED across buildings.
+ *
+ *  - Staff whose PRIMARY is this building ("primary-here"):
+ *      * Snapshot their COMBINED end-of-year totals into a new tagged sheet.
+ *      * Roll their COMBINED remaining balance into Carry Over and zero Paid Out
+ *        (only ONCE per person per school year via Last Finalized).
+ *      * Archive ALL their approved transactions across EVERY building so the
+ *        combined Earned/Used recompute to 0.
+ *      * Clear any pending-finalize flag.
+ *  - Staff assigned here but whose PRIMARY is elsewhere ("shared"):
+ *      * Are NOT rolled/reset/archived (their data is untouched).
+ *      * Get a pending-finalize flag so the UI shows that their primary building
+ *        still needs to finalize them. The flag clears when the primary does.
  */
 function finalizeSchoolYear(yearName, building) {
   const ctx = getUserContext();
@@ -616,16 +670,20 @@ function finalizeSchoolYear(yearName, building) {
     throw new Error('A sheet named "' + name + '" already exists. Choose a different name.');
   }
 
-  // 1. Building-filtered balances, computed BEFORE any transactions are moved.
-  const balances = calculateDynamicBalances(bldg);
+  // 1. COMBINED balances (across all buildings), computed BEFORE any transactions
+  //    are moved. Only the primary building rolls/archives them.
+  const balances = calculateDynamicBalances(null);
 
-  // 2. Build the snapshot + roll plan from active staff in this building.
+  // 2. Build the plan from staff assigned to this building.
   const sheet = getStaffSheet_();
-  const idx = getStaffIndices_(sheet);
+  const idx = getStaffIndices_(sheet); // ensures Pending Finalize column exists
   const all = sheet.getDataRange().getValues();
 
   const snapshotRows = [];
-  const rolls = [];
+  const rolls = [];            // primary-here: balance rolls
+  const clearPending = [];     // primary-here: rows whose pending flag to clear
+  const primaryEmails = [];    // primary-here emails: archive ALL their transactions
+  const pendingFlags = [];     // shared-elsewhere: rows to flag pending
 
   for (let i = 1; i < all.length; i++) {
     const r = all[i];
@@ -638,9 +696,28 @@ function finalizeSchoolYear(yearName, building) {
     const archivedList = parseArchivedList_(r[idx.archived], userBuildings);
     if (archivedList.includes(bldg)) continue; // already archived from this building
 
+    const isPrimaryHere = userBuildings[0] === bldg;
+    const pendingCur = (r[idx.pendingFinalize] || '').toString().trim();
     const stat = balances[email.toLowerCase()] || { earned: 0, used: 0 };
-    const e = Number(stat.earned) || 0;
-    const u = Number(stat.used) || 0;
+
+    if (!isPrimaryHere) {
+      // Shared staff whose primary is elsewhere: leave their data untouched.
+      // Flag them as pending only if they still have combined activity awaiting
+      // their primary building's finalize. Two guards keep the flag from getting
+      // stuck: (a) order-independence — if the primary already finalized them their
+      // combined totals are 0, so we don't re-flag; (b) if they're archived from
+      // their primary building, that primary will never finalize them, so a chip
+      // would never clear — don't set it.
+      const hasActivity = (Number(stat.earned) || 0) + (Number(stat.used) || 0) > 0;
+      const archivedFromPrimary = archivedList.includes(userBuildings[0]);
+      if (hasActivity && !archivedFromPrimary && pendingCur !== name) {
+        pendingFlags.push({ row: i + 1, year: name });
+      }
+      continue;
+    }
+
+    const e = Number(stat.earned) || 0;  // combined
+    const u = Number(stat.used) || 0;    // combined
     const priorCarry = Number(r[idx.carry]) || 0;
     const paidOut = Number(r[idx.paid]) || 0;
     const balance = priorCarry + e - u - paidOut;
@@ -652,21 +729,26 @@ function finalizeSchoolYear(yearName, building) {
     const rem = e - u;
     const newCarry = priorCarry + rem - (firstThisYear ? paidOut : 0);
     rolls.push({ row: i + 1, newCarry: newCarry, firstThisYear: firstThisYear });
+
+    primaryEmails.push(email.toLowerCase());
+    if (pendingCur !== '') clearPending.push(i + 1);
   }
 
-  if (snapshotRows.length === 0) {
+  if (snapshotRows.length === 0 && pendingFlags.length === 0) {
     throw new Error('No active staff found for ' + bldg + ' to finalize.');
   }
 
-  // 3. Write the snapshot sheet and tag it.
-  const snap = ss.insertSheet(name);
-  snap.appendRow(['Name', 'Email', 'Building(s)', 'Carry Over (start)', 'Earned', 'Used', 'Paid Out', 'Balance']);
-  snap.getRange(2, 1, snapshotRows.length, 8).setValues(snapshotRows);
-  snap.setFrozenRows(1);
-  snap.addDeveloperMetadata('tstArchiveBuilding', bldg);
-  snap.addDeveloperMetadata('tstArchiveYear', name);
+  // 3. Write the snapshot sheet (only if there are primary-here staff to record).
+  if (snapshotRows.length > 0) {
+    const snap = ss.insertSheet(name);
+    snap.appendRow(['Name', 'Email', 'Building(s)', 'Carry Over (start)', 'Earned', 'Used', 'Paid Out', 'Balance']);
+    snap.getRange(2, 1, snapshotRows.length, 8).setValues(snapshotRows);
+    snap.setFrozenRows(1);
+    snap.addDeveloperMetadata('tstArchiveBuilding', bldg);
+    snap.addDeveloperMetadata('tstArchiveYear', name);
+  }
 
-  // 4. Roll balances.
+  // 4. Roll primary-here balances and clear their pending flags.
   rolls.forEach(rr => {
     sheet.getRange(rr.row, idx.carry + 1).setValue(rr.newCarry);
     if (rr.firstThisYear) {
@@ -674,13 +756,69 @@ function finalizeSchoolYear(yearName, building) {
       sheet.getRange(rr.row, idx.lastFinalized + 1).setValue(name);
     }
   });
+  clearPending.forEach(row => sheet.getRange(row, idx.pendingFinalize + 1).setValue(''));
 
-  // 5. Move this building's counted transactions out so Earned/Used reset to 0.
-  archiveBuildingTransactions_(bldg, name);
+  // 5. Flag shared staff so their primary building knows to finalize them.
+  pendingFlags.forEach(pf => sheet.getRange(pf.row, idx.pendingFinalize + 1).setValue(pf.year));
 
-  return { building: bldg, name: name, count: snapshotRows.length };
+  // 6. Archive ALL approved transactions for primary-here staff across EVERY
+  //    building so their combined Earned/Used reset to 0.
+  if (primaryEmails.length > 0) {
+    archiveTransactionsByEmails_(primaryEmails, name);
+  }
+
+  return { building: bldg, name: name, count: snapshotRows.length, pending: pendingFlags.length };
 }
 
+// Archives every approved transaction (across all buildings) for the given set
+// of staff emails — used by the primary building's finalize so combined totals
+// reset to 0. Distinct from archiveBuildingTransactions_ (which is by building);
+// both are kept so existing callers/signatures are unaffected.
+function archiveTransactionsByEmails_(emailsLower, yearName) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  // Use a real Set so membership can't be confused by inherited Object.prototype
+  // keys (e.g. a stray 'constructor'/'__proto__' value in the email column).
+  const emailSet = new Set((emailsLower || []).map(e => e.toString().trim().toLowerCase()));
+  // Earned: approved col I(8). Used: status col E(4).
+  archiveRowsByEmails_(ss, 'TST Approvals (New)', 'TST Approvals Archive', 8, emailSet, yearName);
+  archiveRowsByEmails_(ss, 'TST Usage (New)', 'TST Usage Archive', 4, emailSet, yearName);
+}
+
+function archiveRowsByEmails_(ss, srcName, archName, approvedIdx, emailSet, yearName) {
+  const src = ss.getSheetByName(srcName);
+  if (!src) return;
+  const data = src.getDataRange().getValues();
+  if (data.length < 2) return;
+  const headers = data[0];
+
+  let arch = ss.getSheetByName(archName);
+  if (!arch) {
+    arch = ss.insertSheet(archName);
+    arch.appendRow(headers.concat(['School Year']));
+    arch.setFrozenRows(1);
+  }
+
+  const toArchive = [];
+  const rowsToDelete = [];
+  for (let i = 1; i < data.length; i++) {
+    const r = data[i];
+    if (!r[0]) continue; // no email
+    const isApproved = r[approvedIdx] === true || r[approvedIdx] === 'TRUE';
+    const emailLower = r[0].toString().trim().toLowerCase();
+    if (isApproved && emailSet.has(emailLower)) {
+      toArchive.push(r.concat([yearName]));
+      rowsToDelete.push(i + 1); // 1-based
+    }
+  }
+
+  if (toArchive.length) {
+    arch.getRange(arch.getLastRow() + 1, 1, toArchive.length, toArchive[0].length).setValues(toArchive);
+    rowsToDelete.sort((a, b) => b - a).forEach(rn => src.deleteRow(rn));
+  }
+}
+
+// Kept for backward-compatibility (no longer used by finalizeSchoolYear, which now
+// archives by email set). Do not remove — preserves the existing signature.
 function archiveBuildingTransactions_(building, yearName) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   // Earned: building col N(13), approved col I(8). Used: building col H(7), status col E(4).
@@ -798,6 +936,7 @@ function getStaffDirectoryData(buildingFilter, targetEmail, includeArchived) {
   const paidOutIdx = headers.findIndex(h => h.toString().toLowerCase().includes('paid'));
   const buildingIdx = headers.findIndex(h => h.toString().toLowerCase().includes('building'));
   const archivedIdx = headers.findIndex(h => h.toString().toLowerCase().includes('archiv'));
+  const pendingFinalizeIdx = headers.findIndex(h => h.toString().toLowerCase().includes('pending'));
 
   const iName = nameIdx > -1 ? nameIdx : 0;
   const iEmail = emailIdx > -1 ? emailIdx : 1;
@@ -806,9 +945,12 @@ function getStaffDirectoryData(buildingFilter, targetEmail, includeArchived) {
   const iPaidOut = paidOutIdx > -1 ? paidOutIdx : 6;   // Default G (6)
   const iBuilding = buildingIdx > -1 ? buildingIdx : 8; // Default I (8)
 
-  // 1. Calculate Balances Dynamically
-  // We need to sum Earned and Used from the transaction sheets, potentially filtered by building.
-  const balances = calculateDynamicBalances(buildingFilter, targetEmail);
+  // 1. Calculate balances dynamically. Totals are COMBINED across all of a
+  //    person's buildings (ownership model): Earned can be contributed by any
+  //    building. The buildingFilter is used ONLY for directory membership and the
+  //    per-building archived logic below — NOT for the totals. targetEmail is kept
+  //    for the single-teacher optimization.
+  const balances = calculateDynamicBalances(null, targetEmail);
 
   return data.map((r, i) => {
     const email = r[iEmail].toString().toLowerCase();
@@ -830,6 +972,8 @@ function getStaffDirectoryData(buildingFilter, targetEmail, includeArchived) {
     const dynStats = balances[email] || { earned: 0, used: 0 };
     const carryOver = Number(r[iCarry]) || 0;
     const paidOut = Number(r[iPaidOut]) || 0;
+    const pendingFinalizeYear = pendingFinalizeIdx > -1
+      ? (r[pendingFinalizeIdx] || '').toString().trim() : '';
 
     return {
       name: r[iName],
@@ -840,8 +984,11 @@ function getStaffDirectoryData(buildingFilter, targetEmail, includeArchived) {
       carryOver: carryOver,
       paidOut: paidOut,
       building: assignedBuildings, // Keep raw string or array? Frontend expects string usually.
+      primaryBuilding: userBuildings[0] || '', // first listed = primary (owns carry/paid/finalize)
       archived: isArchivedView,
       archivedBuildings: archivedList.join(', '),
+      pendingFinalize: !!pendingFinalizeYear,       // flagged by a non-primary building's finalize
+      pendingFinalizeYear: pendingFinalizeYear,
       total: carryOver + dynStats.earned - dynStats.used - paidOut,
       rowIndex: i + 2
     };
@@ -1043,7 +1190,8 @@ function getTeacherHistory(targetEmail) {
         subbedFor: r[2],
         amount: r[7],
         type: type,
-        denialReason: r[12]
+        denialReason: r[12],
+        building: (r[13] || 'OMS').toString() // building the earned row was submitted under
       };
     });
 
@@ -1059,7 +1207,8 @@ function getTeacherHistory(targetEmail) {
       period: 'N/A',
       subbedFor: 'N/A',
       amount: r[3],
-      type: 'Used'
+      type: 'Used',
+      building: (r[7] || 'OMS').toString()
     }));
 
   return [...earned, ...used].sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -1097,7 +1246,8 @@ function getStaffHistoryWithActions(targetEmail) {
         denialReason: r[12],
         rowIndex: i + 2, // 1-based index + header (correct sheet position)
         sheetType: 'earned',
-        amountType: r[6] // Time Type (Full/Half)
+        amountType: r[6], // Time Type (Full/Half)
+        building: (r[13] || 'OMS').toString() // building the earned row was submitted under
       };
     })
     .filter(item => item !== null);
@@ -1124,7 +1274,8 @@ function getStaffHistoryWithActions(targetEmail) {
         denialReason: '',
         rowIndex: i + 2, // 1-based index + header (correct sheet position)
         sheetType: 'used',
-        amountType: 'N/A'
+        amountType: 'N/A',
+        building: (r[7] || 'OMS').toString()
       };
     })
     .filter(item => item !== null);
@@ -2659,34 +2810,47 @@ function updateSchedulePeriod(month, period, dayUpdates) {
  * @param {number} newAmount - New carry over amount
  */
 function updateStaffCarryOver(email, newAmount) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('Staff Directory');
   const data = sheet.getDataRange().getValues();
   // Header Row = 0.
   // Cols: A=Name, B=Email(1), G=CarryOver(6) - based on Schema/getStaffDirectoryData
-  
+
   // We need to find the correct column index dynamically or hardcode based on known schema
   // getStaffDirectoryData uses: carryOverIdx = headers.findIndex(...) or 6.
-  
+
   const headers = data[0];
   const emailIdx = headers.findIndex(h => h.toString().toLowerCase().includes('email'));
   const carryOverIdx = headers.findIndex(h => h.toString().toLowerCase().includes('carry'));
-  
+  const buildingIdx = headers.findIndex(h => h.toString().toLowerCase().includes('building'));
+
   const safeEmailIdx = emailIdx > -1 ? emailIdx : 1;
   const safeCarryIdx = carryOverIdx > -1 ? carryOverIdx : 6;
+  const safeBuildingIdx = buildingIdx > -1 ? buildingIdx : 8;
 
   // Find row
   let rowIndex = -1;
+  let buildingCell = '';
   for (let i = 1; i < data.length; i++) {
     if (data[i][safeEmailIdx].toString().toLowerCase() === email.toLowerCase()) {
       rowIndex = i + 1; // 1-based
+      buildingCell = data[i][safeBuildingIdx];
       break;
     }
   }
 
   if (rowIndex === -1) throw new Error("Staff member not found.");
 
-  sheet.getRange(rowIndex, safeCarryIdx + 1).setValue(newAmount);
+  // Carry Over is owned by the primary building.
+  assertCanManageRow_(ctx, buildingCell);
+  assertPrimaryAdminFor_(ctx, buildingCell, 'Carry Over');
+
+  // Coerce to a number so a blank/garbage value can't poison the Running Total
+  // ARRAYFORMULA (consistent with the other owned-column writers).
+  sheet.getRange(rowIndex, safeCarryIdx + 1).setValue(Number(newAmount) || 0);
   return true;
 }
 

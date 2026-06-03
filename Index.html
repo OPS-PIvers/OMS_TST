@@ -334,7 +334,25 @@
       manageMode: false,   // Staff add/edit/archive controls
       showArchived: false  // Include archived staff in the directory
     };
-    
+
+    // --- Primary-building ownership helpers ---
+    // The first building listed for a staff member is their PRIMARY building.
+    // Carry Over / Paid Out (and finalize) are owned by the primary building's
+    // admin. Any building admin can still contribute/approve Earned.
+    function primaryBuildingOf(buildingCsv) {
+       return (buildingCsv || '').toString().split(',').map(b => b.trim()).filter(Boolean)[0] || '';
+    }
+
+    // True if the current user may edit the owned columns (Carry Over / Paid Out)
+    // for this staff member: Super Admins always; otherwise the user must be
+    // assigned to the staff member's primary building. Mirrors the server check.
+    function canEditOwnedColumns(staff) {
+       if (!staff || !STATE.user) return false;
+       if (STATE.user.isSuperAdmin) return true;
+       const primary = staff.primaryBuilding || primaryBuildingOf(staff.building);
+       return !!primary && (STATE.user.buildings || []).indexOf(primary) > -1;
+    }
+
         // --- Sorting Utility ---
     function sortStaffData(data, sortBy) {
        if (!data || data.length === 0) return data;
@@ -655,7 +673,11 @@
                      </tr>
                   </thead>
                   <tbody class="bg-white divide-y divide-gray-200">
-                     ${sorted.map(s => `
+                     ${sorted.map(s => {
+                        const canEditOwned = canEditOwnedColumns(s);
+                        const primaryB = s.primaryBuilding || primaryBuildingOf(s.building);
+                        if (canEditOwned) {
+                           return `
                         <tr>
                            <td class="px-6 py-3 whitespace-nowrap text-sm font-medium text-gray-900">${s.name}</td>
                            <td class="px-6 py-3 whitespace-nowrap">
@@ -664,8 +686,17 @@
                            <td class="px-6 py-3 whitespace-nowrap text-right text-sm font-medium">
                               <button onclick="saveCarryOver('${s.email}')" class="text-ops-blue hover:text-ops-blue-dark font-bold hover:underline">Save</button>
                            </td>
-                        </tr>
-                     `).join('')}
+                        </tr>`;
+                        }
+                        return `
+                        <tr class="bg-gray-50/50">
+                           <td class="px-6 py-3 whitespace-nowrap text-sm font-medium text-gray-500">${s.name}</td>
+                           <td class="px-6 py-3 whitespace-nowrap text-sm text-gray-400">${Number(s.carryOver || 0).toFixed(2)}</td>
+                           <td class="px-6 py-3 whitespace-nowrap text-right text-xs text-gray-400 italic" title="Carry Over is managed by the primary building (${primaryB})">
+                              <i class="fas fa-lock mr-1"></i>${primaryB} manages
+                           </td>
+                        </tr>`;
+                     }).join('')}
                   </tbody>
                </table>
             </div>
@@ -690,6 +721,7 @@
 
     function saveCarryOver(email) {
        const input = document.getElementById(`co-${email}`);
+       if (!input) { showToast("Couldn't save — please reopen the Update Carry Over dialog and try again.", "warning"); return; }
        const val = parseFloat(input.value);
        
        if (isNaN(val)) {
@@ -1734,6 +1766,14 @@
                     const carryVal = (STATE.pendingUpdates[s.email] !== undefined && editCarry) ? STATE.pendingUpdates[s.email] : Number(s.carryOver);
                     const paidVal = (STATE.pendingUpdates[s.email] !== undefined && editPaid) ? STATE.pendingUpdates[s.email] : Number(s.paidOut);
 
+                    // Carry Over / Paid Out are owned by the primary building.
+                    const canEditOwned = canEditOwnedColumns(s);
+                    const primaryB = s.primaryBuilding || primaryBuildingOf(s.building);
+                    const ownedLockIcon = `<i class="fas fa-lock text-gray-300 ml-1" title="Managed by the primary building (${primaryB})"></i>`;
+                    const pendingChip = s.pendingFinalize
+                      ? `<span class="ml-1 text-[10px] font-bold uppercase tracking-wide text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded" title="Will be finalized by the primary building administrator (${primaryB})"><i class="fas fa-hourglass-half mr-1"></i>Pending finalize</span>`
+                      : '';
+
                     return `
                     <tr onclick="openStaffDetail('${s.email}', '${safeName}')" class="cursor-pointer hover:bg-ops-blue-lighter transition-colors group ${s.archived ? 'bg-gray-50 opacity-60' : ''}">
                       ${isSel ? `
@@ -1744,26 +1784,30 @@
 
                       <!-- Name -->
                       <td class="pl-6 pr-2 py-4 whitespace-nowrap text-sm font-medium text-ops-blue-dark truncate" style="${wName}" title="${s.name}">
-                         <div>${s.name} ${s.archived ? '<span class="ml-1 text-[10px] font-bold uppercase tracking-wide text-gray-500 bg-gray-200 px-1.5 py-0.5 rounded">Archived</span>' : ''}</div>
+                         <div>${s.name} ${s.archived ? '<span class="ml-1 text-[10px] font-bold uppercase tracking-wide text-gray-500 bg-gray-200 px-1.5 py-0.5 rounded">Archived</span>' : ''}${pendingChip}</div>
                          <div class="text-xs text-gray-400 font-normal truncate">${s.email}</div>
                       </td>
 
-                      <!-- Carry Over -->
+                      <!-- Carry Over (owned by primary building) -->
                       <td class="px-2 py-4 whitespace-nowrap text-sm text-gray-600" style="${wCol}" onclick="event.stopPropagation()">
-                         ${editCarry ? 
-                           `<input type="number" step="0.1" value="${carryVal}" onchange="handleInputChange('${s.email}', 'carryOver', this.value)" class="w-full p-1 border border-gray-300 rounded text-sm focus:ring-ops-blue focus:border-ops-blue">` :
-                           Number(s.carryOver).toFixed(2)
+                         ${editCarry
+                           ? (canEditOwned
+                              ? `<input type="number" step="0.1" value="${carryVal}" onchange="handleInputChange('${s.email}', 'carryOver', this.value)" class="w-full p-1 border border-gray-300 rounded text-sm focus:ring-ops-blue focus:border-ops-blue">`
+                              : `<span class="text-gray-400">${Number(s.carryOver).toFixed(2)}${ownedLockIcon}</span>`)
+                           : Number(s.carryOver).toFixed(2)
                          }
                       </td>
 
                       <td class="px-2 py-4 whitespace-nowrap text-sm text-ops-blue font-semibold" style="${wCol}">${Number(s.earned).toFixed(2)}</td>
                       <td class="px-2 py-4 whitespace-nowrap text-sm text-ops-red font-semibold" style="${wCol}">${Number(s.used).toFixed(2)}</td>
 
-                      <!-- Paid Out -->
+                      <!-- Paid Out (owned by primary building) -->
                       <td class="px-2 py-4 whitespace-nowrap text-sm text-gray-600" style="${wCol}" onclick="event.stopPropagation()">
-                         ${editPaid ? 
-                           `<input type="number" step="0.1" value="${paidVal}" onchange="handleInputChange('${s.email}', 'paidOut', this.value)" class="w-full p-1 border border-gray-300 rounded text-sm focus:ring-ops-blue focus:border-ops-blue">` :
-                           Number(s.paidOut).toFixed(2)
+                         ${editPaid
+                           ? (canEditOwned
+                              ? `<input type="number" step="0.1" value="${paidVal}" onchange="handleInputChange('${s.email}', 'paidOut', this.value)" class="w-full p-1 border border-gray-300 rounded text-sm focus:ring-ops-blue focus:border-ops-blue">`
+                              : `<span class="text-gray-400">${Number(s.paidOut).toFixed(2)}${ownedLockIcon}</span>`)
+                           : Number(s.paidOut).toFixed(2)
                          }
                       </td>
 
@@ -1844,6 +1888,15 @@
        const buildingCsv = s ? s.building : STATE.building;
 
        const isSuper = STATE.user.isSuperAdmin;
+       // Carry Over / Paid Out are owned by the primary building. New staff are
+       // created in the adding admin's building (so they become primary); when
+       // editing, only the primary admin (or Super Admin) may change them.
+       const canEditOwned = isEdit ? canEditOwnedColumns(s) : true;
+       const primaryB = s ? (s.primaryBuilding || primaryBuildingOf(s.building)) : STATE.building;
+       const ownedRO = canEditOwned ? '' : 'readonly';
+       const ownedCls = canEditOwned ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed';
+       const ownedNote = canEditOwned ? '' :
+          `<p class="text-[11px] text-gray-500 mt-1"><i class="fas fa-lock mr-1"></i>Managed by the primary building (${primaryB}).</p>`;
        const myBuildingName = (STATE.config[STATE.building] && STATE.config[STATE.building].name) ? STATE.config[STATE.building].name : STATE.building;
        const buildingBlock = isSuper ? `
            <div>
@@ -1878,11 +1931,13 @@
              </div>
              <div>
                <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Carry Over</label>
-               <input type="number" step="0.1" name="carryOver" value="${carry}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+               <input type="number" step="0.1" name="carryOver" value="${carry}" ${ownedRO} class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue ${ownedCls}">
+               ${ownedNote}
              </div>
              <div>
                <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Paid Out</label>
-               <input type="number" step="0.1" name="paidOut" value="${paid}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+               <input type="number" step="0.1" name="paidOut" value="${paid}" ${ownedRO} class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue ${ownedCls}">
+               ${ownedNote}
              </div>
            </div>
            ${buildingBlock}
@@ -2019,7 +2074,11 @@
          <div class="p-1">
            <div class="bg-ops-red-lighter border border-ops-red rounded p-3 mb-4 text-sm text-ops-red">
              <i class="fas fa-exclamation-triangle mr-2"></i>
-             This finalizes <strong>${bName}</strong>: each staff member's remaining balance rolls into Carry Over, Paid Out resets to 0, and this year's approved transactions move to an archive (Earned/Used reset to 0). This cannot be undone from the app.
+             This finalizes <strong>${bName}</strong>. Staff whose <strong>primary building is ${bName}</strong> have their combined remaining balance rolled into Carry Over, Paid Out reset to 0, and all their transactions archived (Earned/Used reset to 0). This cannot be undone from the app.
+           </div>
+           <div class="bg-blue-50 border border-blue-100 rounded p-3 mb-4 text-sm text-blue-800">
+             <i class="fas fa-info-circle mr-2"></i>
+             Staff who also work here but whose primary building is elsewhere are <strong>not</strong> changed — they're flagged "Pending finalize" until their primary building finalizes them.
            </div>
            <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Archive name</label>
            <input type="text" id="finalize-name" value="${suggested}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
@@ -2037,12 +2096,24 @@
        if (!name) { showToast("Please enter a name for the archive.", "error"); return; }
        openConfirmModal(
           "Finalize and roll over?",
-          `This will create <strong>${name}</strong>, roll balances into Carry Over, and archive this year's transactions. This cannot be undone. Continue?`,
+          `This will create <strong>${name}</strong>, roll the combined balances of staff whose primary building is here into Carry Over, and archive their transactions. Shared staff with a primary elsewhere are only flagged. This cannot be undone. Continue?`,
           () => {
              showLoading(true);
              google.script.run.withSuccessHandler(res => {
                 showLoading(false);
-                showToast(`Finalized ${res.count} staff into "${res.name}".`, "success");
+                let msg;
+                if (res.count > 0) {
+                   msg = `Finalized ${res.count} staff into "${res.name}".`;
+                   if (res.pending && res.pending > 0) {
+                      msg += ` ${res.pending} shared staff flagged for their primary building.`;
+                   }
+                } else if (res.pending && res.pending > 0) {
+                   // No staff are based here (all shared from elsewhere) — only flags were set.
+                   msg = `${res.pending} shared staff flagged for their primary building to finalize. No staff are based in this building.`;
+                } else {
+                   msg = `Nothing to finalize for this building.`;
+                }
+                showToast(msg, "success");
                 loadAdminTotals();
              }).withFailureHandler(err => {
                 showLoading(false);
@@ -2978,6 +3049,9 @@
         `;
 
         // 2. Table Body
+        // Totals are combined across buildings; when this person works in more
+        // than one building, tag each log row with the building it came from.
+        const showBldgChips = (staff.building || '').toString().indexOf(',') > -1;
         const tableRows = history.map(h => {
              let statusBadge = '';
              let rowClass = '';
@@ -2985,6 +3059,9 @@
              let amountSign = '';
              let detailsHtml = '';
              let actionsHtml = '';
+             const bldgChip = (showBldgChips && h.building)
+                ? `<span class="inline-block ml-2 text-[10px] font-bold uppercase tracking-wide text-ops-blue bg-ops-blue-lighter px-1.5 py-0.5 rounded align-middle">${h.building}</span>`
+                : '';
 
              const getLastName = (n) => n ? n.split(' ').pop() : '';
 
@@ -3068,7 +3145,7 @@
                 <tr class="${rowClass} text-xs">
                     <td class="px-3 py-2 font-medium text-ops-gray-dark">${new Date(h.date).toLocaleDateString()}</td>
                     <td class="px-3 py-2">${statusBadge}</td>
-                    <td class="px-3 py-2">${detailsHtml}</td>
+                    <td class="px-3 py-2">${detailsHtml}${bldgChip}</td>
                     <td class="px-3 py-2 text-center font-bold ${amountClass}">${amountSign}${Number(h.amount).toFixed(1)}</td>
                     ${isAdmin && !isEmbedded ? `<td class="px-3 py-2 whitespace-nowrap">${actionsHtml}</td>` : ''}
                 </tr>

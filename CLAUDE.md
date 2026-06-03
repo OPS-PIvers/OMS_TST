@@ -76,12 +76,18 @@ STATE = {
 The application relies on four key sheets within the bound Google Spreadsheet:
 
 1. **Staff Directory** - User directory with roles and balances
-   - Columns: Name (A), Email (B), Role (C), Earned (D), Used (E), Carry Over (F), Paid Out (G), Running Total (H, ARRAYFORMULA), Building (I), Archived (J), Last Finalized (K)
+   - Columns: Name (A), Email (B), Role (C), Earned (D), Used (E), Carry Over (F), Paid Out (G), Running Total (H, ARRAYFORMULA), Building (I), Archived (J), Last Finalized (K), Pending Finalize (L)
    - Role determines access level: "Teacher", "Admin", or "Super Admin"
-   - Building (I) supports comma-separated multi-building assignment (e.g. `OMS, OHS`)
+   - Building (I) supports comma-separated multi-building assignment (e.g. `OMS, OHS`). **The first building listed is the PRIMARY building** (existing implicit convention — `getUserContext` uses `assignedBuildings[0]`).
    - Archived (J): **per-building** soft-delete — a comma-separated list of buildings the person is archived FROM. Archiving from one building doesn't affect others; "fully archived" = archived from all assigned buildings. Auto-created if missing.
    - Last Finalized (K): school-year name of the last year-end roll for this person; prevents double-rolling staff who span buildings. Auto-created if missing.
+   - Pending Finalize (L): school-year name set when a **non-primary** building finalizes a shared person (primary elsewhere); drives the "Pending finalize" UI chip and is cleared when the primary building finalizes them. Auto-created if missing.
    - When adding rows programmatically, set individual cells and leave H blank so the ARRAYFORMULA fills it (do NOT use `appendRow`).
+
+   **Ownership model (combined totals + primary building):**
+   - **Earned hours** may be contributed by **any** building the person works in (each transaction is tagged with its building: earned col N/13, used col H/7). Directory/Totals balances and a teacher's own summary are **combined across all of a person's buildings** — `getStaffDirectoryData` computes balances via `calculateDynamicBalances(null, …)`; `buildingFilter` is used only for directory membership and per-building archived logic.
+   - **Carry Over, Paid Out, and finalize** are **owned by the PRIMARY building's admin**. `isPrimaryAdminFor_(ctx, buildingCell)` gates the owned-column writers (`updateStaffBatch`, `updateStaffCarryOver`, `updateStaffMember`): Super Admins always pass; otherwise the admin must be assigned to that person's primary building. Non-primary admins see those columns read-only but can still submit/approve **Earned** for their building.
+   - **Approval queues + dashboard counts stay building-scoped** (`getDashboardCounts`, `getPendingEarned/Used`) — do not make these combined.
 
 2. **TST Approvals (New)** - Pending and processed earned requests
    - Columns: Email (A), Name (B), SubbedFor (C), Date (E), Period (F), TimeType (G), Hours (H), Approved (I), ApprovedTS (J), Denied (K), DeniedTS (L), DenialReason (M)
@@ -114,14 +120,16 @@ The application relies on four key sheets within the bound Google Spreadsheet:
 - **archiveStaffMember(email, building) / restoreStaffMember(email, building)** - Add/remove a building from the per-building Archived (J) list. Defaults to the caller's current building.
 - **deleteStaffMemberPermanent(email)** - **Super Admin only.** Deletes the spreadsheet row; only permitted for fully-archived staff (archived from every assigned building).
 - **getArchivedStaff()** - **Super Admin only.** Returns fully-archived staff (for the Settings permanent-delete list).
-- **getStaffDirectoryData(buildingFilter, targetEmail, includeArchived)** - Reads the directory; the returned `archived` flag is per-building when `buildingFilter` is set. Archived staff are excluded unless `includeArchived` is true.
+- **getStaffDirectoryData(buildingFilter, targetEmail, includeArchived)** - Reads the directory; Earned/Used are **combined across all buildings** (`buildingFilter` only controls membership + the per-building `archived` flag). Also returns `primaryBuilding`, `pendingFinalize` (bool) and `pendingFinalizeYear`. Archived staff are excluded unless `includeArchived` is true.
+- **isPrimaryAdminFor_(ctx, buildingCell) / assertPrimaryAdminFor_(…)** - Gate owned-column edits (Carry Over / Paid Out). True for Super Admins, or when the caller is assigned to the staff member's primary (first-listed) building.
 
-#### Year-End Finalize
+#### Year-End Finalize (primary-aware)
 
-- **finalizeSchoolYear(yearName, building)** - Snapshots a building's staff totals into a new metadata-tagged sheet, rolls each person's remaining balance into Carry Over and zeros Paid Out (once per person per year, via Last Finalized), and moves the building's approved transactions to archive sheets so Earned/Used reset to 0. Building admins finalize their own building; Super Admins may pass a building.
+- **finalizeSchoolYear(yearName, building)** - For staff whose **primary** building is `building`: snapshots their **combined** totals into a new metadata-tagged sheet, rolls their combined remaining balance into Carry Over and zeros Paid Out (once per person per year, via Last Finalized), and archives **all** of their approved transactions across **every** building so combined Earned/Used reset to 0. Staff assigned here but whose primary is elsewhere are **not** changed — they get a Pending Finalize flag (cleared when their primary finalizes). Returns `{ building, name, count, pending }`. Building admins finalize their own building; Super Admins may pass a building.
+- **archiveTransactionsByEmails_(emailsLower, yearName)** - Archives every approved transaction (all buildings) for a set of staff emails (used by primary finalize). The older `archiveBuildingTransactions_`/`archiveRowsByBuilding_` (by-building) are kept for backward compatibility.
 - **listArchivedYears(building) / getArchivedYearData(sheetName)** - List and read the year-end snapshot sheets (scoped to the caller's building; identified by developer metadata, not name).
 
-Authorization: add/edit/archive/restore/finalize require Admin or Super Admin; non-Super-Admins are scoped to their own building(s). Permanent delete and archived-staff listing require Super Admin.
+Authorization: add/edit/archive/restore require Admin or Super Admin; non-Super-Admins are scoped to their own building(s). Editing Carry Over / Paid Out and running finalize for a person additionally require being that person's **primary** building admin (or Super Admin). Permanent delete and archived-staff listing require Super Admin.
 
 ### Profile Menu (admins)
 
