@@ -2411,9 +2411,9 @@
            <p>This reverts <strong>${snapEsc(bldg)}</strong> to <strong>${snapEsc(title)}</strong>${when ? ' (' + when + ')' : ''}. Afterward every column in each row will match this snapshot.</p>
            <ul class="list-disc pl-5 space-y-1">
              <li>The building's current approved transactions are <strong>archived</strong> (recoverable), then the snapshot's transactions are restored — so Earned and Used match the snapshot.</li>
-             <li>Carry Over and Paid Out are reset to the snapshot values.</li>
+             <li>Carry Over and Paid Out are reset to the snapshot values for staff whose <strong>primary building is ${snapEsc(bldg)}</strong>.</li>
+             <li>Staff who only earn hours in ${snapEsc(bldg)} (primary building elsewhere) keep their current Carry Over / Paid Out — those belong to their primary building's admin.</li>
              <li>Staff added after the snapshot are left unchanged (no staff are deleted).</li>
-             <li>Staff assigned to multiple buildings keep their current Carry Over / Paid Out, so other buildings are not affected.</li>
              <li><strong>No other building is touched.</strong> This cannot be undone from the app.</li>
            </ul>
          </div>`;
@@ -2425,8 +2425,8 @@
              google.script.run.withSuccessHandler(res => {
                 showLoading(false);
                 let extra = '';
-                if (res && res.multiBuildingSkipped) {
-                   extra = ` (${res.multiBuildingSkipped} multi-building staff kept their shared totals)`;
+                if (res && res.nonPrimarySkipped) {
+                   extra = ` (${res.nonPrimarySkipped} staff owned by another building kept their Carry Over/Paid Out)`;
                 }
                 showToast(`Restored ${snapEsc(bldg)} to "${snapEsc(title)}".${extra}`, "success");
                 if (STATE.currentTab === 'admin-totals') loadAdminTotals();

@@ -1165,9 +1165,10 @@ function restoreCapturedTransactions_(ss, snapName, liveName) {
  *  1. The building's current approved transactions are archived (recoverable)
  *     and removed, then the snapshot's captured transactions are re-inserted, so
  *     Earned/Used recompute to the snapshot values.
- *  2. Carry Over / Paid Out are reset to the snapshot values for staff assigned
- *     ONLY to this building. Multi-building staff share these cells, so they are
- *     left untouched to avoid impacting their other building(s).
+ *  2. Carry Over / Paid Out are reset to the snapshot values for staff whose
+ *     PRIMARY (first-listed) building is this one — the primary building owns
+ *     those numbers. Staff who only earn hours here (primary elsewhere) keep
+ *     their current Carry Over / Paid Out, so other buildings are never disturbed.
  * Staff not present in the snapshot are left unchanged; no staff rows are deleted.
  */
 function restoreSnapshot(id) {
@@ -1193,7 +1194,8 @@ function restoreSnapshot(id) {
   restoreCapturedTransactions_(ss, '__snap_' + id + '_appr', 'TST Approvals (New)');
   restoreCapturedTransactions_(ss, '__snap_' + id + '_use', 'TST Usage (New)');
 
-  // 2. Restore Carry Over / Paid Out for single-building staff in the snapshot.
+  // 2. Restore Carry Over / Paid Out only for staff whose PRIMARY (first-listed)
+  //    building is this one — the primary building owns those numbers.
   const snapVals = main.getDataRange().getValues();
   snapVals.shift(); // drop header; cols: 0 Name,1 Email,2 Building(s),3 Carry,4 Earned,5 Used,6 Paid,7 Balance
 
@@ -1211,13 +1213,16 @@ function restoreSnapshot(id) {
   }
 
   let restored = 0;
-  let multiBuildingSkipped = 0;
+  let nonPrimarySkipped = 0;
   snapVals.forEach(r => {
     const email = (r[1] || '').toString().trim().toLowerCase();
     if (!email) return;
     const rowNum = emailToRow[email];
     if (!rowNum) return; // person no longer in the directory
-    if ((emailToBuildings[email] || []).length > 1) { multiBuildingSkipped++; return; }
+    // The primary building (first listed) owns Carry Over / Paid Out. Leave them
+    // alone for people who only earn hours here but are primary elsewhere.
+    const primary = (emailToBuildings[email] || [])[0] || '';
+    if (primary !== bldg) { nonPrimarySkipped++; return; }
     sheet.getRange(rowNum, idx.carry + 1).setValue(Number(r[3]) || 0);
     sheet.getRange(rowNum, idx.paid + 1).setValue(Number(r[6]) || 0);
     restored++;
@@ -1225,7 +1230,7 @@ function restoreSnapshot(id) {
 
   return {
     building: bldg, title: meta.title, count: snapVals.length,
-    restored: restored, multiBuildingSkipped: multiBuildingSkipped
+    restored: restored, nonPrimarySkipped: nonPrimarySkipped
   };
 }
 
