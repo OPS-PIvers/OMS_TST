@@ -3904,16 +3904,6 @@
          STATE.confirmCallback = null;
       }
     }
-    
-    function showModal(title, content) {
-      document.getElementById('modal-title').textContent = title;
-      document.getElementById('modal-content').innerHTML = content;
-      document.getElementById('modal-backdrop').classList.remove('hidden');
-    }
-
-    function closeModal() {
-      document.getElementById('modal-backdrop').classList.add('hidden');
-    }
 
     function showLoading(isLoading) {
       const loader = document.getElementById('app-loading');
