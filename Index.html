@@ -543,6 +543,9 @@
            <button onclick="openArchivedYearsModal()" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-ops-blue transition border-b border-gray-100">
              <i class="fas fa-box-archive w-5 text-gray-400"></i> View Archived Years
            </button>
+           <button onclick="openSnapshotsModal()" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-ops-blue transition border-b border-gray-100">
+             <i class="fas fa-camera w-5 text-gray-400"></i> Snapshots
+           </button>
            <button onclick="openSettingsModal()" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-ops-blue transition">
              <i class="fas fa-cog w-5 text-gray-400"></i> Settings
            </button>
@@ -2169,6 +2172,219 @@
           showLoading(false);
           showToast("Failed to load archive: " + (err.message || err), "error");
        }).getArchivedYearData(name);
+    }
+
+    // --- Snapshots (non-destructive directory captures) ---
+    let _snapshotCache = [];
+
+    function snapEsc(str) {
+       return (str === null || str === undefined ? '' : String(str))
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    function snapEscAttr(str) {
+       return snapEsc(str).replace(/"/g, '&quot;');
+    }
+    function formatSnapDate(d) {
+       if (!d) return '';
+       const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(d));
+       if (!m) return String(d);
+       const dt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+       return dt.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    }
+
+    function openSnapshotsModal() {
+       document.getElementById('profile-dropdown').classList.add('hidden');
+       const header = `
+         <div class="flex items-center justify-between mb-4">
+           <p class="text-sm text-gray-500">Read-only copies of the directory totals.</p>
+           <button onclick="openCreateSnapshotModal()" class="px-3 py-2 bg-ops-blue text-white rounded hover:bg-ops-blue-dark font-bold text-xs shadow"><i class="fas fa-plus mr-1"></i>Create new snapshot</button>
+         </div>`;
+       showModal("Snapshots", header + '<div id="snapshots-body"><p class="text-sm text-gray-400">Loading...</p></div>', 'max-w-4xl');
+       google.script.run.withSuccessHandler(list => {
+          _snapshotCache = list || [];
+          const body = document.getElementById('snapshots-body');
+          if (!body) return;
+          if (!_snapshotCache.length) {
+             body.innerHTML = '<p class="text-sm text-gray-400">No snapshots yet. Use "Create new snapshot" to capture the current directory totals.</p>';
+             return;
+          }
+          body.innerHTML = _snapshotCache.map(s => `
+            <div class="flex items-center justify-between gap-3 px-4 py-3 border border-gray-200 rounded mb-2 hover:bg-ops-blue-lighter transition">
+              <div class="min-w-0">
+                <div class="text-sm font-medium text-ops-gray-dark truncate"><i class="fas fa-camera mr-2 text-ops-blue"></i>${snapEsc(s.title)}</div>
+                ${s.description ? `<div class="text-xs text-gray-500 truncate mt-0.5">${snapEsc(s.description)}</div>` : ''}
+                <div class="text-xs text-gray-400 mt-0.5">${formatSnapDate(s.date)} &middot; ${snapEsc(s.building)}</div>
+              </div>
+              <div class="flex items-center gap-2 flex-shrink-0">
+                <button onclick="viewSnapshot('${s.id}')" class="text-xs text-ops-blue hover:underline px-2 py-1"><i class="fas fa-eye mr-1"></i>View</button>
+                <button onclick="openEditSnapshotModal('${s.id}')" class="text-xs text-gray-600 hover:text-ops-blue px-2 py-1"><i class="fas fa-pen mr-1"></i>Edit</button>
+                <button onclick="deleteSnapshotConfirm('${s.id}')" class="text-xs text-ops-red hover:underline px-2 py-1"><i class="fas fa-trash mr-1"></i>Delete</button>
+              </div>
+            </div>`).join('');
+       }).withFailureHandler(err => {
+          const body = document.getElementById('snapshots-body');
+          if (body) body.innerHTML = `<p class="text-sm text-ops-red">Failed to load: ${(err.message || err)}</p>`;
+       }).listSnapshots();
+    }
+
+    function openCreateSnapshotModal() {
+       const today = new Date().toISOString().slice(0, 10);
+       let buildings;
+       if (STATE.user.isSuperAdmin) {
+          buildings = STATE.config ? Object.keys(STATE.config) : [];
+       } else {
+          buildings = (STATE.user.buildings && STATE.user.buildings.length) ? STATE.user.buildings : [];
+       }
+       if (!buildings.length) buildings = [STATE.building];
+
+       let buildingField;
+       if (buildings.length > 1) {
+          const opts = buildings.map(b => {
+             const bn = (STATE.config && STATE.config[b] && STATE.config[b].name) ? STATE.config[b].name : b;
+             return `<option value="${b}" ${b === STATE.building ? 'selected' : ''}>${snapEsc(bn)} (${b})</option>`;
+          }).join('');
+          buildingField = `
+             <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2 mt-4">Building</label>
+             <select id="snapshot-building" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue bg-white">${opts}</select>`;
+       } else {
+          buildingField = `<input type="hidden" id="snapshot-building" value="${snapEscAttr(buildings[0])}">`;
+       }
+
+       const html = `
+         <div class="p-1">
+           <div class="bg-ops-blue-lighter border border-ops-blue rounded p-3 mb-4 text-sm text-ops-blue-dark">
+             <i class="fas fa-camera mr-2"></i>
+             This saves a read-only copy of the directory's current totals. It does not change any balances or transactions.
+           </div>
+           <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Title</label>
+           <input type="text" id="snapshot-title" placeholder="e.g. End of Q3 totals" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+           <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2 mt-4">Description</label>
+           <textarea id="snapshot-description" rows="3" placeholder="Optional notes" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue"></textarea>
+           <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2 mt-4">Date</label>
+           <input type="date" id="snapshot-date" value="${today}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+           ${buildingField}
+           <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-100">
+             <button onclick="openSnapshotsModal()" class="px-4 py-2 border border-gray-300 rounded text-gray-600 hover:bg-gray-50 font-bold text-sm">Cancel</button>
+             <button onclick="submitCreateSnapshot()" class="px-4 py-2 bg-ops-blue text-white rounded hover:bg-ops-blue-dark font-bold text-sm shadow"><i class="fas fa-camera mr-2"></i>Create Snapshot</button>
+           </div>
+         </div>`;
+       showModal("Create Snapshot", html, 'max-w-xl');
+    }
+
+    function submitCreateSnapshot() {
+       const title = document.getElementById('snapshot-title').value.trim();
+       const description = document.getElementById('snapshot-description').value;
+       const date = document.getElementById('snapshot-date').value;
+       const building = document.getElementById('snapshot-building').value;
+       showLoading(true);
+       google.script.run.withSuccessHandler(res => {
+          showLoading(false);
+          showToast(`Snapshot created (${res.count} staff).`, "success");
+          openSnapshotsModal();
+       }).withFailureHandler(err => {
+          showLoading(false);
+          showToast("Could not create snapshot: " + (err.message || err), "error");
+       }).createSnapshot(building, title, description, date);
+    }
+
+    function viewSnapshot(id) {
+       showLoading(true);
+       google.script.run.withSuccessHandler(data => {
+          showLoading(false);
+          const headerCells = data.headers.map(h => `<th class="px-3 py-2 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50">${h}</th>`).join('');
+          const bodyRows = data.rows.length
+             ? data.rows.map(r => `<tr class="border-t border-gray-100">${r.map((c, ci) => `<td class="px-3 py-2 text-sm ${ci === 0 ? 'font-medium text-ops-blue-dark' : 'text-gray-600'}">${typeof c === 'number' ? Number(c).toFixed(2) : c}</td>`).join('')}</tr>`).join('')
+             : `<tr><td colspan="${data.headers.length}" class="px-3 py-3 text-sm text-gray-400 text-center">No staff in this snapshot.</td></tr>`;
+          const html = `
+            <div class="p-1">
+              <div class="flex items-start justify-between mb-3 gap-3">
+                <div class="min-w-0">
+                  <h3 class="text-sm font-bold text-ops-blue-dark">${snapEsc(data.title)}</h3>
+                  ${data.description ? `<p class="text-xs text-gray-500 mt-0.5">${snapEsc(data.description)}</p>` : ''}
+                  <p class="text-xs text-gray-400 mt-0.5">${formatSnapDate(data.date)} &middot; ${snapEsc(data.building)}</p>
+                </div>
+                <div class="flex items-center gap-3 flex-shrink-0">
+                  <button onclick="openEditSnapshotModal('${data.id}')" class="text-xs text-gray-600 hover:text-ops-blue"><i class="fas fa-pen mr-1"></i>Edit</button>
+                  <button onclick="deleteSnapshotConfirm('${data.id}')" class="text-xs text-ops-red hover:underline"><i class="fas fa-trash mr-1"></i>Delete</button>
+                  <button onclick="openSnapshotsModal()" class="text-xs text-ops-blue hover:underline"><i class="fas fa-arrow-left mr-1"></i>Back</button>
+                </div>
+              </div>
+              <div class="overflow-x-auto max-h-[60vh] border border-gray-200 rounded">
+                <table class="min-w-full"><thead class="sticky top-0"><tr>${headerCells}</tr></thead><tbody>${bodyRows}</tbody></table>
+              </div>
+            </div>`;
+          showModal("Snapshot", html, 'max-w-5xl');
+       }).withFailureHandler(err => {
+          showLoading(false);
+          showToast("Failed to load snapshot: " + (err.message || err), "error");
+       }).getSnapshotData(id);
+    }
+
+    function openEditSnapshotModal(id) {
+       const cached = _snapshotCache.find(x => x.id === id);
+       if (cached) { _renderEditSnapshotModal(cached); return; }
+       showLoading(true);
+       google.script.run.withSuccessHandler(data => {
+          showLoading(false);
+          _renderEditSnapshotModal(data);
+       }).withFailureHandler(err => {
+          showLoading(false);
+          showToast("Failed to load snapshot: " + (err.message || err), "error");
+       }).getSnapshotData(id);
+    }
+
+    function _renderEditSnapshotModal(s) {
+       const html = `
+         <div class="p-1">
+           <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Title</label>
+           <input type="text" id="snapshot-edit-title" value="${snapEscAttr(s.title)}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+           <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2 mt-4">Description</label>
+           <textarea id="snapshot-edit-description" rows="3" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">${snapEsc(s.description)}</textarea>
+           <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2 mt-4">Date</label>
+           <input type="date" id="snapshot-edit-date" value="${snapEscAttr(s.date)}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+           <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-100">
+             <button onclick="openSnapshotsModal()" class="px-4 py-2 border border-gray-300 rounded text-gray-600 hover:bg-gray-50 font-bold text-sm">Cancel</button>
+             <button onclick="submitEditSnapshot('${s.id}')" class="px-4 py-2 bg-ops-blue text-white rounded hover:bg-ops-blue-dark font-bold text-sm shadow"><i class="fas fa-save mr-2"></i>Save</button>
+           </div>
+         </div>`;
+       showModal("Edit Snapshot", html, 'max-w-xl');
+    }
+
+    function submitEditSnapshot(id) {
+       const title = document.getElementById('snapshot-edit-title').value.trim();
+       const description = document.getElementById('snapshot-edit-description').value;
+       const date = document.getElementById('snapshot-edit-date').value;
+       showLoading(true);
+       google.script.run.withSuccessHandler(() => {
+          showLoading(false);
+          showToast("Snapshot updated.", "success");
+          openSnapshotsModal();
+       }).withFailureHandler(err => {
+          showLoading(false);
+          showToast("Could not update snapshot: " + (err.message || err), "error");
+       }).updateSnapshot(id, { title: title, description: description, date: date });
+    }
+
+    function deleteSnapshotConfirm(id) {
+       const s = _snapshotCache.find(x => x.id === id);
+       const label = s ? s.title : 'this snapshot';
+       openConfirmModal(
+          "Delete snapshot?",
+          `This permanently deletes <strong>${snapEsc(label)}</strong>. This cannot be undone. Continue?`,
+          () => {
+             showLoading(true);
+             google.script.run.withSuccessHandler(() => {
+                showLoading(false);
+                showToast("Snapshot deleted.", "success");
+                openSnapshotsModal();
+             }).withFailureHandler(err => {
+                showLoading(false);
+                showToast("Could not delete snapshot: " + (err.message || err), "error");
+             }).deleteSnapshot(id);
+          },
+          "Delete",
+          "bg-ops-red hover:bg-red-700"
+       );
     }
 
     // --- Teacher Views ---

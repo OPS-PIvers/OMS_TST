@@ -900,6 +900,215 @@ function getArchivedYearData(sheetName) {
   return { name: sheetName, building: sheetBuilding, headers: headers, rows: values };
 }
 
+/* ============================================================================
+ * SNAPSHOTS — non-destructive point-in-time captures of the directory balance
+ * table. Unlike finalizeSchoolYear, these change nothing else (no roll-over, no
+ * transaction archiving). Each snapshot is a hidden sheet tagged with
+ * tstSnapshot* developer metadata (distinct from the tstArchive* keys used by
+ * year-end archives, so the two listings never overlap). Title/description/date
+ * live in metadata so they can be edited later without renaming the sheet.
+ * ==========================================================================*/
+
+/**
+ * Builds the directory balance table for a building as of right now, WITHOUT
+ * changing anything. Mirrors the snapshot rows produced by finalizeSchoolYear
+ * (minus the roll-over/reset). Returns { headers, rows }.
+ */
+function buildDirectorySnapshotRows_(bldg) {
+  const balances = calculateDynamicBalances(bldg);
+  const sheet = getStaffSheet_();
+  const idx = getStaffIndices_(sheet);
+  const all = sheet.getDataRange().getValues();
+
+  const rows = [];
+  for (let i = 1; i < all.length; i++) {
+    const r = all[i];
+    const email = (r[idx.email] || '').toString().trim();
+    if (!email) continue;
+
+    const userBuildings = splitBuildings_(r[idx.building]);
+    if (!userBuildings.includes(bldg)) continue;
+
+    const archivedList = parseArchivedList_(r[idx.archived], userBuildings);
+    if (archivedList.includes(bldg)) continue; // archived from this building
+
+    const stat = balances[email.toLowerCase()] || { earned: 0, used: 0 };
+    const e = Number(stat.earned) || 0;
+    const u = Number(stat.used) || 0;
+    const priorCarry = Number(r[idx.carry]) || 0;
+    const paidOut = Number(r[idx.paid]) || 0;
+    const balance = priorCarry + e - u - paidOut;
+
+    rows.push([r[idx.name], email, r[idx.building], priorCarry, e, u, paidOut, balance]);
+  }
+
+  return {
+    headers: ['Name', 'Email', 'Building(s)', 'Carry Over', 'Earned', 'Used', 'Paid Out', 'Balance'],
+    rows: rows
+  };
+}
+
+/** Non-Super admins may only touch snapshots for buildings they're assigned to. */
+function assertCanAccessSnapshot_(ctx, building) {
+  if (ctx.isSuperAdmin) return;
+  if (!ctx.buildings.includes(building)) {
+    throw new Error('You can only manage snapshots for your own building(s).');
+  }
+}
+
+/** Reads the tstSnapshot* developer metadata off a sheet into a plain object. */
+function getSnapshotMeta_(sheet) {
+  const meta = {};
+  sheet.getDeveloperMetadata().forEach(m => {
+    const k = m.getKey();
+    if (k && k.indexOf('tstSnapshot') === 0) meta[k] = m.getValue();
+  });
+  return {
+    id: meta.tstSnapshotId || '',
+    building: meta.tstSnapshotBuilding || '',
+    title: meta.tstSnapshotTitle || '',
+    description: meta.tstSnapshotDescription || '',
+    date: meta.tstSnapshotDate || '',
+    created: meta.tstSnapshotCreated || ''
+  };
+}
+
+/** Locates a snapshot sheet by its stable tstSnapshotId, or returns null. */
+function findSnapshotSheet_(ss, id) {
+  const sheets = ss.getSheets();
+  for (let i = 0; i < sheets.length; i++) {
+    const md = sheets[i].getDeveloperMetadata().filter(m => m.getKey() === 'tstSnapshotId');
+    if (md.length && md[0].getValue() === id) return sheets[i];
+  }
+  return null;
+}
+
+/**
+ * Creates a non-destructive snapshot of a building's current directory totals.
+ * data: building (optional; defaults to caller's), title, description, date.
+ */
+function createSnapshot(building, title, description, date) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+
+  const bldg = (building || ctx.building).toString().trim();
+  assertCanAccessSnapshot_(ctx, bldg);
+
+  const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  const snapDate = (date || '').toString().trim() || today;
+  const snapTitle = (title || '').toString().trim() || ('Snapshot — ' + snapDate);
+  const snapDesc = (description || '').toString();
+
+  const id = 'snap_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+  const created = new Date().toISOString();
+
+  const built = buildDirectorySnapshotRows_(bldg);
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const snap = ss.insertSheet('__snap_' + id);
+  snap.appendRow(built.headers);
+  if (built.rows.length) {
+    snap.getRange(2, 1, built.rows.length, built.headers.length).setValues(built.rows);
+  }
+  snap.setFrozenRows(1);
+  snap.hideSheet();
+
+  snap.addDeveloperMetadata('tstSnapshotId', id);
+  snap.addDeveloperMetadata('tstSnapshotBuilding', bldg);
+  snap.addDeveloperMetadata('tstSnapshotTitle', snapTitle);
+  snap.addDeveloperMetadata('tstSnapshotDescription', snapDesc);
+  snap.addDeveloperMetadata('tstSnapshotDate', snapDate);
+  snap.addDeveloperMetadata('tstSnapshotCreated', created);
+
+  return {
+    id: id, building: bldg, title: snapTitle, description: snapDesc,
+    date: snapDate, created: created, count: built.rows.length
+  };
+}
+
+/**
+ * Lists snapshots for every building the caller manages (Super Admins see all,
+ * or pass a building to filter). Identified by developer metadata, not name.
+ */
+function listSnapshots(building) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const wanted = ctx.isSuperAdmin ? (building || null) : null;
+
+  const result = [];
+  ss.getSheets().forEach(sh => {
+    const md = sh.getDeveloperMetadata().filter(m => m.getKey() === 'tstSnapshotId');
+    if (md.length === 0) return;
+    const meta = getSnapshotMeta_(sh);
+    if (ctx.isSuperAdmin) {
+      if (wanted && meta.building !== wanted) return;
+    } else if (!ctx.buildings.includes(meta.building)) {
+      return;
+    }
+    result.push(meta);
+  });
+
+  result.sort((a, b) => (b.created || '').localeCompare(a.created || ''));
+  return result;
+}
+
+/** Returns a snapshot's metadata plus its captured table (headers + rows). */
+function getSnapshotData(id) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = findSnapshotSheet_(ss, id);
+  if (!sh) throw new Error('Snapshot not found.');
+  const meta = getSnapshotMeta_(sh);
+  assertCanAccessSnapshot_(ctx, meta.building);
+
+  const values = sh.getDataRange().getValues();
+  const headers = values.shift();
+  return {
+    id: meta.id, building: meta.building, title: meta.title,
+    description: meta.description, date: meta.date, created: meta.created,
+    headers: headers, rows: values
+  };
+}
+
+/** Edits a snapshot's title / description / date (only the keys present in data). */
+function updateSnapshot(id, data) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = findSnapshotSheet_(ss, id);
+  if (!sh) throw new Error('Snapshot not found.');
+  const meta = getSnapshotMeta_(sh);
+  assertCanAccessSnapshot_(ctx, meta.building);
+
+  data = data || {};
+  const setMeta = (key, value) => {
+    const md = sh.getDeveloperMetadata().filter(m => m.getKey() === key);
+    if (md.length) md[0].setValue(value);
+    else sh.addDeveloperMetadata(key, value);
+  };
+
+  if (data.title !== undefined) setMeta('tstSnapshotTitle', (data.title || '').toString().trim() || meta.title);
+  if (data.description !== undefined) setMeta('tstSnapshotDescription', (data.description || '').toString());
+  if (data.date !== undefined) setMeta('tstSnapshotDate', (data.date || '').toString().trim() || meta.date);
+
+  return getSnapshotMeta_(sh);
+}
+
+/** Permanently deletes a snapshot (removes the underlying sheet). */
+function deleteSnapshot(id) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = findSnapshotSheet_(ss, id);
+  if (!sh) throw new Error('Snapshot not found.');
+  const meta = getSnapshotMeta_(sh);
+  assertCanAccessSnapshot_(ctx, meta.building);
+  ss.deleteSheet(sh);
+  return { ok: true, id: id };
+}
+
 /**
  * Ensures the Staff Directory has an "Archived" column, creating it after the
  * last used column if missing. Returns its 0-based index.
