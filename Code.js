@@ -900,6 +900,328 @@ function getArchivedYearData(sheetName) {
   return { name: sheetName, building: sheetBuilding, headers: headers, rows: values };
 }
 
+/* ============================================================================
+ * SNAPSHOTS — non-destructive point-in-time captures of the directory balance
+ * table. Unlike finalizeSchoolYear, these change nothing else (no roll-over, no
+ * transaction archiving). Each snapshot is a hidden sheet tagged with
+ * tstSnapshot* developer metadata (distinct from the tstArchive* keys used by
+ * year-end archives, so the two listings never overlap). Title/description/date
+ * live in metadata so they can be edited later without renaming the sheet.
+ * ==========================================================================*/
+
+/**
+ * Builds the directory balance table for a building as of right now, WITHOUT
+ * changing anything. Mirrors the snapshot rows produced by finalizeSchoolYear
+ * (minus the roll-over/reset). Returns { headers, rows }.
+ */
+function buildDirectorySnapshotRows_(bldg) {
+  // Mirror the directory exactly as displayed: COMBINED totals (Earned/Used summed
+  // across all of a person's buildings, per the ownership model), non-archived
+  // staff assigned to this building. Reusing getStaffDirectoryData keeps the
+  // snapshot in lock-step with the on-screen table.
+  const staff = getStaffDirectoryData(bldg);
+  const rows = staff.map(s => [
+    s.name,
+    s.email,
+    s.building,
+    Number(s.carryOver) || 0,
+    Number(s.earned) || 0,
+    Number(s.used) || 0,
+    Number(s.paidOut) || 0,
+    Number(s.total) || 0
+  ]);
+  return {
+    headers: ['Name', 'Email', 'Building(s)', 'Carry Over', 'Earned', 'Used', 'Paid Out', 'Balance'],
+    rows: rows
+  };
+}
+
+/** Non-Super admins may only touch snapshots for buildings they're assigned to. */
+function assertCanAccessSnapshot_(ctx, building) {
+  if (ctx.isSuperAdmin) return;
+  if (!ctx.buildings.includes(building)) {
+    throw new Error('You can only manage snapshots for your own building(s).');
+  }
+}
+
+/** Reads the tstSnapshot* developer metadata off a sheet into a plain object. */
+function getSnapshotMeta_(sheet) {
+  const meta = {};
+  sheet.getDeveloperMetadata().forEach(m => {
+    const k = m.getKey();
+    if (k && k.indexOf('tstSnapshot') === 0) meta[k] = m.getValue();
+  });
+  return {
+    id: meta.tstSnapshotId || '',
+    building: meta.tstSnapshotBuilding || '',
+    title: meta.tstSnapshotTitle || '',
+    description: meta.tstSnapshotDescription || '',
+    date: meta.tstSnapshotDate || '',
+    created: meta.tstSnapshotCreated || ''
+  };
+}
+
+/** Locates a snapshot sheet by its stable tstSnapshotId, or returns null. */
+function findSnapshotSheet_(ss, id) {
+  const sheets = ss.getSheets();
+  for (let i = 0; i < sheets.length; i++) {
+    const md = sheets[i].getDeveloperMetadata().filter(m => m.getKey() === 'tstSnapshotId');
+    if (md.length && md[0].getValue() === id) return sheets[i];
+  }
+  return null;
+}
+
+/**
+ * Creates a non-destructive snapshot of a building's current directory totals.
+ * data: building (optional; defaults to caller's), title, description, date.
+ */
+function createSnapshot(building, title, description, date) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+
+  const bldg = (building || ctx.building).toString().trim();
+  assertCanAccessSnapshot_(ctx, bldg);
+
+  const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  const snapDate = (date || '').toString().trim() || today;
+  const snapTitle = (title || '').toString().trim() || ('Snapshot — ' + snapDate);
+  const snapDesc = (description || '').toString();
+
+  const id = 'snap_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+  const created = new Date().toISOString();
+
+  const built = buildDirectorySnapshotRows_(bldg);
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const snap = ss.insertSheet('__snap_' + id);
+  snap.appendRow(built.headers);
+  if (built.rows.length) {
+    snap.getRange(2, 1, built.rows.length, built.headers.length).setValues(built.rows);
+  }
+  snap.setFrozenRows(1);
+  snap.hideSheet();
+
+  snap.addDeveloperMetadata('tstSnapshotId', id);
+  snap.addDeveloperMetadata('tstSnapshotBuilding', bldg);
+  snap.addDeveloperMetadata('tstSnapshotTitle', snapTitle);
+  if (snapDesc) snap.addDeveloperMetadata('tstSnapshotDescription', snapDesc);
+  snap.addDeveloperMetadata('tstSnapshotDate', snapDate);
+  snap.addDeveloperMetadata('tstSnapshotCreated', created);
+
+  // Capture the building's counted (approved) transactions so the snapshot can
+  // later be restored to identical totals. Predicate matches calculateDynamicBalances:
+  //   Approvals: building col N(13), approved col I(8).
+  //   Usage:     building col H(7),  status   col E(4).
+  captureBuildingTransactions_(ss, 'TST Approvals (New)', 13, 8, bldg, '__snap_' + id + '_appr');
+  captureBuildingTransactions_(ss, 'TST Usage (New)', 7, 4, bldg, '__snap_' + id + '_use');
+
+  return {
+    id: id, building: bldg, title: snapTitle, description: snapDesc,
+    date: snapDate, created: created, count: built.rows.length
+  };
+}
+
+/**
+ * Copies a source transaction sheet's approved rows for one building into a new
+ * hidden companion sheet (header + matching rows). Used to make snapshots
+ * restorable. Predicate mirrors archiveRowsByBuilding_ / calculateDynamicBalances.
+ */
+function captureBuildingTransactions_(ss, srcName, buildingIdx, approvedIdx, bldg, destName) {
+  const dest = ss.insertSheet(destName);
+  dest.hideSheet();
+  const src = ss.getSheetByName(srcName);
+  if (!src) return dest;
+  const data = src.getDataRange().getValues();
+  if (data.length < 1) return dest;
+
+  const out = [data[0]]; // header
+  for (let i = 1; i < data.length; i++) {
+    const r = data[i];
+    if (!r[0]) continue;
+    const isApproved = r[approvedIdx] === true || r[approvedIdx] === 'TRUE';
+    const rowBuilding = (r[buildingIdx] || 'OMS').toString();
+    if (isApproved && rowBuilding === bldg) out.push(r);
+  }
+  dest.getRange(1, 1, out.length, out[0].length).setValues(out);
+  return dest;
+}
+
+/**
+ * Lists snapshots for every building the caller manages (Super Admins see all,
+ * or pass a building to filter). Identified by developer metadata, not name.
+ */
+function listSnapshots(building) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const wanted = ctx.isSuperAdmin ? (building || null) : null;
+
+  const result = [];
+  ss.getSheets().forEach(sh => {
+    const md = sh.getDeveloperMetadata().filter(m => m.getKey() === 'tstSnapshotId');
+    if (md.length === 0) return;
+    const meta = getSnapshotMeta_(sh);
+    if (ctx.isSuperAdmin) {
+      if (wanted && meta.building !== wanted) return;
+    } else if (!ctx.buildings.includes(meta.building)) {
+      return;
+    }
+    result.push(meta);
+  });
+
+  result.sort((a, b) => (b.created || '').localeCompare(a.created || ''));
+  return result;
+}
+
+/** Returns a snapshot's metadata plus its captured table (headers + rows). */
+function getSnapshotData(id) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = findSnapshotSheet_(ss, id);
+  if (!sh) throw new Error('Snapshot not found.');
+  const meta = getSnapshotMeta_(sh);
+  assertCanAccessSnapshot_(ctx, meta.building);
+
+  const values = sh.getDataRange().getValues();
+  const headers = values.shift();
+  return {
+    id: meta.id, building: meta.building, title: meta.title,
+    description: meta.description, date: meta.date, created: meta.created,
+    headers: headers, rows: values
+  };
+}
+
+/** Edits a snapshot's title / description / date (only the keys present in data). */
+function updateSnapshot(id, data) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = findSnapshotSheet_(ss, id);
+  if (!sh) throw new Error('Snapshot not found.');
+  const meta = getSnapshotMeta_(sh);
+  assertCanAccessSnapshot_(ctx, meta.building);
+
+  data = data || {};
+  const setMeta = (key, value) => {
+    const md = sh.getDeveloperMetadata().filter(m => m.getKey() === key);
+    if (md.length) md[0].setValue(value);
+    else if (value !== '') sh.addDeveloperMetadata(key, value); // GAS may reject empty metadata values
+  };
+
+  if (data.title !== undefined) setMeta('tstSnapshotTitle', (data.title || '').toString().trim() || meta.title);
+  if (data.description !== undefined) setMeta('tstSnapshotDescription', (data.description || '').toString());
+  if (data.date !== undefined) setMeta('tstSnapshotDate', (data.date || '').toString().trim() || meta.date);
+
+  return getSnapshotMeta_(sh);
+}
+
+/** Permanently deletes a snapshot (the main sheet and its companion sheets). */
+function deleteSnapshot(id) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = findSnapshotSheet_(ss, id);
+  if (!sh) throw new Error('Snapshot not found.');
+  const meta = getSnapshotMeta_(sh);
+  assertCanAccessSnapshot_(ctx, meta.building);
+
+  ['_appr', '_use'].forEach(suffix => {
+    const c = ss.getSheetByName('__snap_' + id + suffix);
+    if (c) ss.deleteSheet(c);
+  });
+  ss.deleteSheet(sh);
+  return { ok: true, id: id };
+}
+
+/** Appends a captured companion sheet's rows (minus header) into a live sheet. */
+function restoreCapturedTransactions_(ss, snapName, liveName) {
+  const snap = ss.getSheetByName(snapName);
+  const live = ss.getSheetByName(liveName);
+  if (!snap || !live) return;
+  const data = snap.getDataRange().getValues();
+  if (data.length < 2) return; // header only — nothing to restore
+  const rows = data.slice(1).filter(r => r[0]);
+  if (!rows.length) return;
+  live.getRange(live.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
+}
+
+/**
+ * Reverts a building to the state captured by a snapshot — building-scoped and
+ * with no effect on other buildings. After restoring, every column of each row
+ * in the directory matches the snapshot:
+ *  1. The building's current approved transactions are archived (recoverable)
+ *     and removed, then the snapshot's captured transactions are re-inserted, so
+ *     Earned/Used recompute to the snapshot values.
+ *  2. Carry Over / Paid Out are reset to the snapshot values for staff whose
+ *     PRIMARY (first-listed) building is this one — the primary building owns
+ *     those numbers. Staff who only earn hours here (primary elsewhere) keep
+ *     their current Carry Over / Paid Out, so other buildings are never disturbed.
+ * Staff not present in the snapshot are left unchanged; no staff rows are deleted.
+ */
+function restoreSnapshot(id) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const main = findSnapshotSheet_(ss, id);
+  if (!main) throw new Error('Snapshot not found.');
+  const meta = getSnapshotMeta_(main);
+  const bldg = meta.building;
+  assertCanAccessSnapshot_(ctx, bldg);
+
+  const apprSnap = ss.getSheetByName('__snap_' + id + '_appr');
+  const useSnap = ss.getSheetByName('__snap_' + id + '_use');
+  if (!apprSnap || !useSnap) {
+    throw new Error('This snapshot was created before Restore was supported and cannot be restored.');
+  }
+
+  // 1. Archive + clear the building's CURRENT approved transactions, then put the
+  //    snapshot's captured transactions back.
+  const label = 'Restore backup ' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm') + ' (' + bldg + ')';
+  archiveBuildingTransactions_(bldg, label);
+  restoreCapturedTransactions_(ss, '__snap_' + id + '_appr', 'TST Approvals (New)');
+  restoreCapturedTransactions_(ss, '__snap_' + id + '_use', 'TST Usage (New)');
+
+  // 2. Restore Carry Over / Paid Out only for staff whose PRIMARY (first-listed)
+  //    building is this one — the primary building owns those numbers.
+  const snapVals = main.getDataRange().getValues();
+  snapVals.shift(); // drop header; cols: 0 Name,1 Email,2 Building(s),3 Carry,4 Earned,5 Used,6 Paid,7 Balance
+
+  const sheet = getStaffSheet_();
+  const idx = getStaffIndices_(sheet);
+  const all = sheet.getDataRange().getValues();
+
+  const emailToRow = {};
+  const emailToBuildings = {};
+  for (let i = 1; i < all.length; i++) {
+    const em = (all[i][idx.email] || '').toString().trim().toLowerCase();
+    if (!em) continue;
+    emailToRow[em] = i + 1;
+    emailToBuildings[em] = splitBuildings_(all[i][idx.building]);
+  }
+
+  let restored = 0;
+  let nonPrimarySkipped = 0;
+  snapVals.forEach(r => {
+    const email = (r[1] || '').toString().trim().toLowerCase();
+    if (!email) return;
+    const rowNum = emailToRow[email];
+    if (!rowNum) return; // person no longer in the directory
+    // The primary building (first listed) owns Carry Over / Paid Out. Leave them
+    // alone for people who only earn hours here but are primary elsewhere.
+    const primary = (emailToBuildings[email] || [])[0] || '';
+    if (primary !== bldg) { nonPrimarySkipped++; return; }
+    sheet.getRange(rowNum, idx.carry + 1).setValue(Number(r[3]) || 0);
+    sheet.getRange(rowNum, idx.paid + 1).setValue(Number(r[6]) || 0);
+    restored++;
+  });
+
+  return {
+    building: bldg, title: meta.title, count: snapVals.length,
+    restored: restored, nonPrimarySkipped: nonPrimarySkipped
+  };
+}
+
 /**
  * Ensures the Staff Directory has an "Archived" column, creating it after the
  * last used column if missing. Returns its 0-based index.
