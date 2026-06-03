@@ -915,33 +915,21 @@ function getArchivedYearData(sheetName) {
  * (minus the roll-over/reset). Returns { headers, rows }.
  */
 function buildDirectorySnapshotRows_(bldg) {
-  const balances = calculateDynamicBalances(bldg);
-  const sheet = getStaffSheet_();
-  const idx = getStaffIndices_(sheet);
-  const all = sheet.getDataRange().getValues();
-
-  const rows = [];
-  for (let i = 1; i < all.length; i++) {
-    const r = all[i];
-    const email = (r[idx.email] || '').toString().trim();
-    if (!email) continue;
-
-    const userBuildings = splitBuildings_(r[idx.building]);
-    if (!userBuildings.includes(bldg)) continue;
-
-    const archivedList = parseArchivedList_(r[idx.archived], userBuildings);
-    if (archivedList.includes(bldg)) continue; // archived from this building
-
-    const stat = balances[email.toLowerCase()] || { earned: 0, used: 0 };
-    const e = Number(stat.earned) || 0;
-    const u = Number(stat.used) || 0;
-    const priorCarry = Number(r[idx.carry]) || 0;
-    const paidOut = Number(r[idx.paid]) || 0;
-    const balance = priorCarry + e - u - paidOut;
-
-    rows.push([r[idx.name], email, r[idx.building], priorCarry, e, u, paidOut, balance]);
-  }
-
+  // Mirror the directory exactly as displayed: COMBINED totals (Earned/Used summed
+  // across all of a person's buildings, per the ownership model), non-archived
+  // staff assigned to this building. Reusing getStaffDirectoryData keeps the
+  // snapshot in lock-step with the on-screen table.
+  const staff = getStaffDirectoryData(bldg);
+  const rows = staff.map(s => [
+    s.name,
+    s.email,
+    s.building,
+    Number(s.carryOver) || 0,
+    Number(s.earned) || 0,
+    Number(s.used) || 0,
+    Number(s.paidOut) || 0,
+    Number(s.total) || 0
+  ]);
   return {
     headers: ['Name', 'Email', 'Building(s)', 'Carry Over', 'Earned', 'Used', 'Paid Out', 'Balance'],
     rows: rows
