@@ -646,8 +646,10 @@
        const html = `
          <div class="flex flex-col h-full max-h-[80vh]">
             <div class="mb-4">
-               <div class="p-3 bg-blue-50 border border-blue-100 rounded text-sm text-blue-800">
-                  <i class="fas fa-info-circle mr-2"></i> Update starting balances for <strong>${STATE.config[STATE.building]?.name || STATE.building}</strong>.
+               <div class="p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-800">
+                  <i class="fas fa-exclamation-triangle mr-2"></i>
+                  <strong>Heads up:</strong> ${CARRY_OVER_EDIT_WARNING}
+                  <div class="mt-2 text-amber-700">Updating starting balances for <strong>${STATE.config[STATE.building]?.name || STATE.building}</strong>.</div>
                </div>
                <div class="mt-4 flex gap-2">
                  <div class="relative flex-grow">
@@ -832,6 +834,11 @@
                            <option value="periods" ${config.scheduleType === 'periods' ? 'selected' : ''}>Periods</option>
                            <option value="time_range" ${config.scheduleType === 'time_range' ? 'selected' : ''}>Time Range</option>
                         </select>
+                      </div>
+                      <div>
+                        <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Carry Over Cap (Hrs)</label>
+                        <input type="number" step="0.5" min="0" name="carryOverMax" value="${config.carryOverMax ?? 12}" ${isSuper ? '' : 'disabled'} class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue ${isSuper ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed'}">
+                        <p class="text-xs text-gray-500 mt-1">Max hours that roll into next year at finalize; balances above this are forfeited unless paid out.${isSuper ? '' : ' Set by Super Admin.'}</p>
                       </div>
                    </div>
                 </div>
@@ -1030,7 +1037,18 @@
              });
           }
        }
-       
+
+       // Carry Over cap is Super-Admin-owned. Supers save the edited value;
+       // everyone else preserves what's stored (the server enforces this too).
+       // Default to 12 when unset.
+       if (STATE.user.isSuperAdmin && form.carryOverMax) {
+          const capVal = parseFloat(form.carryOverMax.value);
+          config.carryOverMax = (isFinite(capVal) && capVal >= 0) ? capVal : 12;
+       } else {
+          const stored = STATE.config[buildingCode] ? STATE.config[buildingCode].carryOverMax : undefined;
+          config.carryOverMax = (stored !== undefined && stored !== null && stored !== '') ? stored : 12;
+       }
+
        try {
           showLoading(true);
           google.script.run.withSuccessHandler(() => {
@@ -1601,13 +1619,37 @@
       );
     }
 
+    // Shared caution shown wherever Carry Over can be edited by hand. Manual
+    // edits change the live balance immediately; the value is otherwise managed
+    // automatically by Finalize School Year.
+    const CARRY_OVER_EDIT_WARNING =
+       "Editing Carry Over by hand immediately changes a staff member's current balance. " +
+       "Carry Over is normally set <strong>automatically</strong> when you run " +
+       "<strong>Finalize School Year</strong>, which rolls each person's remaining balance " +
+       "into the new year. Only edit it manually to correct a starting balance.";
+
     function toggleColumnEdit(col) {
+       // Entering Carry Over edit mode warns first; exiting (cancel/save) and the
+       // Paid Out column toggle straight through.
+       if (col === 'carryOver' && !STATE.editMode[col]) {
+          openConfirmModal(
+             "Edit Carry Over manually?",
+             CARRY_OVER_EDIT_WARNING,
+             () => applyColumnEditToggle(col),
+             "Continue Editing"
+          );
+          return;
+       }
+       applyColumnEditToggle(col);
+    }
+
+    function applyColumnEditToggle(col) {
        // Toggle logic
        STATE.editMode[col] = !STATE.editMode[col];
-       
+
        // Clear pending updates if cancelling or starting fresh
        STATE.pendingUpdates = {};
-       
+
        // Re-render
        renderAdminTotalsTable(STATE.user.staffData);
     }
@@ -2072,6 +2114,7 @@
     function openFinalizeYearModal() {
        document.getElementById('profile-dropdown').classList.add('hidden');
        const bName = (STATE.config[STATE.building] && STATE.config[STATE.building].name) ? STATE.config[STATE.building].name : STATE.building;
+       const cap = (STATE.config[STATE.building] && STATE.config[STATE.building].carryOverMax != null) ? STATE.config[STATE.building].carryOverMax : 12;
        const suggested = suggestSchoolYearName();
        const html = `
          <div class="p-1">
@@ -2082,6 +2125,13 @@
            <div class="bg-blue-50 border border-blue-100 rounded p-3 mb-4 text-sm text-blue-800">
              <i class="fas fa-info-circle mr-2"></i>
              Staff who also work here but whose primary building is elsewhere are <strong>not</strong> changed — they're flagged "Pending finalize" until their primary building finalizes them.
+           </div>
+           <div class="bg-amber-50 border border-amber-200 rounded p-3 mb-4 text-sm text-amber-800">
+             <i class="fas fa-exclamation-triangle mr-2"></i><strong>Before you finalize ${bName}:</strong>
+             <ul class="list-disc ml-5 mt-2 space-y-1">
+               <li><strong>Update Paid Out hours first.</strong> Paying out hours now is the only way to keep a balance above the cap from being lost.</li>
+               <li><strong>Carry Over is capped at ${cap} hours here.</strong> Any balance above ${cap} is forfeited when it rolls into next year.</li>
+             </ul>
            </div>
            <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Archive name</label>
            <input type="text" id="finalize-name" value="${suggested}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
@@ -2100,32 +2150,85 @@
        openConfirmModal(
           "Finalize and roll over?",
           `This will create <strong>${name}</strong>, roll the combined balances of staff whose primary building is here into Carry Over, and archive their transactions. Shared staff with a primary elsewhere are only flagged. This cannot be undone. Continue?`,
-          () => {
-             showLoading(true);
-             google.script.run.withSuccessHandler(res => {
-                showLoading(false);
-                let msg;
-                if (res.count > 0) {
-                   msg = `Finalized ${res.count} staff into "${res.name}".`;
-                   if (res.pending && res.pending > 0) {
-                      msg += ` ${res.pending} shared staff flagged for their primary building.`;
-                   }
-                } else if (res.pending && res.pending > 0) {
-                   // No staff are based here (all shared from elsewhere) — only flags were set.
-                   msg = `${res.pending} shared staff flagged for their primary building to finalize. No staff are based in this building.`;
-                } else {
-                   msg = `Nothing to finalize for this building.`;
-                }
-                showToast(msg, "success");
-                loadAdminTotals();
-             }).withFailureHandler(err => {
-                showLoading(false);
-                showToast("Finalize failed: " + (err.message || err), "error");
-             }).finalizeSchoolYear(name, STATE.building);
-          },
+          () => runFinalize(name, false),
           "Finalize",
           "bg-ops-red hover:bg-red-700"
        );
+    }
+
+    // Runs the finalize. force=false lets the server gate on over-cap balances
+    // (returns { blocked } with no changes); force=true proceeds and forfeits the
+    // excess. Shared by the confirm dialog and the over-cap "Finalize anyway" path.
+    function runFinalize(name, force) {
+       showLoading(true);
+       google.script.run.withSuccessHandler(res => {
+          showLoading(false);
+          // Over-cap gate: nothing was changed — show the offending staff.
+          if (res && res.blocked) {
+             showOverCapModal(name, res);
+             return;
+          }
+          let msg;
+          if (res.count > 0) {
+             msg = `Finalized ${res.count} staff into "${res.name}".`;
+             if (res.forfeitedCount && res.forfeitedCount > 0) {
+                msg += ` ${res.forfeitedCount} had hours above the ${res.cap}-hr cap forfeited.`;
+             }
+             if (res.pending && res.pending > 0) {
+                msg += ` ${res.pending} shared staff flagged for their primary building.`;
+             }
+          } else if (res.pending && res.pending > 0) {
+             // No staff are based here (all shared from elsewhere) — only flags were set.
+             msg = `${res.pending} shared staff flagged for their primary building to finalize. No staff are based in this building.`;
+          } else {
+             msg = `Nothing to finalize for this building.`;
+          }
+          showToast(msg, "success");
+          loadAdminTotals();
+       }).withFailureHandler(err => {
+          showLoading(false);
+          showToast("Finalize failed: " + (err.message || err), "error");
+       }).finalizeSchoolYear(name, STATE.building, force);
+    }
+
+    // Shown when finalize is blocked because one or more staff would roll above
+    // the building's Carry Over cap. Lists only those staff and offers an
+    // explicit forfeit-and-finalize override.
+    function showOverCapModal(name, res) {
+       const cap = res.cap;
+       const bName = (STATE.config[STATE.building] && STATE.config[STATE.building].name) ? STATE.config[STATE.building].name : STATE.building;
+       const rows = res.overCap.map(o => `
+          <tr class="border-t border-gray-100">
+             <td class="px-3 py-2 text-sm font-medium text-ops-gray-dark">${o.name}</td>
+             <td class="px-3 py-2 text-sm text-right text-gray-600">${Number(o.projected).toFixed(2)}</td>
+             <td class="px-3 py-2 text-sm text-right font-bold text-ops-red">${Number(o.over).toFixed(2)}</td>
+          </tr>`).join('');
+       const safeName = name.replace(/'/g, "\\'");
+       const html = `
+         <div class="p-1">
+           <div class="bg-amber-50 border border-amber-200 rounded p-3 mb-4 text-sm text-amber-800">
+             <i class="fas fa-exclamation-triangle mr-2"></i>
+             These staff in <strong>${bName}</strong> are above the <strong>${cap}-hour</strong> Carry Over cap. If you finalize now, the hours shown under <strong>Over by</strong> will be <strong>forfeited</strong>.
+           </div>
+           <div class="overflow-x-auto max-h-[45vh] border border-gray-200 rounded mb-4">
+             <table class="min-w-full">
+               <thead class="bg-gray-50 sticky top-0">
+                 <tr>
+                   <th class="px-3 py-2 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Staff Member</th>
+                   <th class="px-3 py-2 text-right text-xs font-bold text-ops-gray uppercase tracking-wider">Projected Balance</th>
+                   <th class="px-3 py-2 text-right text-xs font-bold text-ops-gray uppercase tracking-wider">Over by</th>
+                 </tr>
+               </thead>
+               <tbody>${rows}</tbody>
+             </table>
+           </div>
+           <p class="text-xs text-gray-500 mb-4">To keep these hours, close this, record their <strong>Paid Out</strong> hours in the directory (which lowers the balance), then finalize again. Otherwise you can finalize now and forfeit the excess.</p>
+           <div class="flex justify-end gap-3 pt-4 border-t border-gray-100">
+             <button onclick="closeModal()" class="px-4 py-2 border border-gray-300 rounded text-gray-600 hover:bg-gray-50 font-bold text-sm">Cancel</button>
+             <button onclick="closeModal(); runFinalize('${safeName}', true);" class="px-4 py-2 bg-ops-red text-white rounded hover:bg-red-700 font-bold text-sm shadow"><i class="fas fa-flag-checkered mr-2"></i>Finalize anyway — forfeit excess</button>
+           </div>
+         </div>`;
+       showModal("Some balances exceed the cap", html, 'max-w-xl');
     }
 
     function openArchivedYearsModal() {

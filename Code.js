@@ -150,29 +150,43 @@ function getConfig() {
  * Saves configuration for a specific building.
  */
 function saveBuildingConfig(buildingCode, newConfigObj) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName('App Config');
-  
+
   if (!sheet) {
     // Should exist, but safety first
-    getConfig(); 
+    getConfig();
     sheet = ss.getSheetByName('App Config');
   }
-  
+
   const data = sheet.getDataRange().getValues();
   // Find row index (1-based)
   // Row 1 is header. data index 0 is header.
-  
+
   let rowIndex = -1;
+  let existing = {};
   for (let i = 1; i < data.length; i++) {
     if (data[i][0] === buildingCode) {
       rowIndex = i + 1;
+      try { existing = JSON.parse(data[i][1]) || {}; } catch (e) { existing = {}; }
       break;
     }
   }
-  
+
+  // The Carry Over cap is owned by Super Admins. A non-Super-Admin's save must
+  // never change it, so preserve whatever is already stored (default 12)
+  // regardless of the submitted payload — this guards against a crafted call,
+  // not just the UI.
+  if (!ctx.isSuperAdmin) {
+    const storedCap = Number(existing.carryOverMax);
+    newConfigObj.carryOverMax = (isFinite(storedCap) && storedCap >= 0) ? storedCap : 12;
+  }
+
   const jsonString = JSON.stringify(newConfigObj, null, 2);
-  
+
   if (rowIndex > -1) {
     // Update existing
     sheet.getRange(rowIndex, 2).setValue(jsonString);
@@ -180,8 +194,20 @@ function saveBuildingConfig(buildingCode, newConfigObj) {
     // Create new
     sheet.appendRow([buildingCode, jsonString]);
   }
-  
+
   return true;
+}
+
+/**
+ * Reads the per-building Carry Over cap — the maximum hours that roll into the
+ * next year when finalizing. Defaults to 12 when unset or invalid so config
+ * sheets created before this setting existed behave sensibly without migration.
+ */
+function carryOverMaxFor_(building) {
+  const config = getConfig();
+  const c = (config && config[building]) || {};
+  const m = Number(c.carryOverMax);
+  return (isFinite(m) && m >= 0) ? m : 12;
 }
 
 /**
@@ -653,7 +679,7 @@ function getArchivedStaff() {
  *      * Get a pending-finalize flag so the UI shows that their primary building
  *        still needs to finalize them. The flag clears when the primary does.
  */
-function finalizeSchoolYear(yearName, building) {
+function finalizeSchoolYear(yearName, building, force) {
   const ctx = getUserContext();
   assertAdmin_(ctx);
 
@@ -670,6 +696,11 @@ function finalizeSchoolYear(yearName, building) {
     throw new Error('A sheet named "' + name + '" already exists. Choose a different name.');
   }
 
+  // Per-building Carry Over cap: any balance that would roll above it is
+  // forfeited. round2 keeps float noise from spuriously tripping the cap.
+  const cap = carryOverMaxFor_(bldg);
+  const round2 = function (n) { return Math.round(n * 100) / 100; };
+
   // 1. COMBINED balances (across all buildings), computed BEFORE any transactions
   //    are moved. Only the primary building rolls/archives them.
   const balances = calculateDynamicBalances(null);
@@ -680,7 +711,8 @@ function finalizeSchoolYear(yearName, building) {
   const all = sheet.getDataRange().getValues();
 
   const snapshotRows = [];
-  const rolls = [];            // primary-here: balance rolls
+  const rolls = [];            // primary-here: balance rolls (already capped)
+  const overCap = [];          // primary-here: rolls that would exceed the cap
   const clearPending = [];     // primary-here: rows whose pending flag to clear
   const primaryEmails = [];    // primary-here emails: archive ALL their transactions
   const pendingFlags = [];     // shared-elsewhere: rows to flag pending
@@ -722,13 +754,19 @@ function finalizeSchoolYear(yearName, building) {
     const paidOut = Number(r[idx.paid]) || 0;
     const balance = priorCarry + e - u - paidOut;
 
-    snapshotRows.push([r[idx.name], email, r[idx.building], priorCarry, e, u, paidOut, balance]);
-
     const lastFin = (r[idx.lastFinalized] || '').toString().trim();
     const firstThisYear = lastFin !== name;
     const rem = e - u;
-    const newCarry = priorCarry + rem - (firstThisYear ? paidOut : 0);
-    rolls.push({ row: i + 1, newCarry: newCarry, firstThisYear: firstThisYear });
+    const projectedCarry = priorCarry + rem - (firstThisYear ? paidOut : 0);
+    const cappedCarry = Math.min(projectedCarry, cap);
+    const forfeited = projectedCarry > cap ? round2(projectedCarry - cap) : 0;
+
+    snapshotRows.push([r[idx.name], email, r[idx.building], priorCarry, e, u, paidOut, balance, cappedCarry, forfeited]);
+    rolls.push({ row: i + 1, newCarry: cappedCarry, firstThisYear: firstThisYear, forfeited: forfeited });
+
+    if (forfeited > 0) {
+      overCap.push({ name: r[idx.name], email: email, projected: round2(projectedCarry), cap: cap, over: forfeited });
+    }
 
     primaryEmails.push(email.toLowerCase());
     if (pendingCur !== '') clearPending.push(i + 1);
@@ -738,17 +776,25 @@ function finalizeSchoolYear(yearName, building) {
     throw new Error('No active staff found for ' + bldg + ' to finalize.');
   }
 
+  // 2b. Block-with-override gate. If any primary-here staff would roll above the
+  //     cap and the caller hasn't explicitly opted to forfeit, make NO changes
+  //     and return the offending rows so the UI can list them. The check runs
+  //     before any sheet write so a blocked finalize is a true no-op.
+  if (overCap.length > 0 && !force) {
+    return { blocked: true, building: bldg, cap: cap, overCap: overCap };
+  }
+
   // 3. Write the snapshot sheet (only if there are primary-here staff to record).
   if (snapshotRows.length > 0) {
     const snap = ss.insertSheet(name);
-    snap.appendRow(['Name', 'Email', 'Building(s)', 'Carry Over (start)', 'Earned', 'Used', 'Paid Out', 'Balance']);
-    snap.getRange(2, 1, snapshotRows.length, 8).setValues(snapshotRows);
+    snap.appendRow(['Name', 'Email', 'Building(s)', 'Carry Over (start)', 'Earned', 'Used', 'Paid Out', 'Balance', 'New Carry Over', 'Forfeited']);
+    snap.getRange(2, 1, snapshotRows.length, 10).setValues(snapshotRows);
     snap.setFrozenRows(1);
     snap.addDeveloperMetadata('tstArchiveBuilding', bldg);
     snap.addDeveloperMetadata('tstArchiveYear', name);
   }
 
-  // 4. Roll primary-here balances and clear their pending flags.
+  // 4. Roll primary-here balances (capped) and clear their pending flags.
   rolls.forEach(rr => {
     sheet.getRange(rr.row, idx.carry + 1).setValue(rr.newCarry);
     if (rr.firstThisYear) {
@@ -767,7 +813,8 @@ function finalizeSchoolYear(yearName, building) {
     archiveTransactionsByEmails_(primaryEmails, name);
   }
 
-  return { building: bldg, name: name, count: snapshotRows.length, pending: pendingFlags.length };
+  const forfeitedCount = rolls.filter(rr => rr.forfeited > 0).length;
+  return { building: bldg, name: name, count: snapshotRows.length, pending: pendingFlags.length, cap: cap, forfeitedCount: forfeitedCount };
 }
 
 // Archives every approved transaction (across all buildings) for the given set

@@ -33,7 +33,7 @@ This document outlines the required structure for the Google Sheet used by the O
 
 `finalizeSchoolYear(yearName, building)` only fully finalizes staff whose **primary** building is the one being finalized ("primary-here"). For those people it rolls the **combined** remaining balance into Carry Over, zeros Paid Out (once per year via Last Finalized), and archives **all** of their approved transactions across **every** building so combined Earned/Used reset to 0. Staff who are assigned to the building but whose primary is elsewhere ("shared") are left untouched and only get a Pending Finalize flag (column L) until their primary building finalizes them.
 
-- **`<year> <building> TST Totals`** (e.g. `2025-2026 OMS TST Totals`) — one per building per finalized year, containing the **combined** end-of-year totals for that building's **primary-here** staff. Columns: Name, Email, Building(s), Carry Over (start), Earned, Used, Paid Out, Balance. Tagged with developer metadata (`tstArchiveBuilding`, `tstArchiveYear`) so the app can find it regardless of the chosen name.
+- **`<year> <building> TST Totals`** (e.g. `2025-2026 OMS TST Totals`) — one per building per finalized year, containing the **combined** end-of-year totals for that building's **primary-here** staff. Columns: Name, Email, Building(s), Carry Over (start), Earned, Used, Paid Out, Balance, New Carry Over, Forfeited. `New Carry Over` is the (cap-limited) value rolled into the next year and `Forfeited` is any balance lost above the building's Carry Over cap. Tagged with developer metadata (`tstArchiveBuilding`, `tstArchiveYear`) so the app can find it regardless of the chosen name.
 - **`TST Approvals Archive` / `TST Usage Archive`** — permanent, accumulating backups. On finalize, the approved/processed transaction rows of the primary-here staff are moved here (original columns + a trailing `School Year`), which is what makes live combined Earned/Used recompute to 0 for the new year.
 
 ---
@@ -135,4 +135,4 @@ This document outlines the required structure for the Google Sheet used by the O
 | Col | Header Name | Data Type | Notes |
 | :-- | :--- | :--- | :--- |
 | **A** | Building | String | **Unique ID**. Building code (e.g., `OMS`, `OHS`, `OIS`, `SE`). |
-| **B** | Config_JSON | String | **JSON String**. Contains periods, schedule types, and coverage rules. |
+| **B** | Config_JSON | String | **JSON String**. Contains `name`, `scheduleType`, `periods`/`increment`, `coverageTypes`, and `carryOverMax` (the per-building Carry Over cap, default 12, Super-Admin-only). |

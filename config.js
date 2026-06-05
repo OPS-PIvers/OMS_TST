@@ -5,6 +5,7 @@ const DEFAULT_BUILDING = 'OMS';
 const BUILDING_CONFIG = {
   'OMS': {
     name: 'Orono Middle School',
+    carryOverMax: 12,
     scheduleType: 'periods',
     periods: [
       "Period 1 - 8:10 - 8:57",
@@ -29,6 +30,7 @@ const BUILDING_CONFIG = {
   },
   'OHS': {
     name: 'Orono High School',
+    carryOverMax: 12,
     scheduleType: 'periods',
     periods: [
       "Period 1",
@@ -43,6 +45,7 @@ const BUILDING_CONFIG = {
   },
   'OIS': {
     name: 'Orono Intermediate School',
+    carryOverMax: 12,
     scheduleType: 'time_range',
     increment: 15,
     coverageTypes: [
@@ -51,6 +54,7 @@ const BUILDING_CONFIG = {
   },
   'SE': {
     name: 'Schumann Elementary School',
+    carryOverMax: 12,
     scheduleType: 'time_range',
     increment: 15,
     coverageTypes: [
