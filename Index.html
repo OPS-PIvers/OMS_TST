@@ -1702,7 +1702,16 @@
        const isSel = STATE.selectionMode;
        const isManage = STATE.manageMode;
        const showArchived = STATE.showArchived;
-       const sortedStaff = sortStaffData(staffList, STATE.sortOption);
+
+       // Defense-in-depth: the directory always reflects the current building, so
+       // never render staff outside STATE.building even if the cache was somehow
+       // repopulated unscoped. Staff may belong to multiple (comma-separated)
+       // buildings; keep anyone assigned to the active one.
+       const scopedStaff = (staffList || []).filter(s => {
+          if (!STATE.building) return true;
+          return (s.building || '').toString().split(',').map(b => b.trim()).includes(STATE.building);
+       });
+       const sortedStaff = sortStaffData(scopedStaff, STATE.sortOption);
 
        const wName = 'width: 28%;';
        const wCol = 'width: 12%;';
@@ -3614,7 +3623,7 @@
               google.script.run.withSuccessHandler(staffData => {
                 STATE.user.staffData = staffData;
                 openStaffDetail(email, name, false);
-              }).getStaffDirectoryData();
+              }).getStaffDirectoryData(STATE.building, null, STATE.showArchived);
             })
             .withFailureHandler(err => {
               showLoading(false);
@@ -3652,7 +3661,7 @@
               google.script.run.withSuccessHandler(staffData => {
                 STATE.user.staffData = staffData;
                 openStaffDetail(email, name, false);
-              }).getStaffDirectoryData();
+              }).getStaffDirectoryData(STATE.building, null, STATE.showArchived);
             })
             .withFailureHandler(err => {
               showLoading(false);
