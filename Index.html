@@ -3614,7 +3614,7 @@
               google.script.run.withSuccessHandler(staffData => {
                 STATE.user.staffData = staffData;
                 openStaffDetail(email, name, false);
-              }).getStaffDirectoryData();
+              }).getStaffDirectoryData(STATE.building, null, STATE.showArchived);
             })
             .withFailureHandler(err => {
               showLoading(false);
@@ -3652,7 +3652,7 @@
               google.script.run.withSuccessHandler(staffData => {
                 STATE.user.staffData = staffData;
                 openStaffDetail(email, name, false);
-              }).getStaffDirectoryData();
+              }).getStaffDirectoryData(STATE.building, null, STATE.showArchived);
             })
             .withFailureHandler(err => {
               showLoading(false);
