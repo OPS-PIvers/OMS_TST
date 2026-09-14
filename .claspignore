@@ -1,0 +1,16 @@
+# Files clasp pushes to the Apps Script project.
+#
+# clasp has no default ignore file: without this, EVERY .js/.html/appsscript.json
+# in the repo is pushed, which is how Code_legacy.js ended up deployed alongside
+# Code.js. Apps Script shares one global scope across files and evaluates them in
+# project order, so the legacy onFormSubmit/onOpen/calculatePeriods (alphabetically
+# after Code.js) shadowed the real ones. It also means a Node test file would be
+# pushed and its top-level require() would break every execution.
+#
+# This is an allow-list: everything is ignored except the lines below. Adding a new
+# server-side file? Add a "!" line for it here, or it will not be deployed.
+**/**
+!appsscript.json
+!Code.js
+!config.js
+!Index.html

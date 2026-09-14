@@ -1,0 +1,208 @@
+{
+  "recordedAt": "2026-09-14T20:44:15.548Z",
+  "flows": [
+    {
+      "name": "teacher",
+      "signedInAs": "tina.teacher@orono.k12.mn.us",
+      "calls": [
+        {
+          "fn": "getInitialData",
+          "args": [],
+          "ok": true
+        },
+        {
+          "fn": "getTeacherHistory",
+          "args": [
+            "tina.teacher@orono.k12.mn.us"
+          ],
+          "ok": true
+        },
+        {
+          "fn": "getScheduleData",
+          "args": [
+            "OMS"
+          ],
+          "ok": true
+        },
+        {
+          "fn": "getTeacherHistory",
+          "args": [
+            "tina.teacher@orono.k12.mn.us"
+          ],
+          "ok": true
+        }
+      ],
+      "observations": {
+        "subbedForOptions": [
+          "Amy Admin",
+          "Dana Dual",
+          "Mia Multi",
+          "Sam Super",
+          "Ted Teacher",
+          "Tina Teacher"
+        ],
+        "checkedBoxes": [
+          "Period 1 - 8:10 - 8:57_Mon",
+          "Period 1 - 8:10 - 8:57_Tue"
+        ],
+        "kpis": [
+          "My TST Summary",
+          "3.00",
+          "2.50",
+          "1.00",
+          "1.00",
+          "3.50"
+        ]
+      },
+      "pageErrors": [],
+      "handledErrors": []
+    },
+    {
+      "name": "admin",
+      "signedInAs": "amy.admin@orono.k12.mn.us",
+      "calls": [
+        {
+          "fn": "getInitialData",
+          "args": [],
+          "ok": true
+        },
+        {
+          "fn": "getPendingEarned",
+          "args": [
+            "OMS"
+          ],
+          "ok": true
+        },
+        {
+          "fn": "getDashboardCounts",
+          "args": [
+            "OMS"
+          ],
+          "ok": true
+        },
+        {
+          "fn": "getDashboardCounts",
+          "args": [
+            "OMS"
+          ],
+          "ok": true
+        },
+        {
+          "fn": "getPendingUsed",
+          "args": [
+            "OMS"
+          ],
+          "ok": true
+        },
+        {
+          "fn": "getDashboardCounts",
+          "args": [
+            "OMS"
+          ],
+          "ok": true
+        },
+        {
+          "fn": "getScheduleData",
+          "args": [
+            "OMS"
+          ],
+          "ok": true
+        },
+        {
+          "fn": "getStaffDirectoryData",
+          "args": [
+            "OMS",
+            null,
+            false
+          ],
+          "ok": true
+        }
+      ],
+      "observations": {
+        "earnedRows": 2,
+        "badges": {
+          "earned": "2",
+          "used": "1"
+        },
+        "directoryHasTeacher": true
+      },
+      "pageErrors": [],
+      "handledErrors": []
+    },
+    {
+      "name": "admin-view-as-teacher",
+      "signedInAs": "amy.admin@orono.k12.mn.us",
+      "calls": [
+        {
+          "fn": "getInitialData",
+          "args": [],
+          "ok": true
+        },
+        {
+          "fn": "getPendingEarned",
+          "args": [
+            "OMS"
+          ],
+          "ok": true
+        },
+        {
+          "fn": "getDashboardCounts",
+          "args": [
+            "OMS"
+          ],
+          "ok": true
+        },
+        {
+          "fn": "getDashboardCounts",
+          "args": [
+            "OMS"
+          ],
+          "ok": true
+        },
+        {
+          "fn": "getViewAsData",
+          "args": [
+            "tina.teacher@orono.k12.mn.us",
+            "OMS"
+          ],
+          "ok": true
+        },
+        {
+          "fn": "getTeacherHistory",
+          "args": [
+            "tina.teacher@orono.k12.mn.us"
+          ],
+          "ok": true
+        },
+        {
+          "fn": "getTeacherHistory",
+          "args": [
+            "tina.teacher@orono.k12.mn.us"
+          ],
+          "ok": true
+        }
+      ],
+      "observations": {
+        "banner": "Viewing as Tina Teacher (tina.teacher@orono.k12.mn.us) — anything you submit is recorded as this staff member. Exit View As",
+        "subbedForOptions": [
+          "Amy Admin",
+          "Dana Dual",
+          "Mia Multi",
+          "Sam Super",
+          "Ted Teacher",
+          "Tina Teacher"
+        ],
+        "kpis": [
+          "My TST Summary",
+          "3.00",
+          "2.50",
+          "1.00",
+          "1.00",
+          "3.50"
+        ]
+      },
+      "pageErrors": [],
+      "handledErrors": []
+    }
+  ]
+}

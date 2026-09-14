@@ -42,6 +42,11 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Run server-side tests
+        # Dependency-free: Code.js runs in a vm with mocked Apps Script services.
+        # Covers the authorization rules, so a deploy can't quietly widen access.
+        run: node test/run.js
+
       - name: Install clasp
         # Pinned to the 3.3.x line to match the locally-authed clasp that wrote
         # the CLASPRC_JSON secret (clasp 3's ~/.clasprc.json schema differs from 2.x).
