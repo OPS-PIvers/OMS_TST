@@ -139,7 +139,20 @@
 
   <!-- Main App Container (Hidden until loaded) -->
   <div id="app-container" class="hidden flex flex-col min-h-screen">
-    
+
+    <!-- View As Banner (shown while an admin is viewing the app as a staff member) -->
+    <div id="view-as-banner" class="hidden sticky top-0 z-[60] bg-ops-yellow-lighter border-b-2 border-ops-yellow-dark text-ops-yellow-dark">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex flex-wrap items-center justify-between gap-2">
+        <div class="text-sm flex items-center gap-2 min-w-0">
+          <i class="fas fa-eye"></i>
+          <span id="view-as-text"></span>
+        </div>
+        <button onclick="exitViewAs()" class="flex-shrink-0 bg-ops-blue text-white hover:bg-ops-blue-dark px-3 py-1.5 rounded font-bold text-xs uppercase tracking-wide shadow-sm transition">
+          <i class="fas fa-right-from-bracket mr-1"></i> Exit View As
+        </button>
+      </div>
+    </div>
+
     <!-- Navigation -->
     <nav class="bg-ops-blue text-white shadow-lg relative z-50">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -213,7 +226,19 @@
   </div>
 
   <script>
+    // --- HTML Escaping ---
+    // Staff names/emails, transaction fields, config values and server messages
+    // are user-controlled. Escape every one of them before it goes into markup
+    // (text or a quoted attribute). Never put them inside an inline handler's JS
+    // string — put them in a data-* attribute and read this.dataset.x instead.
+    function escapeHtml(value) {
+      return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
     // --- Toast Notification System ---
+    // The message is plain text (never HTML).
     function showToast(message, type = 'info') {
       const container = document.getElementById('toast-container');
       
@@ -245,12 +270,13 @@
           <i class="fas ${icon} ${textClass} text-lg"></i>
         </div>
         <div class="flex-1">
-          <p class="text-sm font-medium ${textClass}">${message}</p>
+          <p class="text-sm font-medium ${textClass}"></p>
         </div>
         <button onclick="this.parentElement.remove()" class="text-gray-400 hover:text-gray-600 transition">
           <i class="fas fa-times"></i>
         </button>
       `;
+      toast.querySelector('p').textContent = String(message);
 
       container.appendChild(toast);
 
@@ -332,7 +358,8 @@
       editMode: { carryOver: false, paidOut: false },
       pendingUpdates: {},
       manageMode: false,   // Staff add/edit/archive controls
-      showArchived: false  // Include archived staff in the directory
+      showArchived: false, // Include archived staff in the directory
+      viewAs: null         // { admin, building } saved while an admin views as a teacher
     };
 
     // --- Primary-building ownership helpers ---
@@ -351,6 +378,15 @@
        if (STATE.user.isSuperAdmin) return true;
        const primary = staff.primaryBuilding || primaryBuildingOf(staff.building);
        return !!primary && (STATE.user.buildings || []).indexOf(primary) > -1;
+    }
+
+    // True if the current admin may approve/deny/edit/revert/delete a request row
+    // filed under this building (blank = OMS). Request queues are building-scoped;
+    // mirrors authorizeRequestRows_ on the server.
+    function canActOnRequestBuilding(building) {
+       if (!STATE.user) return false;
+       if (STATE.user.isSuperAdmin) return true;
+       return (STATE.user.buildings || []).indexOf((building || 'OMS').toString().trim()) > -1;
     }
 
         // --- Sorting Utility ---
@@ -415,7 +451,7 @@
         // Attempt to match exact string OR legacy short number (e.g. "1" matches "Period 1...")
         // We look for "Period {selectedVal} " at the start.
         const isSelected = selectedVal === p || (selectedVal && p.startsWith(`Period ${selectedVal} `));
-        return `<option value="${p}" ${isSelected ? 'selected' : ''}>${p}</option>`;
+        return `<option value="${escapeHtml(p)}" ${isSelected ? 'selected' : ''}>${escapeHtml(p)}</option>`;
       }).join('');
     }
 
@@ -440,6 +476,8 @@
     });
 
     function initApp(data) {
+      STATE.viewAs = null;
+      renderViewAsBanner();
       STATE.user = data;
       STATE.config = data.config;
       STATE.defaultBuilding = data.defaultBuilding || 'OMS';
@@ -476,11 +514,11 @@
       userBtn.innerHTML = `
         <button onclick="toggleProfileMenu()" class="flex items-center gap-3 focus:outline-none group">
             <div class="text-right hidden md:block">
-                <div class="text-sm font-medium text-white group-hover:text-blue-100 transition">${STATE.user.name}</div>
-                <div class="text-xs text-blue-200 font-light">${STATE.user.role}</div>
+                <div class="text-sm font-medium text-white group-hover:text-blue-100 transition">${escapeHtml(STATE.user.name)}</div>
+                <div class="text-xs text-blue-200 font-light">${escapeHtml(STATE.user.role)}</div>
             </div>
             <div class="bg-blue-600 h-8 w-8 rounded-full flex items-center justify-center text-xs font-bold border border-blue-400 shadow-sm text-white">
-                ${STATE.user.name.charAt(0)}
+                ${escapeHtml(STATE.user.name.charAt(0))}
             </div>
             <i class="fas fa-chevron-down text-xs text-blue-300 transition-transform duration-200 group-hover:text-white" id="profile-arrow"></i>
         </button>
@@ -506,8 +544,8 @@
       if (availableBuildings.length > 1) {
          // Segmented Control
          const toggleHtml = availableBuildings.map(b => `
-             <div class="segmented-item ${STATE.building === b ? 'active' : ''}" onclick="switchBuilding('${b}')">
-               ${b}
+             <div class="segmented-item ${STATE.building === b ? 'active' : ''}" data-building="${escapeHtml(b)}" onclick="switchBuilding(this.dataset.building)">
+               ${escapeHtml(b)}
              </div>
          `).join('');
          
@@ -525,7 +563,7 @@
         menuContent += `
            <div class="px-4 py-3 border-b border-gray-100">
              <div class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Current School</div>
-             <div class="text-sm font-medium text-ops-blue-dark">${bName}</div>
+             <div class="text-sm font-medium text-ops-blue-dark">${escapeHtml(bName)}</div>
            </div>
         `;
       }
@@ -551,7 +589,15 @@
            </button>
          `;
       }
-      
+
+      if (STATE.viewAs) {
+         menuContent += `
+           <button onclick="exitViewAs()" class="block w-full text-left px-4 py-2 text-sm font-medium text-ops-yellow-dark hover:bg-ops-yellow-lighter transition">
+             <i class="fas fa-right-from-bracket w-5"></i> Exit View As
+           </button>
+         `;
+      }
+
       dropdown.innerHTML = menuContent;
 
       // Update Branding Title based on current config
@@ -649,7 +695,7 @@
                <div class="p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-800">
                   <i class="fas fa-exclamation-triangle mr-2"></i>
                   <strong>Heads up:</strong> ${CARRY_OVER_EDIT_WARNING}
-                  <div class="mt-2 text-amber-700">Updating starting balances for <strong>${STATE.config[STATE.building]?.name || STATE.building}</strong>.</div>
+                  <div class="mt-2 text-amber-700">Updating starting balances for <strong>${escapeHtml(STATE.config[STATE.building]?.name || STATE.building)}</strong>.</div>
                </div>
                <div class="mt-4 flex gap-2">
                  <div class="relative flex-grow">
@@ -684,21 +730,21 @@
                         if (canEditOwned) {
                            return `
                         <tr>
-                           <td class="px-6 py-3 whitespace-nowrap text-sm font-medium text-gray-900">${s.name}</td>
+                           <td class="px-6 py-3 whitespace-nowrap text-sm font-medium text-gray-900">${escapeHtml(s.name)}</td>
                            <td class="px-6 py-3 whitespace-nowrap">
-                              <input type="number" step="0.1" id="co-${s.email}" value="${s.carryOver || 0}" class="w-24 rounded border-gray-300 p-1 border text-sm focus:ring-ops-blue focus:border-ops-blue">
+                              <input type="number" step="0.1" id="co-${escapeHtml(s.email)}" value="${escapeHtml(s.carryOver || 0)}" class="w-24 rounded border-gray-300 p-1 border text-sm focus:ring-ops-blue focus:border-ops-blue">
                            </td>
                            <td class="px-6 py-3 whitespace-nowrap text-right text-sm font-medium">
-                              <button onclick="saveCarryOver('${s.email}')" class="text-ops-blue hover:text-ops-blue-dark font-bold hover:underline">Save</button>
+                              <button data-email="${escapeHtml(s.email)}" onclick="saveCarryOver(this.dataset.email)" class="text-ops-blue hover:text-ops-blue-dark font-bold hover:underline">Save</button>
                            </td>
                         </tr>`;
                         }
                         return `
                         <tr class="bg-gray-50/50">
-                           <td class="px-6 py-3 whitespace-nowrap text-sm font-medium text-gray-500">${s.name}</td>
+                           <td class="px-6 py-3 whitespace-nowrap text-sm font-medium text-gray-500">${escapeHtml(s.name)}</td>
                            <td class="px-6 py-3 whitespace-nowrap text-sm text-gray-400">${Number(s.carryOver || 0).toFixed(2)}</td>
-                           <td class="px-6 py-3 whitespace-nowrap text-right text-xs text-gray-400 italic" title="Carry Over is managed by the primary building (${primaryB})">
-                              <i class="fas fa-lock mr-1"></i>${primaryB} manages
+                           <td class="px-6 py-3 whitespace-nowrap text-right text-xs text-gray-400 italic" title="Carry Over is managed by the primary building (${escapeHtml(primaryB)})">
+                              <i class="fas fa-lock mr-1"></i>${escapeHtml(primaryB)} manages
                            </td>
                         </tr>`;
                      }).join('')}
@@ -783,7 +829,7 @@
        let selectorHtml = '';
        if (isSuper) {
           const options = Object.keys(STATE.config).map(code => 
-             `<option value="${code}" ${code === buildingCode ? 'selected' : ''}>${code} - ${STATE.config[code].name}</option>`
+             `<option value="${escapeHtml(code)}" ${code === buildingCode ? 'selected' : ''}>${escapeHtml(code)} - ${escapeHtml(STATE.config[code].name)}</option>`
           ).join('');
           
           selectorHtml = `
@@ -798,8 +844,8 @@
           selectorHtml = `
              <div class="mb-6">
                <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Editing Configuration For</label>
-               <div class="p-2 bg-gray-100 rounded border border-gray-200 font-bold text-ops-gray-dark">${config.name || buildingCode} (${buildingCode})</div>
-               <input type="hidden" id="settings-building-select" value="${buildingCode}">
+               <div class="p-2 bg-gray-100 rounded border border-gray-200 font-bold text-ops-gray-dark">${escapeHtml(config.name || buildingCode)} (${escapeHtml(buildingCode)})</div>
+               <input type="hidden" id="settings-building-select" value="${escapeHtml(buildingCode)}">
              </div>
           `;
        }
@@ -826,7 +872,7 @@
                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
                         <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Building Name</label>
-                        <input type="text" name="name" value="${config.name || ''}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+                        <input type="text" name="name" value="${escapeHtml(config.name || '')}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
                       </div>
                       <div>
                         <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Schedule Type</label>
@@ -837,7 +883,7 @@
                       </div>
                       <div>
                         <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Carry Over Cap (Hrs)</label>
-                        <input type="number" step="0.5" min="0" name="carryOverMax" value="${config.carryOverMax ?? 12}" ${isSuper ? '' : 'disabled'} class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue ${isSuper ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed'}">
+                        <input type="number" step="0.5" min="0" name="carryOverMax" value="${escapeHtml(config.carryOverMax ?? 12)}" ${isSuper ? '' : 'disabled'} class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue ${isSuper ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed'}">
                         <p class="text-xs text-gray-500 mt-1">Max hours that roll into next year at finalize; balances above this are forfeited unless paid out.${isSuper ? '' : ' Set by Super Admin.'}</p>
                       </div>
                    </div>
@@ -848,7 +894,7 @@
                    <h4 class="text-sm font-bold text-ops-blue-dark border-b border-gray-200 pb-2 mb-4">Time Settings</h4>
                    <div>
                       <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Time Increment (Minutes)</label>
-                      <input type="number" name="increment" value="${config.increment || 15}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue max-w-xs">
+                      <input type="number" name="increment" value="${escapeHtml(config.increment || 15)}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue max-w-xs">
                       <p class="text-xs text-gray-500 mt-1">Used for time picker steps.</p>
                    </div>
                 </div>
@@ -859,7 +905,7 @@
                    <div id="periods-list" class="space-y-2 mb-3">
                       ${config.periods.map(p => `
                         <div class="flex gap-2 items-center">
-                           <input type="text" name="period[]" value="${p}" class="flex-grow rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+                           <input type="text" name="period[]" value="${escapeHtml(p)}" class="flex-grow rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
                            <button type="button" onclick="removeRow(this)" class="text-red-400 hover:text-red-600 p-2"><i class="fas fa-trash"></i></button>
                         </div>
                       `).join('')}
@@ -882,10 +928,10 @@
                       ${config.coverageTypes.map(c => `
                         <div class="flex gap-2 items-center">
                            <div class="flex-grow">
-                              <input type="text" placeholder="Label (e.g. Full Period)" name="covLabel[]" value="${c.label || ''}" class="w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue text-sm">
+                              <input type="text" placeholder="Label (e.g. Full Period)" name="covLabel[]" value="${escapeHtml(c.label || '')}" class="w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue text-sm">
                            </div>
                            <div class="w-32">
-                              <input type="text" placeholder="Value (e.g. 1)" name="covValue[]" value="${c.value || ''}" class="w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue text-sm">
+                              <input type="text" placeholder="Value (e.g. 1)" name="covValue[]" value="${escapeHtml(c.value || '')}" class="w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue text-sm">
                            </div>
                            <button type="button" onclick="removeRow(this)" class="text-red-400 hover:text-red-600 p-2"><i class="fas fa-trash"></i></button>
                         </div>
@@ -923,26 +969,25 @@
              return;
           }
           container.innerHTML = list.map(s => {
-             const safeName = s.name.replace(/'/g, "\\'");
              return `<div class="flex items-center justify-between py-2 border-b border-gray-100">
                 <div>
-                  <div class="text-sm font-medium text-ops-gray-dark">${s.name}</div>
-                  <div class="text-xs text-gray-400">${s.email}${s.building ? ' &middot; ' + s.building : ''}</div>
+                  <div class="text-sm font-medium text-ops-gray-dark">${escapeHtml(s.name)}</div>
+                  <div class="text-xs text-gray-400">${escapeHtml(s.email)}${s.building ? ' &middot; ' + escapeHtml(s.building) : ''}</div>
                 </div>
-                <button onclick="permanentlyDeleteStaff('${s.email}', '${safeName}')" class="text-ops-red hover:text-red-700 hover:bg-red-50 px-3 py-1 rounded text-sm font-bold transition">
+                <button data-email="${escapeHtml(s.email)}" data-name="${escapeHtml(s.name)}" onclick="permanentlyDeleteStaff(this.dataset.email, this.dataset.name)" class="text-ops-red hover:text-red-700 hover:bg-red-50 px-3 py-1 rounded text-sm font-bold transition">
                   <i class="fas fa-trash mr-1"></i> Delete
                 </button>
              </div>`;
           }).join('');
        }).withFailureHandler(err => {
-          container.innerHTML = `<p class="text-sm text-ops-red">Failed to load: ${(err.message || err)}</p>`;
+          container.innerHTML = `<p class="text-sm text-ops-red">Failed to load: ${escapeHtml(err.message || err)}</p>`;
        }).getArchivedStaff();
     }
 
     function permanentlyDeleteStaff(email, name) {
        openConfirmModal(
           "Permanently Delete Staff?",
-          `Permanently delete <strong>${name}</strong>? This removes their spreadsheet row and <strong>cannot be undone</strong>.`,
+          `Permanently delete <strong>${escapeHtml(name)}</strong>? This removes their spreadsheet row and <strong>cannot be undone</strong>.`,
           () => {
              showLoading(true);
              google.script.run.withSuccessHandler(() => {
@@ -1288,15 +1333,15 @@
                           </td>
                         ` : ''}
                         <td class="px-6 py-4 whitespace-nowrap">
-                          <div class="text-sm font-bold text-ops-blue-dark">${row.name}</div>
-                          <div class="text-xs text-ops-gray">${row.email}</div>
+                          <div class="text-sm font-bold text-ops-blue-dark">${escapeHtml(row.name)}</div>
+                          <div class="text-xs text-ops-gray">${escapeHtml(row.email)}</div>
                         </td>
-                        <td class="px-6 py-4 text-sm text-ops-gray-dark">${row.subbedFor}</td>
+                        <td class="px-6 py-4 text-sm text-ops-gray-dark">${escapeHtml(row.subbedFor)}</td>
                         <td class="px-6 py-4 text-sm text-ops-gray">
                           <div><i class="far fa-calendar mr-1"></i> ${new Date(row.date).toLocaleDateString()}</div>
-                          <div class="text-xs mt-1"><span class="bg-gray-100 px-1 rounded">${row.period}</span></div>
+                          <div class="text-xs mt-1"><span class="bg-gray-100 px-1 rounded">${escapeHtml(row.period)}</span></div>
                         </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm font-bold text-ops-blue">+${row.hours}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-bold text-ops-blue">+${escapeHtml(row.hours)}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm flex gap-2" onclick="event.stopPropagation()">
                            <button onclick="openEditEarnedModal(${row.rowIndex})" class="text-ops-gray-dark bg-white border border-gray-300 hover:bg-gray-50 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Edit">
                             <i class="fas fa-pencil-alt"></i>
@@ -1405,11 +1450,11 @@
                           </td>
                         ` : ''}
                         <td class="px-6 py-4 whitespace-nowrap">
-                          <div class="text-sm font-bold text-ops-blue-dark">${row.name}</div>
-                          <div class="text-xs text-ops-gray">${row.email}</div>
+                          <div class="text-sm font-bold text-ops-blue-dark">${escapeHtml(row.name)}</div>
+                          <div class="text-xs text-ops-gray">${escapeHtml(row.email)}</div>
                         </td>
                         <td class="px-6 py-4 text-sm text-ops-gray-dark">${new Date(row.date).toLocaleDateString()}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-ops-red font-bold">-${row.used}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-ops-red font-bold">-${escapeHtml(row.used)}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm flex gap-2" onclick="event.stopPropagation()">
                            <button onclick="openEditUsedModal(${row.rowIndex})" class="text-ops-gray-dark bg-white border border-gray-300 hover:bg-gray-50 px-3 py-2 rounded shadow-sm text-xs font-bold uppercase tracking-wide transition transform active:scale-95" title="Edit">
                             <i class="fas fa-pencil-alt"></i>
@@ -1681,7 +1726,7 @@
     function sendSingleReport(email, name) {
        openConfirmModal(
           "Send Report?",
-          `Send current TST balance report to <strong>${name}</strong>?`,
+          `Send current TST balance report to <strong>${escapeHtml(name)}</strong>?`,
           () => {
              showLoading(true);
              google.script.run.withSuccessHandler(res => {
@@ -1726,7 +1771,7 @@
                  <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400">
                    <i class="fas fa-search"></i>
                  </span>
-                 <input type="text" value="${currentQuery}" placeholder="Search staff directory..." onkeyup="filterStaffTable(this.value)" class="w-full pl-10 px-4 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-ops-blue focus:border-transparent text-sm">
+                 <input type="text" value="${escapeHtml(currentQuery)}" placeholder="Search staff directory..." onkeyup="filterStaffTable(this.value)" class="w-full pl-10 px-4 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-ops-blue focus:border-transparent text-sm">
                </div>
                
                <div class="flex items-center gap-2 h-10">
@@ -1814,8 +1859,12 @@
                 <tbody class="bg-white divide-y divide-gray-200">
                   ${sortedStaff.map(s => {
                     const isChecked = STATE.selectedEmails && STATE.selectedEmails.has(s.email);
-                    const safeName = s.name.replace(/'/g, "\\'");
-                    
+                    const eEmail = escapeHtml(s.email);
+                    const eName = escapeHtml(s.name);
+                    // Inline handlers read these via this.dataset — never interpolate the
+                    // raw values into a JS string.
+                    const rowAttrs = `data-email="${eEmail}" data-name="${eName}"`;
+
                     // Value for inputs: prioritize pendingUpdate if exists
                     const carryVal = (STATE.pendingUpdates[s.email] !== undefined && editCarry) ? STATE.pendingUpdates[s.email] : Number(s.carryOver);
                     const paidVal = (STATE.pendingUpdates[s.email] !== undefined && editPaid) ? STATE.pendingUpdates[s.email] : Number(s.paidOut);
@@ -1823,30 +1872,30 @@
                     // Carry Over / Paid Out are owned by the primary building.
                     const canEditOwned = canEditOwnedColumns(s);
                     const primaryB = s.primaryBuilding || primaryBuildingOf(s.building);
-                    const ownedLockIcon = `<i class="fas fa-lock text-gray-300 ml-1" title="Managed by the primary building (${primaryB})"></i>`;
+                    const ownedLockIcon = `<i class="fas fa-lock text-gray-300 ml-1" title="Managed by the primary building (${escapeHtml(primaryB)})"></i>`;
                     const pendingChip = s.pendingFinalize
-                      ? `<span class="ml-1 text-[10px] font-bold uppercase tracking-wide text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded" title="Will be finalized by the primary building administrator (${primaryB})"><i class="fas fa-hourglass-half mr-1"></i>Pending finalize</span>`
+                      ? `<span class="ml-1 text-[10px] font-bold uppercase tracking-wide text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded" title="Will be finalized by the primary building administrator (${escapeHtml(primaryB)})"><i class="fas fa-hourglass-half mr-1"></i>Pending finalize</span>`
                       : '';
 
                     return `
-                    <tr onclick="openStaffDetail('${s.email}', '${safeName}')" class="cursor-pointer hover:bg-ops-blue-lighter transition-colors group ${s.archived ? 'bg-gray-50 opacity-60' : ''}">
+                    <tr ${rowAttrs} onclick="openStaffDetail(this.dataset.email, this.dataset.name)" class="cursor-pointer hover:bg-ops-blue-lighter transition-colors group ${s.archived ? 'bg-gray-50 opacity-60' : ''}">
                       ${isSel ? `
                         <td class="pl-6 pr-2 py-4 whitespace-nowrap" onclick="event.stopPropagation()">
-                          <input type="checkbox" onchange="toggleStaffSelection('${s.email}', this)" ${isChecked ? 'checked' : ''} class="rounded text-ops-blue focus:ring-ops-blue border-gray-300">
+                          <input type="checkbox" ${rowAttrs} onchange="toggleStaffSelection(this.dataset.email, this)" ${isChecked ? 'checked' : ''} class="rounded text-ops-blue focus:ring-ops-blue border-gray-300">
                         </td>
                       ` : ''}
 
                       <!-- Name -->
-                      <td class="pl-6 pr-2 py-4 whitespace-nowrap text-sm font-medium text-ops-blue-dark truncate" style="${wName}" title="${s.name}">
-                         <div>${s.name} ${s.archived ? '<span class="ml-1 text-[10px] font-bold uppercase tracking-wide text-gray-500 bg-gray-200 px-1.5 py-0.5 rounded">Archived</span>' : ''}${pendingChip}</div>
-                         <div class="text-xs text-gray-400 font-normal truncate">${s.email}</div>
+                      <td class="pl-6 pr-2 py-4 whitespace-nowrap text-sm font-medium text-ops-blue-dark truncate" style="${wName}" title="${eName}">
+                         <div>${eName} ${s.archived ? '<span class="ml-1 text-[10px] font-bold uppercase tracking-wide text-gray-500 bg-gray-200 px-1.5 py-0.5 rounded">Archived</span>' : ''}${pendingChip}</div>
+                         <div class="text-xs text-gray-400 font-normal truncate">${eEmail}</div>
                       </td>
 
                       <!-- Carry Over (owned by primary building) -->
                       <td class="px-2 py-4 whitespace-nowrap text-sm text-gray-600" style="${wCol}" onclick="event.stopPropagation()">
                          ${editCarry
                            ? (canEditOwned
-                              ? `<input type="number" step="0.1" value="${carryVal}" onchange="handleInputChange('${s.email}', 'carryOver', this.value)" class="w-full p-1 border border-gray-300 rounded text-sm focus:ring-ops-blue focus:border-ops-blue">`
+                              ? `<input type="number" step="0.1" value="${escapeHtml(carryVal)}" ${rowAttrs} onchange="handleInputChange(this.dataset.email, 'carryOver', this.value)" class="w-full p-1 border border-gray-300 rounded text-sm focus:ring-ops-blue focus:border-ops-blue">`
                               : `<span class="text-gray-400">${Number(s.carryOver).toFixed(2)}${ownedLockIcon}</span>`)
                            : Number(s.carryOver).toFixed(2)
                          }
@@ -1859,7 +1908,7 @@
                       <td class="px-2 py-4 whitespace-nowrap text-sm text-gray-600" style="${wCol}" onclick="event.stopPropagation()">
                          ${editPaid
                            ? (canEditOwned
-                              ? `<input type="number" step="0.1" value="${paidVal}" onchange="handleInputChange('${s.email}', 'paidOut', this.value)" class="w-full p-1 border border-gray-300 rounded text-sm focus:ring-ops-blue focus:border-ops-blue">`
+                              ? `<input type="number" step="0.1" value="${escapeHtml(paidVal)}" ${rowAttrs} onchange="handleInputChange(this.dataset.email, 'paidOut', this.value)" class="w-full p-1 border border-gray-300 rounded text-sm focus:ring-ops-blue focus:border-ops-blue">`
                               : `<span class="text-gray-400">${Number(s.paidOut).toFixed(2)}${ownedLockIcon}</span>`)
                            : Number(s.paidOut).toFixed(2)
                          }
@@ -1871,17 +1920,21 @@
                       <td class="px-2 py-4 whitespace-nowrap text-center" style="${wCol}" onclick="event.stopPropagation()">
                          ${isManage ? (
                            s.archived ?
-                           `<button onclick="restoreStaffMember('${s.email}', '${safeName}')" class="text-green-600 hover:text-green-800 hover:bg-green-50 p-2 rounded-full transition" title="Restore Staff">
+                           `<button ${rowAttrs} onclick="restoreStaffMember(this.dataset.email, this.dataset.name)" class="text-green-600 hover:text-green-800 hover:bg-green-50 p-2 rounded-full transition" title="Restore Staff">
                               <i class="fas fa-rotate-left"></i>
                             </button>` :
-                           `<button onclick="openEditStaffModal('${s.email}')" class="text-ops-blue hover:text-ops-blue-dark hover:bg-blue-50 p-2 rounded-full transition" title="Edit Staff">
+                           `<button ${rowAttrs} onclick="openEditStaffModal(this.dataset.email)" class="text-ops-blue hover:text-ops-blue-dark hover:bg-blue-50 p-2 rounded-full transition" title="Edit Staff">
                               <i class="fas fa-pencil-alt"></i>
                             </button>
-                            <button onclick="archiveStaffMember('${s.email}', '${safeName}')" class="text-ops-red hover:text-red-700 hover:bg-red-50 p-2 rounded-full transition" title="Archive Staff">
+                            <button ${rowAttrs} onclick="archiveStaffMember(this.dataset.email, this.dataset.name)" class="text-ops-red hover:text-red-700 hover:bg-red-50 p-2 rounded-full transition" title="Archive Staff">
                               <i class="fas fa-times"></i>
                             </button>`
                          ) : `
-                           <button onclick="sendSingleReport('${s.email}', '${safeName}')" class="text-ops-blue hover:text-ops-blue-dark hover:bg-blue-50 p-2 rounded-full transition" title="Send Report">
+                           ${(s.role || '').toString().trim() === 'Teacher' ? `
+                           <button ${rowAttrs} onclick="startViewAs(this.dataset.email)" class="text-ops-blue hover:text-ops-blue-dark hover:bg-blue-50 p-2 rounded-full transition" title="View as ${eName}">
+                              <i class="fas fa-eye"></i>
+                           </button>` : ''}
+                           <button ${rowAttrs} onclick="sendSingleReport(this.dataset.email, this.dataset.name)" class="text-ops-blue hover:text-ops-blue-dark hover:bg-blue-50 p-2 rounded-full transition" title="Send Report">
                               <i class="fas fa-paper-plane"></i>
                            </button>
                          `}
@@ -1907,6 +1960,69 @@
         if(isSel) updateSendButton();
     }
 
+    // --- View As ---
+    // Lets an admin use the app exactly as a teacher in their building sees it.
+    // The admin's session is set aside in STATE.viewAs and restored on exit;
+    // anything submitted meanwhile is recorded under the teacher's email.
+
+    function startViewAs(email) {
+      if (STATE.viewAs) return;
+      showLoading(true);
+      google.script.run.withSuccessHandler(data => {
+        showLoading(false);
+        closeModal();
+        STATE.viewAs = { admin: STATE.user, building: STATE.building };
+        STATE.user = data;
+        STATE.building = data.building;
+        STATE.editMode = { carryOver: false, paidOut: false };
+        STATE.pendingUpdates = {};
+
+        document.getElementById('admin-add-btn').classList.add('hidden');
+        renderViewAsBanner();
+        updateUserInfo();
+        renderNav();
+        switchTab('teacher-totals');
+        window.scrollTo(0, 0);
+      }).withFailureHandler(err => {
+        showLoading(false);
+        showToast("Couldn't view as this staff member: " + err, "error");
+      }).getViewAsData(email, STATE.building);
+    }
+
+    function exitViewAs() {
+      if (!STATE.viewAs) return;
+      const saved = STATE.viewAs;
+      STATE.viewAs = null;
+      STATE.user = saved.admin;
+      STATE.building = saved.building;
+
+      closeModal();
+      document.getElementById('profile-dropdown').classList.add('hidden');
+      document.getElementById('admin-add-btn').classList.remove('hidden');
+      renderViewAsBanner();
+      updateUserInfo();
+      renderNav();
+      updateBadges();
+      switchTab('admin-totals');
+    }
+
+    function renderViewAsBanner() {
+      const banner = document.getElementById('view-as-banner');
+      if (!STATE.viewAs) {
+        banner.classList.add('hidden');
+        return;
+      }
+      // Built from nodes (not innerHTML) so directory names/emails can't inject markup.
+      const text = document.getElementById('view-as-text');
+      const name = document.createElement('strong');
+      name.textContent = STATE.user.name;
+      const email = document.createElement('span');
+      email.className = 'opacity-75';
+      email.textContent = `(${STATE.user.email})`;
+      text.replaceChildren('Viewing as ', name, ' ', email, ' — anything you submit is recorded as this staff member.');
+      banner.classList.remove('hidden');
+    }
+
     // --- Staff Management (Add / Edit / Archive / Restore) ---
 
     function roleOptionsHtml(current) {
@@ -1920,8 +2036,8 @@
           const name = STATE.config[code].name || code;
           const checked = selected.includes(code) ? 'checked' : '';
           return `<label class="flex items-center gap-2 text-sm text-ops-gray-dark py-1 cursor-pointer">
-             <input type="checkbox" name="building" value="${code}" ${checked} class="rounded text-ops-blue focus:ring-ops-blue border-gray-300">
-             ${code} - ${name}
+             <input type="checkbox" name="building" value="${escapeHtml(code)}" ${checked} class="rounded text-ops-blue focus:ring-ops-blue border-gray-300">
+             ${escapeHtml(code)} - ${escapeHtml(name)}
           </label>`;
        }).join('');
     }
@@ -1934,8 +2050,8 @@
     function staffFormFieldsHtml(s) {
        // s is undefined for Add, or a staff object for Edit (email locked).
        const isEdit = !!s;
-       const name = s ? (s.name || '').replace(/"/g, '&quot;') : '';
-       const email = s ? s.email : '';
+       const name = s ? escapeHtml(s.name || '') : '';
+       const email = s ? escapeHtml(s.email) : '';
        const role = s ? s.role : 'Teacher';
        const carry = s ? Number(s.carryOver) : 0;
        const paid = s ? Number(s.paidOut) : 0;
@@ -1950,7 +2066,7 @@
        const ownedRO = canEditOwned ? '' : 'readonly';
        const ownedCls = canEditOwned ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed';
        const ownedNote = canEditOwned ? '' :
-          `<p class="text-[11px] text-gray-500 mt-1"><i class="fas fa-lock mr-1"></i>Managed by the primary building (${primaryB}).</p>`;
+          `<p class="text-[11px] text-gray-500 mt-1"><i class="fas fa-lock mr-1"></i>Managed by the primary building (${escapeHtml(primaryB)}).</p>`;
        const myBuildingName = (STATE.config[STATE.building] && STATE.config[STATE.building].name) ? STATE.config[STATE.building].name : STATE.building;
        const buildingBlock = isSuper ? `
            <div>
@@ -1961,7 +2077,7 @@
          ` : `
            <div>
              <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Building</label>
-             <div class="p-2 bg-gray-100 rounded border border-gray-200 font-bold text-ops-gray-dark">${isEdit ? (buildingCsv || myBuildingName) : (myBuildingName + ' (' + STATE.building + ')')}</div>
+             <div class="p-2 bg-gray-100 rounded border border-gray-200 font-bold text-ops-gray-dark">${escapeHtml(isEdit ? (buildingCsv || myBuildingName) : (myBuildingName + ' (' + STATE.building + ')'))}</div>
              <p class="text-xs text-gray-500 mt-1">${isEdit ? "Building assignment is managed per building. To add this person to another building, that building's admin adds them there." : "New staff are added to your building. If they also work in another building, that building's admin adds them separately."}</p>
            </div>
          `;
@@ -2018,7 +2134,7 @@
            ${staffFormFieldsHtml(s)}
            <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-100">
              <button onclick="closeModal()" class="px-4 py-2 border border-gray-300 rounded text-gray-600 hover:bg-gray-50 font-bold text-sm">Cancel</button>
-             <button onclick="submitEditStaff('${s.email}')" class="px-4 py-2 bg-ops-blue text-white rounded hover:bg-ops-blue-dark font-bold text-sm shadow"><i class="fas fa-save mr-2"></i>Save Changes</button>
+             <button data-email="${escapeHtml(s.email)}" onclick="submitEditStaff(this.dataset.email)" class="px-4 py-2 bg-ops-blue text-white rounded hover:bg-ops-blue-dark font-bold text-sm shadow"><i class="fas fa-save mr-2"></i>Save Changes</button>
            </div>
          </div>`;
        showModal("Edit Staff Member", html, 'max-w-2xl');
@@ -2080,7 +2196,7 @@
        const bName = (STATE.config[STATE.building] && STATE.config[STATE.building].name) ? STATE.config[STATE.building].name : STATE.building;
        openConfirmModal(
           "Archive Staff Member?",
-          `Archive <strong>${name}</strong> from <strong>${bName}</strong>? They'll be removed from this building's directory (but stay active in any other building they're assigned to). You can restore them anytime with the "Show archived" toggle.`,
+          `Archive <strong>${escapeHtml(name)}</strong> from <strong>${escapeHtml(bName)}</strong>? They'll be removed from this building's directory (but stay active in any other building they're assigned to). You can restore them anytime with the "Show archived" toggle.`,
           () => {
              showLoading(true);
              google.script.run.withSuccessHandler(() => {
@@ -2124,27 +2240,29 @@
        document.getElementById('profile-dropdown').classList.add('hidden');
        const bName = (STATE.config[STATE.building] && STATE.config[STATE.building].name) ? STATE.config[STATE.building].name : STATE.building;
        const cap = (STATE.config[STATE.building] && STATE.config[STATE.building].carryOverMax != null) ? STATE.config[STATE.building].carryOverMax : 12;
-       const suggested = suggestSchoolYearName();
+       const suggested = escapeHtml(suggestSchoolYearName());
+       const eName = escapeHtml(bName);
+       const eCap = escapeHtml(cap);
        const html = `
          <div class="p-1">
            <div class="bg-ops-red-lighter border border-ops-red rounded p-3 mb-4 text-sm text-ops-red">
              <i class="fas fa-exclamation-triangle mr-2"></i>
-             This finalizes <strong>${bName}</strong>. Staff whose <strong>primary building is ${bName}</strong> have their combined remaining balance rolled into Carry Over, Paid Out reset to 0, and all their transactions archived (Earned/Used reset to 0). This cannot be undone from the app.
+             This finalizes <strong>${eName}</strong>. Staff whose <strong>primary building is ${eName}</strong> have their combined remaining balance rolled into Carry Over, Paid Out reset to 0, and all their transactions archived (Earned/Used reset to 0). This cannot be undone from the app.
            </div>
            <div class="bg-blue-50 border border-blue-100 rounded p-3 mb-4 text-sm text-blue-800">
              <i class="fas fa-info-circle mr-2"></i>
              Staff who also work here but whose primary building is elsewhere are <strong>not</strong> changed — they're flagged "Pending finalize" until their primary building finalizes them.
            </div>
            <div class="bg-amber-50 border border-amber-200 rounded p-3 mb-4 text-sm text-amber-800">
-             <i class="fas fa-exclamation-triangle mr-2"></i><strong>Before you finalize ${bName}:</strong>
+             <i class="fas fa-exclamation-triangle mr-2"></i><strong>Before you finalize ${eName}:</strong>
              <ul class="list-disc ml-5 mt-2 space-y-1">
                <li><strong>Update Paid Out hours first.</strong> Paying out hours now is the only way to keep a balance above the cap from being lost.</li>
-               <li><strong>Carry Over is capped at ${cap} hours here.</strong> Any balance above ${cap} is forfeited when it rolls into next year.</li>
+               <li><strong>Carry Over is capped at ${eCap} hours here.</strong> Any balance above ${eCap} is forfeited when it rolls into next year.</li>
              </ul>
            </div>
            <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Archive name</label>
            <input type="text" id="finalize-name" value="${suggested}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
-           <p class="text-xs text-gray-500 mt-1">A new sheet tab with this name will hold the year-end totals for ${bName}.</p>
+           <p class="text-xs text-gray-500 mt-1">A new sheet tab with this name will hold the year-end totals for ${eName}.</p>
            <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-100">
              <button onclick="closeModal()" class="px-4 py-2 border border-gray-300 rounded text-gray-600 hover:bg-gray-50 font-bold text-sm">Cancel</button>
              <button onclick="submitFinalizeYear()" class="px-4 py-2 bg-ops-red text-white rounded hover:bg-red-700 font-bold text-sm shadow"><i class="fas fa-flag-checkered mr-2"></i>Finalize Year</button>
@@ -2158,7 +2276,7 @@
        if (!name) { showToast("Please enter a name for the archive.", "error"); return; }
        openConfirmModal(
           "Finalize and roll over?",
-          `This will create <strong>${name}</strong>, roll the combined balances of staff whose primary building is here into Carry Over, and archive their transactions. Shared staff with a primary elsewhere are only flagged. This cannot be undone. Continue?`,
+          `This will create <strong>${escapeHtml(name)}</strong>, roll the combined balances of staff whose primary building is here into Carry Over, and archive their transactions. Shared staff with a primary elsewhere are only flagged. This cannot be undone. Continue?`,
           () => runFinalize(name, false),
           "Finalize",
           "bg-ops-red hover:bg-red-700"
@@ -2208,16 +2326,15 @@
        const bName = (STATE.config[STATE.building] && STATE.config[STATE.building].name) ? STATE.config[STATE.building].name : STATE.building;
        const rows = res.overCap.map(o => `
           <tr class="border-t border-gray-100">
-             <td class="px-3 py-2 text-sm font-medium text-ops-gray-dark">${o.name}</td>
+             <td class="px-3 py-2 text-sm font-medium text-ops-gray-dark">${escapeHtml(o.name)}</td>
              <td class="px-3 py-2 text-sm text-right text-gray-600">${Number(o.projected).toFixed(2)}</td>
              <td class="px-3 py-2 text-sm text-right font-bold text-ops-red">${Number(o.over).toFixed(2)}</td>
           </tr>`).join('');
-       const safeName = name.replace(/'/g, "\\'");
        const html = `
          <div class="p-1">
            <div class="bg-amber-50 border border-amber-200 rounded p-3 mb-4 text-sm text-amber-800">
              <i class="fas fa-exclamation-triangle mr-2"></i>
-             These staff in <strong>${bName}</strong> are above the <strong>${cap}-hour</strong> Carry Over cap. If you finalize now, the hours shown under <strong>Over by</strong> will be <strong>forfeited</strong>.
+             These staff in <strong>${escapeHtml(bName)}</strong> are above the <strong>${escapeHtml(cap)}-hour</strong> Carry Over cap. If you finalize now, the hours shown under <strong>Over by</strong> will be <strong>forfeited</strong>.
            </div>
            <div class="overflow-x-auto max-h-[45vh] border border-gray-200 rounded mb-4">
              <table class="min-w-full">
@@ -2234,7 +2351,7 @@
            <p class="text-xs text-gray-500 mb-4">To keep these hours, close this, record their <strong>Paid Out</strong> hours in the directory (which lowers the balance), then finalize again. Otherwise you can finalize now and forfeit the excess.</p>
            <div class="flex justify-end gap-3 pt-4 border-t border-gray-100">
              <button onclick="closeModal()" class="px-4 py-2 border border-gray-300 rounded text-gray-600 hover:bg-gray-50 font-bold text-sm">Cancel</button>
-             <button onclick="closeModal(); runFinalize('${safeName}', true);" class="px-4 py-2 bg-ops-red text-white rounded hover:bg-red-700 font-bold text-sm shadow"><i class="fas fa-flag-checkered mr-2"></i>Finalize anyway — forfeit excess</button>
+             <button data-name="${escapeHtml(name)}" onclick="const n = this.dataset.name; closeModal(); runFinalize(n, true);" class="px-4 py-2 bg-ops-red text-white rounded hover:bg-red-700 font-bold text-sm shadow"><i class="fas fa-flag-checkered mr-2"></i>Finalize anyway — forfeit excess</button>
            </div>
          </div>`;
        showModal("Some balances exceed the cap", html, 'max-w-xl');
@@ -2251,15 +2368,14 @@
              return;
           }
           body.innerHTML = list.map(a => {
-             const safe = a.name.replace(/'/g, "\\'");
-             return `<button onclick="viewArchivedYear('${safe}')" class="w-full text-left flex items-center justify-between px-4 py-3 border border-gray-200 rounded mb-2 hover:bg-ops-blue-lighter transition">
-                <span class="text-sm font-medium text-ops-gray-dark"><i class="fas fa-box-archive mr-2 text-ops-blue"></i>${a.name}</span>
-                <span class="text-xs text-gray-400">${a.building}</span>
+             return `<button data-name="${escapeHtml(a.name)}" onclick="viewArchivedYear(this.dataset.name)" class="w-full text-left flex items-center justify-between px-4 py-3 border border-gray-200 rounded mb-2 hover:bg-ops-blue-lighter transition">
+                <span class="text-sm font-medium text-ops-gray-dark"><i class="fas fa-box-archive mr-2 text-ops-blue"></i>${escapeHtml(a.name)}</span>
+                <span class="text-xs text-gray-400">${escapeHtml(a.building)}</span>
              </button>`;
           }).join('');
        }).withFailureHandler(err => {
           const body = document.getElementById('archived-years-body');
-          if (body) body.innerHTML = `<p class="text-sm text-ops-red">Failed to load: ${(err.message || err)}</p>`;
+          if (body) body.innerHTML = `<p class="text-sm text-ops-red">Failed to load: ${escapeHtml(err.message || err)}</p>`;
        }).listArchivedYears(STATE.building);
     }
 
@@ -2267,12 +2383,12 @@
        showLoading(true);
        google.script.run.withSuccessHandler(data => {
           showLoading(false);
-          const headerCells = data.headers.map(h => `<th class="px-3 py-2 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50">${h}</th>`).join('');
-          const bodyRows = data.rows.map(r => `<tr class="border-t border-gray-100">${r.map((c, ci) => `<td class="px-3 py-2 text-sm ${ci === 0 ? 'font-medium text-ops-blue-dark' : 'text-gray-600'}">${typeof c === 'number' ? Number(c).toFixed(2) : c}</td>`).join('')}</tr>`).join('');
+          const headerCells = data.headers.map(h => `<th class="px-3 py-2 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50">${escapeHtml(h)}</th>`).join('');
+          const bodyRows = data.rows.map(r => `<tr class="border-t border-gray-100">${r.map((c, ci) => `<td class="px-3 py-2 text-sm ${ci === 0 ? 'font-medium text-ops-blue-dark' : 'text-gray-600'}">${typeof c === 'number' ? Number(c).toFixed(2) : escapeHtml(c)}</td>`).join('')}</tr>`).join('');
           const html = `
             <div class="p-1">
               <div class="flex items-center justify-between mb-3">
-                <h3 class="text-sm font-bold text-ops-blue-dark">${data.name}</h3>
+                <h3 class="text-sm font-bold text-ops-blue-dark">${escapeHtml(data.name)}</h3>
                 <button onclick="openArchivedYearsModal()" class="text-xs text-ops-blue hover:underline"><i class="fas fa-arrow-left mr-1"></i>Back to list</button>
               </div>
               <div class="overflow-x-auto max-h-[60vh] border border-gray-200 rounded">
@@ -2289,13 +2405,6 @@
     // --- Snapshots (non-destructive directory captures) ---
     let _snapshotCache = [];
 
-    function snapEsc(str) {
-       return (str === null || str === undefined ? '' : String(str))
-          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-    function snapEscAttr(str) {
-       return snapEsc(str).replace(/"/g, '&quot;');
-    }
     function formatSnapDate(d) {
        if (!d) return '';
        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(d));
@@ -2323,20 +2432,20 @@
           body.innerHTML = _snapshotCache.map(s => `
             <div class="flex items-center justify-between gap-3 px-4 py-3 border border-gray-200 rounded mb-2 hover:bg-ops-blue-lighter transition">
               <div class="min-w-0">
-                <div class="text-sm font-medium text-ops-gray-dark truncate"><i class="fas fa-camera mr-2 text-ops-blue"></i>${snapEsc(s.title)}</div>
-                ${s.description ? `<div class="text-xs text-gray-500 truncate mt-0.5">${snapEsc(s.description)}</div>` : ''}
-                <div class="text-xs text-gray-400 mt-0.5">${formatSnapDate(s.date)} &middot; ${snapEsc(s.building)}</div>
+                <div class="text-sm font-medium text-ops-gray-dark truncate"><i class="fas fa-camera mr-2 text-ops-blue"></i>${escapeHtml(s.title)}</div>
+                ${s.description ? `<div class="text-xs text-gray-500 truncate mt-0.5">${escapeHtml(s.description)}</div>` : ''}
+                <div class="text-xs text-gray-400 mt-0.5">${escapeHtml(formatSnapDate(s.date))} &middot; ${escapeHtml(s.building)}</div>
               </div>
               <div class="flex items-center gap-2 flex-shrink-0">
-                <button onclick="viewSnapshot('${s.id}')" class="text-xs text-ops-blue hover:underline px-2 py-1"><i class="fas fa-eye mr-1"></i>View</button>
-                <button onclick="restoreSnapshotConfirm('${s.id}')" class="text-xs text-green-700 hover:underline px-2 py-1"><i class="fas fa-clock-rotate-left mr-1"></i>Restore</button>
-                <button onclick="openEditSnapshotModal('${s.id}')" class="text-xs text-gray-600 hover:text-ops-blue px-2 py-1"><i class="fas fa-pen mr-1"></i>Edit</button>
-                <button onclick="deleteSnapshotConfirm('${s.id}')" class="text-xs text-ops-red hover:underline px-2 py-1"><i class="fas fa-trash mr-1"></i>Delete</button>
+                <button data-id="${escapeHtml(s.id)}" onclick="viewSnapshot(this.dataset.id)" class="text-xs text-ops-blue hover:underline px-2 py-1"><i class="fas fa-eye mr-1"></i>View</button>
+                <button data-id="${escapeHtml(s.id)}" onclick="restoreSnapshotConfirm(this.dataset.id)" class="text-xs text-green-700 hover:underline px-2 py-1"><i class="fas fa-clock-rotate-left mr-1"></i>Restore</button>
+                <button data-id="${escapeHtml(s.id)}" onclick="openEditSnapshotModal(this.dataset.id)" class="text-xs text-gray-600 hover:text-ops-blue px-2 py-1"><i class="fas fa-pen mr-1"></i>Edit</button>
+                <button data-id="${escapeHtml(s.id)}" onclick="deleteSnapshotConfirm(this.dataset.id)" class="text-xs text-ops-red hover:underline px-2 py-1"><i class="fas fa-trash mr-1"></i>Delete</button>
               </div>
             </div>`).join('');
        }).withFailureHandler(err => {
           const body = document.getElementById('snapshots-body');
-          if (body) body.innerHTML = `<p class="text-sm text-ops-red">Failed to load: ${(err.message || err)}</p>`;
+          if (body) body.innerHTML = `<p class="text-sm text-ops-red">Failed to load: ${escapeHtml(err.message || err)}</p>`;
        }).listSnapshots();
     }
 
@@ -2354,13 +2463,13 @@
        if (buildings.length > 1) {
           const opts = buildings.map(b => {
              const bn = (STATE.config && STATE.config[b] && STATE.config[b].name) ? STATE.config[b].name : b;
-             return `<option value="${b}" ${b === STATE.building ? 'selected' : ''}>${snapEsc(bn)} (${b})</option>`;
+             return `<option value="${escapeHtml(b)}" ${b === STATE.building ? 'selected' : ''}>${escapeHtml(bn)} (${escapeHtml(b)})</option>`;
           }).join('');
           buildingField = `
              <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2 mt-4">Building</label>
              <select id="snapshot-building" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue bg-white">${opts}</select>`;
        } else {
-          buildingField = `<input type="hidden" id="snapshot-building" value="${snapEscAttr(buildings[0])}">`;
+          buildingField = `<input type="hidden" id="snapshot-building" value="${escapeHtml(buildings[0])}">`;
        }
 
        const html = `
@@ -2404,22 +2513,22 @@
        showLoading(true);
        google.script.run.withSuccessHandler(data => {
           showLoading(false);
-          const headerCells = data.headers.map(h => `<th class="px-3 py-2 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50">${h}</th>`).join('');
+          const headerCells = data.headers.map(h => `<th class="px-3 py-2 text-left text-xs font-bold text-ops-gray uppercase tracking-wider bg-gray-50">${escapeHtml(h)}</th>`).join('');
           const bodyRows = data.rows.length
-             ? data.rows.map(r => `<tr class="border-t border-gray-100">${r.map((c, ci) => `<td class="px-3 py-2 text-sm ${ci === 0 ? 'font-medium text-ops-blue-dark' : 'text-gray-600'}">${typeof c === 'number' ? Number(c).toFixed(2) : c}</td>`).join('')}</tr>`).join('')
+             ? data.rows.map(r => `<tr class="border-t border-gray-100">${r.map((c, ci) => `<td class="px-3 py-2 text-sm ${ci === 0 ? 'font-medium text-ops-blue-dark' : 'text-gray-600'}">${typeof c === 'number' ? Number(c).toFixed(2) : escapeHtml(c)}</td>`).join('')}</tr>`).join('')
              : `<tr><td colspan="${data.headers.length}" class="px-3 py-3 text-sm text-gray-400 text-center">No staff in this snapshot.</td></tr>`;
           const html = `
             <div class="p-1">
               <div class="flex items-start justify-between mb-3 gap-3">
                 <div class="min-w-0">
-                  <h3 class="text-sm font-bold text-ops-blue-dark">${snapEsc(data.title)}</h3>
-                  ${data.description ? `<p class="text-xs text-gray-500 mt-0.5">${snapEsc(data.description)}</p>` : ''}
-                  <p class="text-xs text-gray-400 mt-0.5">${formatSnapDate(data.date)} &middot; ${snapEsc(data.building)}</p>
+                  <h3 class="text-sm font-bold text-ops-blue-dark">${escapeHtml(data.title)}</h3>
+                  ${data.description ? `<p class="text-xs text-gray-500 mt-0.5">${escapeHtml(data.description)}</p>` : ''}
+                  <p class="text-xs text-gray-400 mt-0.5">${escapeHtml(formatSnapDate(data.date))} &middot; ${escapeHtml(data.building)}</p>
                 </div>
                 <div class="flex items-center gap-3 flex-shrink-0">
-                  <button onclick="restoreSnapshotConfirm('${data.id}')" class="text-xs text-green-700 hover:underline"><i class="fas fa-clock-rotate-left mr-1"></i>Restore</button>
-                  <button onclick="openEditSnapshotModal('${data.id}')" class="text-xs text-gray-600 hover:text-ops-blue"><i class="fas fa-pen mr-1"></i>Edit</button>
-                  <button onclick="deleteSnapshotConfirm('${data.id}')" class="text-xs text-ops-red hover:underline"><i class="fas fa-trash mr-1"></i>Delete</button>
+                  <button data-id="${escapeHtml(data.id)}" onclick="restoreSnapshotConfirm(this.dataset.id)" class="text-xs text-green-700 hover:underline"><i class="fas fa-clock-rotate-left mr-1"></i>Restore</button>
+                  <button data-id="${escapeHtml(data.id)}" onclick="openEditSnapshotModal(this.dataset.id)" class="text-xs text-gray-600 hover:text-ops-blue"><i class="fas fa-pen mr-1"></i>Edit</button>
+                  <button data-id="${escapeHtml(data.id)}" onclick="deleteSnapshotConfirm(this.dataset.id)" class="text-xs text-ops-red hover:underline"><i class="fas fa-trash mr-1"></i>Delete</button>
                   <button onclick="openSnapshotsModal()" class="text-xs text-ops-blue hover:underline"><i class="fas fa-arrow-left mr-1"></i>Back</button>
                 </div>
               </div>
@@ -2451,14 +2560,14 @@
        const html = `
          <div class="p-1">
            <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Title</label>
-           <input type="text" id="snapshot-edit-title" value="${snapEscAttr(s.title)}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+           <input type="text" id="snapshot-edit-title" value="${escapeHtml(s.title)}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
            <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2 mt-4">Description</label>
-           <textarea id="snapshot-edit-description" rows="3" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">${snapEsc(s.description)}</textarea>
+           <textarea id="snapshot-edit-description" rows="3" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">${escapeHtml(s.description)}</textarea>
            <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2 mt-4">Date</label>
-           <input type="date" id="snapshot-edit-date" value="${snapEscAttr(s.date)}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+           <input type="date" id="snapshot-edit-date" value="${escapeHtml(s.date)}" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
            <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-100">
              <button onclick="openSnapshotsModal()" class="px-4 py-2 border border-gray-300 rounded text-gray-600 hover:bg-gray-50 font-bold text-sm">Cancel</button>
-             <button onclick="submitEditSnapshot('${s.id}')" class="px-4 py-2 bg-ops-blue text-white rounded hover:bg-ops-blue-dark font-bold text-sm shadow"><i class="fas fa-save mr-2"></i>Save</button>
+             <button data-id="${escapeHtml(s.id)}" onclick="submitEditSnapshot(this.dataset.id)" class="px-4 py-2 bg-ops-blue text-white rounded hover:bg-ops-blue-dark font-bold text-sm shadow"><i class="fas fa-save mr-2"></i>Save</button>
            </div>
          </div>`;
        showModal("Edit Snapshot", html, 'max-w-xl');
@@ -2484,7 +2593,7 @@
        const label = s ? s.title : 'this snapshot';
        openConfirmModal(
           "Delete snapshot?",
-          `This permanently deletes <strong>${snapEsc(label)}</strong>. This cannot be undone. Continue?`,
+          `This permanently deletes <strong>${escapeHtml(label)}</strong>. This cannot be undone. Continue?`,
           () => {
              showLoading(true);
              google.script.run.withSuccessHandler(() => {
@@ -2520,11 +2629,11 @@
        const when = formatSnapDate(s.date);
        const msg = `
          <div class="text-left text-sm text-gray-600 space-y-2">
-           <p>This reverts <strong>${snapEsc(bldg)}</strong> to <strong>${snapEsc(title)}</strong>${when ? ' (' + when + ')' : ''}. Afterward every column in each row will match this snapshot.</p>
+           <p>This reverts <strong>${escapeHtml(bldg)}</strong> to <strong>${escapeHtml(title)}</strong>${when ? ' (' + escapeHtml(when) + ')' : ''}. Afterward every column in each row will match this snapshot.</p>
            <ul class="list-disc pl-5 space-y-1">
              <li>The building's current approved transactions are <strong>archived</strong> (recoverable), then the snapshot's transactions are restored — so Earned and Used match the snapshot.</li>
-             <li>Carry Over and Paid Out are reset to the snapshot values for staff whose <strong>primary building is ${snapEsc(bldg)}</strong>.</li>
-             <li>Staff who only earn hours in ${snapEsc(bldg)} (primary building elsewhere) keep their current Carry Over / Paid Out — those belong to their primary building's admin.</li>
+             <li>Carry Over and Paid Out are reset to the snapshot values for staff whose <strong>primary building is ${escapeHtml(bldg)}</strong>.</li>
+             <li>Staff who only earn hours in ${escapeHtml(bldg)} (primary building elsewhere) keep their current Carry Over / Paid Out — those belong to their primary building's admin.</li>
              <li>Staff added after the snapshot are left unchanged (no staff are deleted).</li>
              <li><strong>No other building is touched.</strong> This cannot be undone from the app.</li>
            </ul>
@@ -2540,7 +2649,7 @@
                 if (res && res.nonPrimarySkipped) {
                    extra = ` (${res.nonPrimarySkipped} staff owned by another building kept their Carry Over/Paid Out)`;
                 }
-                showToast(`Restored ${snapEsc(bldg)} to "${snapEsc(title)}".${extra}`, "success");
+                showToast(`Restored ${bldg} to "${title}".${extra}`, "success");
                 if (STATE.currentTab === 'admin-totals') loadAdminTotals();
                 updateBadges();
              }).withFailureHandler(err => {
@@ -2557,7 +2666,7 @@
 
     function renderTeacherSubmit() {
       const sortedStaff = sortStaffData(STATE.user.staffData, STATE.sortOption);
-      const staffOptions = sortedStaff.map(s => `<option value="${s.name}">${s.name}</option>`).join('');
+      const staffOptions = sortedStaff.map(s => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join('');
       const bConfig = STATE.config[STATE.building] || STATE.config[STATE.defaultBuilding];
       const isPeriods = bConfig && bConfig.scheduleType === 'periods';
 
@@ -2576,11 +2685,11 @@
         timeInputHtml = `
             <div class="col-span-1">
               <label class="block text-sm font-bold text-ops-gray-dark mb-2">Start Time</label>
-              <input type="time" name="startTime" step="${step}" required class="block w-full rounded border-gray-300 p-2 border">
+              <input type="time" name="startTime" step="${escapeHtml(step)}" required class="block w-full rounded border-gray-300 p-2 border">
             </div>
             <div class="col-span-1">
               <label class="block text-sm font-bold text-ops-gray-dark mb-2">End Time</label>
-              <input type="time" name="endTime" step="${step}" required class="block w-full rounded border-gray-300 p-2 border">
+              <input type="time" name="endTime" step="${escapeHtml(step)}" required class="block w-full rounded border-gray-300 p-2 border">
             </div>`;
       }
 
@@ -2592,9 +2701,9 @@
             <div class="flex gap-4">
                ${bConfig.coverageTypes.map((t, idx) => `
                   <label class="flex-1 cursor-pointer">
-                    <input type="radio" name="duration" value="${t.value}" ${idx===0?'checked':''} class="peer sr-only">
+                    <input type="radio" name="duration" value="${escapeHtml(t.value)}" ${idx===0?'checked':''} class="peer sr-only">
                     <div class="rounded-lg border border-gray-300 p-4 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
-                      <div class="font-bold">${t.label}</div>
+                      <div class="font-bold">${escapeHtml(t.label)}</div>
                     </div>
                   </label>
                `).join('')}
@@ -2664,7 +2773,7 @@
 
     function renderTeacherRequest() {
       const currentUserData = STATE.user.staffData.find(s => s.email === STATE.user.email);
-      const maxHours = currentUserData ? currentUserData.total : 0;
+      const maxHours = currentUserData ? (Number(currentUserData.total) || 0) : 0;
 
       const html = `
         <div class="max-w-xl mx-auto bg-white rounded-lg shadow-lg overflow-hidden border border-gray-200">
@@ -2679,7 +2788,7 @@
               <span class="text-2xl font-bold text-ops-blue">${Number(maxHours).toFixed(2)} <span class="text-sm font-normal text-ops-gray">hrs</span></span>
             </div>
 
-            <form onsubmit="handleUsageSubmit(event, '${STATE.user.email}', '${STATE.user.name}', ${maxHours})">
+            <form data-email="${escapeHtml(STATE.user.email)}" data-name="${escapeHtml(STATE.user.name)}" data-max="${maxHours}" onsubmit="handleUsageSubmit(event, this.dataset.email, this.dataset.name, Number(this.dataset.max))">
               
               <div class="mb-6">
                 <label class="block text-sm font-bold text-ops-gray-dark mb-2">Date of Usage</label>
@@ -2719,7 +2828,7 @@
         function updateAdminCreateSort(val) {
       STATE.sortOption = val;
       const staffList = sortStaffData(STATE.user.staffData, STATE.sortOption);
-      const staffOptions = staffList.map(s => `<option value="${s.email}" data-name="${s.name}" data-max="${s.total}">${s.name}</option>`).join('');
+      const staffOptions = staffList.map(s => `<option value="${escapeHtml(s.email)}" data-name="${escapeHtml(s.name)}" data-max="${escapeHtml(s.total)}">${escapeHtml(s.name)}</option>`).join('');
 
       const earnTeacher = document.getElementById('earn-teacher-select');
       const earnSubStaff = document.getElementById('earn-sub-staff-select');
@@ -2741,7 +2850,7 @@
         function updateTeacherSubmitSort(val) {
       STATE.sortOption = val;
       const sortedStaff = sortStaffData(STATE.user.staffData, STATE.sortOption);
-      const staffOptions = sortedStaff.map(s => `<option value="${s.name}">${s.name}</option>`).join('');
+      const staffOptions = sortedStaff.map(s => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join('');
 
       const dropdown = document.querySelector('select[name="subbedNameDropdown"]');
       if(dropdown) {
@@ -3013,7 +3122,7 @@
       STATE.requestQueue = []; // Reset Queue
       
       const staffList = sortStaffData(STATE.user.staffData, STATE.sortOption);
-      const staffOptions = staffList.map(s => `<option value="${s.email}" data-name="${s.name}" data-max="${s.total}">${s.name}</option>`).join('');
+      const staffOptions = staffList.map(s => `<option value="${escapeHtml(s.email)}" data-name="${escapeHtml(s.name)}" data-max="${escapeHtml(s.total)}">${escapeHtml(s.name)}</option>`).join('');
       
       const html = `
         <!-- Modal Tabs -->
@@ -3206,7 +3315,7 @@
 
         STATE.requestQueue.push({
           type: 'earned',
-          summary: `<strong class="text-ops-blue">Earned</strong>: ${teacherName} (Sub: ${subName}) - ${date}`,
+          summary: `<strong class="text-ops-blue">Earned</strong>: ${escapeHtml(teacherName)} (Sub: ${escapeHtml(subName)}) - ${escapeHtml(date)}`,
           payload: {
             email: email,
             subbedForType: subType,
@@ -3239,7 +3348,7 @@
 
         STATE.requestQueue.push({
           type: 'used',
-          summary: `<strong class="text-ops-red">Used</strong>: ${name} (${amount} hrs) - ${date}`,
+          summary: `<strong class="text-ops-red">Used</strong>: ${escapeHtml(name)} (${escapeHtml(amount)} hrs) - ${escapeHtml(date)}`,
           payload: {
             email: email,
             name: name,
@@ -3442,10 +3551,11 @@
              let detailsHtml = '';
              let actionsHtml = '';
              const bldgChip = (showBldgChips && h.building)
-                ? `<span class="inline-block ml-2 text-[10px] font-bold uppercase tracking-wide text-ops-blue bg-ops-blue-lighter px-1.5 py-0.5 rounded align-middle">${h.building}</span>`
+                ? `<span class="inline-block ml-2 text-[10px] font-bold uppercase tracking-wide text-ops-blue bg-ops-blue-lighter px-1.5 py-0.5 rounded align-middle">${escapeHtml(h.building)}</span>`
                 : '';
 
-             const getLastName = (n) => n ? n.split(' ').pop() : '';
+             const getLastName = (n) => n ? escapeHtml(String(n).split(' ').pop()) : '';
+             const period = escapeHtml(h.period);
 
              if (h.type === 'Pending') {
                  rowClass = 'bg-white hover:bg-ops-gray-lightest transition-colors';
@@ -3459,11 +3569,11 @@
                           <span class="text-ops-gray-dark font-medium">Requested Usage</span>
                       </div>`;
                  } else {
-                    amountClass = 'text-ops-blue/70'; 
+                    amountClass = 'text-ops-blue/70';
                     amountSign = '+';
                     detailsHtml = `
                       <div class="flex flex-col items-start whitespace-nowrap">
-                          <span class="text-ops-gray-dark font-medium">${h.period}</span>
+                          <span class="text-ops-gray-dark font-medium">${period}</span>
                           <div class="text-ops-gray text-xs">Covered: ${getLastName(h.subbedFor)}</div>
                       </div>`;
                  }
@@ -3474,7 +3584,7 @@
                  amountSign = '+';
                  detailsHtml = `
                     <div class="flex flex-col items-start whitespace-nowrap">
-                        <span class="text-ops-gray-dark font-medium">${h.period}</span>
+                        <span class="text-ops-gray-dark font-medium">${period}</span>
                         <div class="text-ops-gray text-xs">Covered: ${getLastName(h.subbedFor)}</div>
                     </div>`;
              } else if (h.type === 'Used') {
@@ -3493,32 +3603,42 @@
                  amountSign = '+';
                  detailsHtml = `
                     <div class="flex flex-col items-start whitespace-nowrap">
-                        <span class="text-ops-gray-light italic line-through decoration-ops-gray-light">${h.period}</span>
+                        <span class="text-ops-gray-light italic line-through decoration-ops-gray-light">${period}</span>
                         <div class="text-ops-gray-light text-xs italic">Covered: ${getLastName(h.subbedFor)}</div>
-                        ${h.denialReason ? `<div class="text-xs text-ops-red mt-0.5 whitespace-normal">${h.denialReason}</div>` : ''}
+                        ${h.denialReason ? `<div class="text-xs text-ops-red mt-0.5 whitespace-normal">${escapeHtml(h.denialReason)}</div>` : ''}
                     </div>`;
              }
 
              // Actions
              if (isAdmin && !isEmbedded) {
-                 const jsonItem = JSON.stringify(h).replace(/'/g, "&apos;");
                  const isPending = h.type === 'Pending';
-                 
-                 const revertBtn = !isPending ? 
-                    `<button onclick="revertTransaction('${h.sheetType || (h.type==='Used'?'used':'earned')}', ${h.rowIndex}, '${email}', '${name}', ${h.amount})" class="w-8 h-8 flex items-center justify-center bg-ops-gray-lighter text-ops-gray rounded hover:bg-ops-gray-light transition-colors" title="Revert to Pending"><span class="fas fa-history text-lg"></span></button>` : 
-                    `<button class="w-8 h-8 flex items-center justify-center bg-gray-100 text-gray-300 rounded cursor-not-allowed" disabled><span class="fas fa-history text-lg"></span></button>`;
-                 
-                 const editBtn = isPending ? 
-                    `<button onclick="openEditModal('${h.sheetType || (h.type==='Used'?'used':'earned')}', ${h.rowIndex}, '${email}', '${name}', ${jsonItem})" class="w-8 h-8 flex items-center justify-center bg-ops-blue-lighter text-ops-blue rounded hover:bg-blue-100 transition-colors" title="Edit"><span class="fas fa-pencil-alt text-lg"></span></button>` :
-                    `<button class="w-8 h-8 flex items-center justify-center bg-gray-100 text-gray-300 rounded cursor-not-allowed" disabled title="Revert to pending to edit"><span class="fas fa-pencil-alt text-lg"></span></button>`;
-                 
-                 const deleteBtn = `<button onclick="deleteTransaction('${h.sheetType || (h.type==='Used'?'used':'earned')}', ${h.rowIndex}, '${email}', '${name}', ${h.amount}, ${h.type === 'Earned' || h.type === 'Used'})" class="w-8 h-8 flex items-center justify-center bg-ops-red-lighter text-ops-red rounded hover:bg-red-200 transition-colors" title="Delete"><span class="fas fa-trash text-lg"></span></button>`;
+                 // Every value the handlers need rides in data-* attributes (escaped once,
+                 // decoded once by the browser) instead of being spliced into JS strings.
+                 const txAttrs = `data-type="${h.sheetType || (h.type==='Used'?'used':'earned')}" data-row="${Number(h.rowIndex)}" ` +
+                    `data-email="${escapeHtml(email)}" data-name="${escapeHtml(name)}" data-hours="${escapeHtml(h.amount)}"`;
 
-                 actionsHtml = `
+                 const revertBtn = !isPending ?
+                    `<button ${txAttrs} onclick="revertTransaction(this.dataset.type, Number(this.dataset.row), this.dataset.email, this.dataset.name, this.dataset.hours)" class="w-8 h-8 flex items-center justify-center bg-ops-gray-lighter text-ops-gray rounded hover:bg-ops-gray-light transition-colors" title="Revert to Pending"><span class="fas fa-history text-lg"></span></button>` :
+                    `<button class="w-8 h-8 flex items-center justify-center bg-gray-100 text-gray-300 rounded cursor-not-allowed" disabled><span class="fas fa-history text-lg"></span></button>`;
+
+                 const editBtn = isPending ?
+                    `<button ${txAttrs} data-item="${escapeHtml(JSON.stringify(h))}" onclick="openEditModal(this.dataset.type, Number(this.dataset.row), this.dataset.email, this.dataset.name, this.dataset.item)" class="w-8 h-8 flex items-center justify-center bg-ops-blue-lighter text-ops-blue rounded hover:bg-blue-100 transition-colors" title="Edit"><span class="fas fa-pencil-alt text-lg"></span></button>` :
+                    `<button class="w-8 h-8 flex items-center justify-center bg-gray-100 text-gray-300 rounded cursor-not-allowed" disabled title="Revert to pending to edit"><span class="fas fa-pencil-alt text-lg"></span></button>`;
+
+                 const deleteBtn = `<button ${txAttrs} data-approved="${h.type === 'Earned' || h.type === 'Used'}" onclick="deleteTransaction(this.dataset.type, Number(this.dataset.row), this.dataset.email, this.dataset.name, this.dataset.hours, this.dataset.approved === 'true')" class="w-8 h-8 flex items-center justify-center bg-ops-red-lighter text-ops-red rounded hover:bg-red-200 transition-colors" title="Delete"><span class="fas fa-trash text-lg"></span></button>`;
+
+                 // Rows filed under a building this admin doesn't manage (totals are combined
+                 // across buildings) are shown but locked — the server refuses those actions.
+                 const rowBuilding = h.building || 'OMS';
+                 actionsHtml = canActOnRequestBuilding(rowBuilding) ? `
                     <div class="flex justify-center gap-2">
                         ${revertBtn}
                         ${editBtn}
                         ${deleteBtn}
+                    </div>
+                 ` : `
+                    <div class="flex justify-center items-center gap-1 text-xs text-gray-400" title="Managed by ${escapeHtml(rowBuilding)}">
+                        <i class="fas fa-lock"></i> ${escapeHtml(rowBuilding)}
                     </div>
                  `;
              }
@@ -3564,7 +3684,7 @@
 
                  ${!isEmbedded && isAdmin ? `
                  <div class="mt-6 pt-4 border-t border-ops-gray-lightest flex justify-end">
-                    <button onclick="sendEmailReport('${email}', '${name}')" class="bg-ops-blue hover:bg-ops-blue-dark text-white px-6 py-2.5 rounded shadow-sm font-semibold transition-colors flex items-center gap-2">
+                    <button data-email="${escapeHtml(email)}" data-name="${escapeHtml(name)}" onclick="sendEmailReport(this.dataset.email, this.dataset.name)" class="bg-ops-blue hover:bg-ops-blue-dark text-white px-6 py-2.5 rounded shadow-sm font-semibold transition-colors flex items-center gap-2">
                         <span class="fas fa-envelope text-sm"></span>
                         Email Report
                     </button>
@@ -3589,7 +3709,7 @@
     function sendEmailReport(email, name) {
       openConfirmModal(
         "Send Report?",
-        `Send TST report email to <strong>${name}</strong>?`,
+        `Send TST report email to <strong>${escapeHtml(name)}</strong>?`,
         () => {
           showLoading(true);
           google.script.run.withSuccessHandler(() => {
@@ -3609,7 +3729,7 @@
 
       openConfirmModal(
         "Revert to Pending?",
-        `This will deduct <strong>${hours} hours</strong> from ${name}'s ${balanceType} balance and return this request to the pending queue.<br><br>Continue?`,
+        `This will deduct <strong>${escapeHtml(hours)} hours</strong> from ${escapeHtml(name)}'s ${balanceType} balance and return this request to the pending queue.<br><br>Continue?`,
         () => {
           showLoading(true);
           const handler = type === 'earned' ? 'revertEarnedToPending' : 'revertUsedToPending';
@@ -3639,7 +3759,7 @@
       const typeLabel = type === 'earned' ? 'Earned' : 'Used';
       const balanceType = type === 'earned' ? 'earned' : 'used';
       const balanceWarning = wasApproved
-        ? `<br><br><strong>Note:</strong> This will deduct <strong>${hours} hours</strong> from ${name}'s ${balanceType} balance.`
+        ? `<br><br><strong>Note:</strong> This will deduct <strong>${escapeHtml(hours)} hours</strong> from ${escapeHtml(name)}'s ${balanceType} balance.`
         : '';
 
       openConfirmModal(
@@ -3685,16 +3805,16 @@
 
     function openEditEarnedModal(rowIndex, email, name, item) {
       const staffOptions = STATE.user.staffData.map(s =>
-        `<option value="${s.name}" ${s.name === item.subbedFor ? 'selected' : ''}>${s.name}</option>`
+        `<option value="${escapeHtml(s.name)}" ${s.name === item.subbedFor ? 'selected' : ''}>${escapeHtml(s.name)}</option>`
       ).join('');
 
       const dateValue = new Date(item.date).toISOString().split('T')[0];
 
       const modalContent = `
-        <form id="edit-earned-form" onsubmit="handleEditEarnedSubmit(event, ${rowIndex}, '${email}', '${name}')">
+        <form id="edit-earned-form" data-row="${Number(rowIndex)}" data-email="${escapeHtml(email)}" data-name="${escapeHtml(name)}" onsubmit="handleEditEarnedSubmit(event, Number(this.dataset.row), this.dataset.email, this.dataset.name)">
           <div class="mb-4">
             <label class="block text-sm font-bold text-ops-gray-dark mb-2">Subbed For</label>
-            <input type="text" name="subbedFor" value="${item.subbedFor}" required class="block w-full rounded border-gray-300 p-2 border">
+            <input type="text" name="subbedFor" value="${escapeHtml(item.subbedFor)}" required class="block w-full rounded border-gray-300 p-2 border">
           </div>
 
           <div class="grid grid-cols-2 gap-4 mb-4">
@@ -3746,7 +3866,7 @@
       const dateValue = new Date(item.date).toISOString().split('T')[0];
 
       const modalContent = `
-        <form id="edit-used-form" onsubmit="handleEditUsedSubmit(event, ${rowIndex}, '${email}', '${name}')">
+        <form id="edit-used-form" data-row="${Number(rowIndex)}" data-email="${escapeHtml(email)}" data-name="${escapeHtml(name)}" onsubmit="handleEditUsedSubmit(event, Number(this.dataset.row), this.dataset.email, this.dataset.name)">
           <div class="mb-4">
             <label class="block text-sm font-bold text-ops-gray-dark mb-2">Date of Usage</label>
             <input type="date" name="date" value="${dateValue}" required class="block w-full rounded border-gray-300 p-2 border">
@@ -3754,7 +3874,7 @@
 
           <div class="mb-6">
             <label class="block text-sm font-bold text-ops-gray-dark mb-2">Hours Used</label>
-            <input type="number" name="amount" step="0.5" min="0.5" value="${item.amount}" required class="block w-full rounded border-gray-300 p-2 border">
+            <input type="number" name="amount" step="0.5" min="0.5" value="${escapeHtml(item.amount)}" required class="block w-full rounded border-gray-300 p-2 border">
           </div>
 
           <div class="flex justify-end gap-3">
@@ -3871,14 +3991,14 @@
       const isHalf = row.hours == 0.5;
 
       const html = `
-        <form onsubmit="submitEditEarned(event, ${rowIndex})">
+        <form onsubmit="submitEditEarned(event, ${Number(rowIndex)})">
           <div class="mb-4">
             <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Teacher (Earner)</label>
-            <input type="text" value="${row.name}" disabled class="block w-full rounded border-gray-200 bg-gray-100 p-2 border text-gray-500">
+            <input type="text" value="${escapeHtml(row.name)}" disabled class="block w-full rounded border-gray-200 bg-gray-100 p-2 border text-gray-500">
           </div>
           <div class="mb-4">
              <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Subbed For</label>
-             <input type="text" name="subbedFor" value="${row.subbedFor}" required class="block w-full rounded border-gray-300 p-2 border">
+             <input type="text" name="subbedFor" value="${escapeHtml(row.subbedFor)}" required class="block w-full rounded border-gray-300 p-2 border">
           </div>
           <div class="grid grid-cols-2 gap-4 mb-4">
             <div>
@@ -3945,10 +4065,10 @@
       const dateVal = new Date(row.date).toISOString().split('T')[0];
 
       const html = `
-        <form onsubmit="submitEditUsed(event, ${rowIndex})">
+        <form onsubmit="submitEditUsed(event, ${Number(rowIndex)})">
            <div class="mb-4">
             <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Teacher (User)</label>
-            <input type="text" value="${row.name}" disabled class="block w-full rounded border-gray-200 bg-gray-100 p-2 border text-gray-500">
+            <input type="text" value="${escapeHtml(row.name)}" disabled class="block w-full rounded border-gray-200 bg-gray-100 p-2 border text-gray-500">
           </div>
           <div class="mb-4">
              <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Date of Usage</label>
@@ -3956,7 +4076,7 @@
           </div>
           <div class="mb-6">
             <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Hours Used</label>
-            <input type="number" name="amount" step="0.5" min="0.5" value="${row.used}" required class="block w-full rounded border-gray-300 p-2 border">
+            <input type="number" name="amount" step="0.5" min="0.5" value="${escapeHtml(row.used)}" required class="block w-full rounded border-gray-300 p-2 border">
           </div>
           <button type="submit" class="w-full bg-ops-red text-white font-bold py-3 px-4 rounded shadow hover:bg-ops-red-dark transition uppercase tracking-wide">
             Save Changes
@@ -3993,7 +4113,8 @@
             <div class="mx-auto flex items-center justify-center h-16 w-16 rounded-full bg-gray-100 mb-4">
                <i class="fas fa-question text-2xl text-gray-500"></i>
             </div>
-            <h3 class="text-lg font-bold text-gray-900">${title}</h3>
+            <h3 class="text-lg font-bold text-gray-900">${escapeHtml(title)}</h3>
+            <!-- message is trusted HTML: callers must escapeHtml() any data they put in it -->
             <p class="text-sm text-gray-500 mt-2">${message}</p>
           </div>
           <div class="flex flex-col gap-3 sm:flex-row-reverse justify-center">
@@ -4103,7 +4224,7 @@
            ${MONTHS.map((month, index) => {
              // Find user data for this month
              const monthData = scheduleData[month] || [];
-             const myEntries = monthData.filter(d => d.email === userEmail);
+             const myEntries = monthData.filter(d => (d.email || '').toString().toLowerCase() === userEmail.toLowerCase());
              
              // Create map of Period -> Set(Days)
              const availabilityMap = {};
@@ -4131,12 +4252,12 @@
                           <tbody class="divide-y divide-gray-100">
                             ${periods.map(p => `
                               <tr>
-                                <td class="py-2 pl-2 font-medium text-gray-700">${p}</td>
+                                <td class="py-2 pl-2 font-medium text-gray-700">${escapeHtml(p)}</td>
                                 ${DAYS.map(d => {
                                   const isChecked = availabilityMap[p] && availabilityMap[p].has(d);
                                   return `
                                     <td class="py-2 text-center">
-                                      <input type="checkbox" name="${p}_${d}" ${isChecked ? 'checked' : ''} class="rounded text-ops-blue focus:ring-ops-blue border-gray-300 h-4 w-4">
+                                      <input type="checkbox" name="${escapeHtml(p)}_${d}" ${isChecked ? 'checked' : ''} class="rounded text-ops-blue focus:ring-ops-blue border-gray-300 h-4 w-4">
                                     </td>`;
                                 }).join('')}
                               </tr>
@@ -4183,7 +4304,8 @@
       google.script.run.withSuccessHandler(() => {
         showLoading(false);
         showToast(`${month} availability saved.`, "success");
-      }).saveAvailability(month, availabilityList);
+      }).withFailureHandler(handleError)
+        .saveAvailability(month, availabilityList, STATE.viewAs ? STATE.user.email : null, getPeriods());
     }
 
     function loadAdminSchedule() {
@@ -4261,6 +4383,8 @@
                         ${periods.map((p, pIndex) => {
                           const isEditing = STATE.editingSchedule && STATE.editingSchedule.month === month && STATE.editingSchedule.period === p;
                           const rowBg = pIndex % 2 === 1 ? 'bg-gray-50' : 'bg-white';
+                          const eP = escapeHtml(p);
+                          const periodAttrs = `data-month="${month}" data-period="${eP}"`;
                           
                           if (isEditing) {
                              // --- EDIT MODE ROW ---
@@ -4268,9 +4392,9 @@
                                <tr class="bg-blue-50/50">
                                  <td class="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 sticky left-0 z-10 border-r border-blue-200 shadow-sm bg-blue-50 align-top">
                                    <div class="flex flex-col gap-2">
-                                     <span>${p}</span>
+                                     <span>${eP}</span>
                                      <div class="flex flex-col gap-1 mt-2">
-                                       <button onclick="saveAdminSchedulePeriod('${month}', '${p}')" class="bg-green-600 hover:bg-green-700 text-white text-xs px-2 py-1.5 rounded font-bold transition">
+                                       <button ${periodAttrs} onclick="saveAdminSchedulePeriod(this.dataset.month, this.dataset.period)" class="bg-green-600 hover:bg-green-700 text-white text-xs px-2 py-1.5 rounded font-bold transition">
                                          <i class="fas fa-save mr-1"></i> Save
                                        </button>
                                        <button onclick="cancelAdminScheduleEdit()" class="bg-gray-300 hover:bg-gray-400 text-gray-700 text-xs px-2 py-1.5 rounded font-bold transition">
@@ -4289,8 +4413,8 @@
                                        const name = staff ? staff.name : email;
                                        return `
                                          <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-white border border-blue-200 text-blue-700 shadow-sm">
-                                           ${name}
-                                           <button onclick="removeTeacherFromSchedule('${d}', '${email}')" class="ml-1.5 text-blue-400 hover:text-red-500 focus:outline-none">
+                                           ${escapeHtml(name)}
+                                           <button data-day="${d}" data-email="${escapeHtml(email)}" onclick="removeTeacherFromSchedule(this.dataset.day, this.dataset.email)" class="ml-1.5 text-blue-400 hover:text-red-500 focus:outline-none">
                                              <i class="fas fa-times"></i>
                                            </button>
                                          </span>`;
@@ -4305,7 +4429,8 @@
                                           <input type="text" 
                                             placeholder="Add teacher..." 
                                             class="w-full text-xs border border-blue-300 rounded px-2 py-1.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                                            onkeyup="renderScheduleAutocomplete(this, '${d}', '${month}', '${p}')"
+                                            ${periodAttrs} data-day="${d}"
+                                            onkeyup="renderScheduleAutocomplete(this, this.dataset.day, this.dataset.month, this.dataset.period)"
                                           >
                                           <div class="hidden absolute z-50 w-full bg-white border border-gray-200 shadow-lg rounded mt-1 max-h-48 overflow-y-auto text-xs" id="ac-${month}-${p.replace(/[^a-zA-Z0-9]/g,'')}-${d}"></div>
                                         </div>
@@ -4320,8 +4445,8 @@
                               <tr class="${rowBg} hover:bg-gray-100 transition-colors group/row">
                                 <td class="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 sticky left-0 z-10 border-r border-gray-200 shadow-sm ${rowBg} group-hover/row:bg-gray-100">
                                   <div class="flex justify-between items-center">
-                                    <span>${p}</span>
-                                    <button onclick="toggleAdminScheduleEdit('${month}', '${p}')" class="opacity-0 group-hover/row:opacity-100 text-ops-blue hover:bg-blue-100 p-1.5 rounded transition-all" title="Edit Period">
+                                    <span>${eP}</span>
+                                    <button ${periodAttrs} onclick="toggleAdminScheduleEdit(this.dataset.month, this.dataset.period)" class="opacity-0 group-hover/row:opacity-100 text-ops-blue hover:bg-blue-100 p-1.5 rounded transition-all" title="Edit Period">
                                       <i class="fas fa-pencil-alt"></i>
                                     </button>
                                   </div>
@@ -4347,9 +4472,9 @@
                                                     <div class="border-b border-blue-900/50 pb-2 mb-2 last:border-0 last:pb-0 last:mb-0">
                                                       <div class="flex justify-between items-center mb-0.5">
                                                         <span class="font-bold text-white">${new Date(r.date).toLocaleDateString()}</span>
-                                                        <span class="bg-blue-900 text-blue-100 px-1.5 py-0.5 rounded text-[10px] font-medium">Pd ${shortPd}</span>
+                                                        <span class="bg-blue-900 text-blue-100 px-1.5 py-0.5 rounded text-[10px] font-medium">Pd ${escapeHtml(shortPd)}</span>
                                                       </div>
-                                                      <div class="text-blue-200 truncate text-[11px]"><span class="opacity-75">Covering:</span> ${lastName}</div>
+                                                      <div class="text-blue-200 truncate text-[11px]"><span class="opacity-75">Covering:</span> ${escapeHtml(lastName)}</div>
                                                     </div>
                                                   `;
                                                 }).join('');
@@ -4358,11 +4483,14 @@
                                                     <i class="fas fa-clock"></i> Pending Requests (${pendingCount})
                                                   </div>
                                                   <div>${listItems}</div>
-                                                `.replace(/"/g, "&quot;").replace(/'/g, "\\'").replace(/(\r\n|\n|\r)/gm, "");
+                                                `;
 
+                                                // The tooltip markup travels in a data attribute: escaped once here,
+                                                // decoded once by the browser, then handed to showTooltip intact.
                                                 pendingIndicator = `
-                                                  <i class="fas fa-hourglass-half text-orange-500 ml-1 cursor-help hover:text-orange-600 transition-colors" 
-                                                     onmouseenter="showTooltip(event, '${tooltipHtml}')" 
+                                                  <i class="fas fa-hourglass-half text-orange-500 ml-1 cursor-help hover:text-orange-600 transition-colors"
+                                                     data-tooltip="${escapeHtml(tooltipHtml)}"
+                                                     onmouseenter="showTooltip(event, this.dataset.tooltip)"
                                                      onmousemove="moveTooltip(event)" 
                                                      onmouseleave="hideTooltip()">
                                                   </i>`;
@@ -4372,12 +4500,12 @@
                                              <div class="flex justify-between items-center bg-blue-50 hover:bg-blue-100 p-2 rounded border border-blue-100 transition group">
                                                 <div class="min-w-0">
                                                   <div class="flex items-center">
-                                                     <div class="text-xs font-bold text-ops-blue truncate" title="${t.name}">${t.name}</div>
+                                                     <div class="text-xs font-bold text-ops-blue truncate" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</div>
                                                      ${pendingIndicator}
                                                   </div>
                                                   <div class="text-[10px] text-gray-500">${Number(t.hours).toFixed(1)} hrs</div>
                                                 </div>
-                                                <button onclick="openRequestCoverageModal('${t.email}', '${t.name.replace(/'/g, "\\'")}', '${p}', '${month}')" class="text-ops-blue bg-white hover:bg-white hover:text-ops-blue-dark border border-blue-200 rounded-full h-6 w-6 flex items-center justify-center shadow-sm opacity-0 group-hover:opacity-100 transition-opacity" title="Request Coverage">
+                                                <button ${periodAttrs} data-email="${escapeHtml(t.email)}" data-name="${escapeHtml(t.name)}" onclick="openRequestCoverageModal(this.dataset.email, this.dataset.name, this.dataset.period, this.dataset.month)" class="text-ops-blue bg-white hover:bg-white hover:text-ops-blue-dark border border-blue-200 rounded-full h-6 w-6 flex items-center justify-center shadow-sm opacity-0 group-hover:opacity-100 transition-opacity" title="Request Coverage">
                                                   <i class="fas fa-paper-plane text-xs"></i>
                                                 </button>
                                              </div>
@@ -4489,9 +4617,9 @@
       
       if (matches.length > 0) {
         container.innerHTML = matches.map(s => `
-          <div onclick="selectScheduleTeacher('${day}', '${s.email}')" class="px-3 py-2 hover:bg-blue-50 cursor-pointer border-b border-gray-100 last:border-0">
-            <div class="font-bold text-gray-800">${s.name}</div>
-            <div class="text-xs text-gray-500">${s.email}</div>
+          <div data-day="${escapeHtml(day)}" data-email="${escapeHtml(s.email)}" onclick="selectScheduleTeacher(this.dataset.day, this.dataset.email)" class="px-3 py-2 hover:bg-blue-50 cursor-pointer border-b border-gray-100 last:border-0">
+            <div class="font-bold text-gray-800">${escapeHtml(s.name)}</div>
+            <div class="text-xs text-gray-500">${escapeHtml(s.email)}</div>
           </div>
         `).join('');
         container.classList.remove('hidden');
@@ -4518,7 +4646,7 @@
       }).withFailureHandler(err => {
          showLoading(false);
          showToast("Error saving schedule: " + err, "error");
-      }).updateSchedulePeriod(month, period, dayUpdates);
+      }).updateSchedulePeriod(month, period, dayUpdates, STATE.building);
     }
 
     function openRequestCoverageModal(tEmail, tName, period, month) {
@@ -4527,20 +4655,20 @@
       
       const modalContent = `
         <form onsubmit="handleCoverageRequestSubmit(event)">
-          <input type="hidden" name="teacherEmail" value="${tEmail}">
-          <input type="hidden" name="teacherName" value="${tName}">
-          <input type="hidden" name="period" value="${period}">
-          
+          <input type="hidden" name="teacherEmail" value="${escapeHtml(tEmail)}">
+          <input type="hidden" name="teacherName" value="${escapeHtml(tName)}">
+          <input type="hidden" name="period" value="${escapeHtml(period)}">
+
           <div class="mb-4 bg-blue-50 p-4 rounded border border-blue-100">
             <label class="block text-xs font-bold text-ops-blue uppercase tracking-wider mb-1">Requesting Coverage From</label>
-            <div class="text-lg font-bold text-ops-blue-dark">${tName}</div>
-            <div class="text-sm text-ops-gray">${period}</div>
+            <div class="text-lg font-bold text-ops-blue-dark">${escapeHtml(tName)}</div>
+            <div class="text-sm text-ops-gray">${escapeHtml(period)}</div>
           </div>
 
           <div class="mb-4">
             <label class="block text-sm font-bold text-ops-gray-dark mb-2">Date Needed</label>
             <input type="date" name="date" required class="block w-full rounded border-gray-300 p-2 border focus:border-ops-blue focus:ring-1 focus:ring-ops-blue">
-            <p class="text-xs text-gray-400 mt-1">Month: ${month}</p>
+            <p class="text-xs text-gray-400 mt-1">Month: ${escapeHtml(month)}</p>
           </div>
 
           <div class="mb-4">
@@ -4571,7 +4699,7 @@
                
                <div id="req-sub-staff-container">
                   <select name="subbedNameDropdown" class="block w-full rounded border-gray-300 p-2 border">
-                    ${STATE.user.staffData.map(s => `<option value="${s.name}">${s.name}</option>`).join('')}
+                    ${STATE.user.staffData.map(s => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join('')}
                   </select>
                </div>
                <div id="req-sub-manual-container" class="hidden">

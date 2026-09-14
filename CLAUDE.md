@@ -114,6 +114,16 @@ The application relies on four key sheets within the bound Google Spreadsheet:
 - **batch* functions** - Process multiple actions at once (batchApproveEarned, batchDenyEarned, etc.)
 - **sendStatusEmail(email, name)** - Generate and send TST report email
 
+#### Server-side authorization (every public function is callable via `google.script.run`)
+
+Any signed-in domain user can call any public (non-`_`) function from the browser console, so each endpoint checks on the server. Public wrappers authorize, then call a private `_` variant; internal code calls the `_` variants directly. Apps Script does not expose functions ending in `_` to the client.
+- **Request rows** (approve/deny/delete/edit/revert Earned & Used, and the `batch*` versions): `authorizeRequestRows_(ctx, 'earned'|'used', rows)` — Admin/Super Admin; row must be an integer within the sheet (>= 2); the row's building (Approvals col N, Usage col H, blank = OMS) must be one of the caller's buildings (Super Admins: any). Batches authorize **every** row before applying anything.
+- **Acting for staff** (`processBatch`, `adminSubmitRequest`, `sendStatusEmail`, `sendBatchStatusEmails`, `sendCoverageRequest`): `assertCanManageStaffEmails_(ctx, emails)` — admin sharing a building with each person (Super Admins: anyone); all checked up front.
+- **Self or manager** (`submitEarned`, `submitUsage`, `getTeacherHistory`, `getStaffHistoryWithActions`): `assertSelfOrManagerOf_(email)` — the session user's own email, or an admin who manages that person (covers View As).
+- **Coverage links**: `sendCoverageRequest` builds Accept/Decline links with `buildCoverageLink_`, HMAC-SHA256-signed with `COVERAGE_LINK_SECRET` in Script Properties (auto-created). `doGet` rejects links failing `verifyCoverageLink_`; `handleCoverageAccept_/Reject_` also require the signed-in user to be the invited teacher (`tEmail`). Links sent before this change are unsigned and no longer work.
+- `onFormSubmit` stays public for its trigger but refuses events without a live `Range` (i.e. calls from the client).
+- The staff detail modal locks row actions for requests filed under a building the admin doesn't manage (`canActOnRequestBuilding`), mirroring the server.
+
 #### Staff Management (admin-only, self-authorizing via `getUserContext`)
 
 - **addStaffMember(data)** - Add a staff member. `data = { name, email, role, building, carryOver, paidOut }`. Building accepts comma-separated codes. Writes individual cells (never `appendRow`) to preserve the column-H ARRAYFORMULA.
@@ -131,6 +141,14 @@ The application relies on four key sheets within the bound Google Spreadsheet:
   - **Block-with-override:** when `force` is falsy and any primary-here staff would roll **above** the cap, the function makes **no changes** and returns `{ blocked: true, cap, overCap: [{name, email, projected, over}] }` so the UI can list the offending staff. Call again with `force = true` to proceed and forfeit the excess. On success returns `{ building, name, count, pending, cap, forfeitedCount }`.
 - **archiveTransactionsByEmails_(emailsLower, yearName)** - Archives every approved transaction (all buildings) for a set of staff emails (used by primary finalize). The older `archiveBuildingTransactions_`/`archiveRowsByBuilding_` (by-building) are kept for backward compatibility.
 - **listArchivedYears(building) / getArchivedYearData(sheetName)** - List and read the year-end snapshot sheets (scoped to the caller's building; identified by developer metadata, not name).
+
+#### View As (admin → teacher)
+
+- **getViewAsData(targetEmail, building)** - Returns a `getInitialData`-shaped payload for a **Teacher** so an admin can use the app exactly as that teacher. Requires Admin/Super Admin; non-Super-Admins must share a building with the target (`assertCanManageRow_`), and the returned `buildings` are limited to the buildings they share. Admin/Super Admin targets are rejected. Logs `[View As]` to the execution log.
+- **saveAvailability(month, list, targetEmail, periodsShown)** - `targetEmail` is passed only during View As (same authorization as above); otherwise the session user is used. `periodsShown` limits which of the person's rows for that month get replaced: availability rows aren't building-tagged and buildings name periods differently, so a multi-building teacher saving one building's grid keeps their rows for the other building.
+- **getScheduleData(buildingFilter)** - Membership matches the Directory (`getStaffDirectoryData(building)`): staff assigned to the building anywhere in a multi-building list and not archived from it, compared by lowercased email. Hours/pending lookups are also lowercased; pending requests use the same building as the schedule. The building rule lives in `scheduleBuildingFor_(ctx, requested)` and membership in `scheduleMembers_(building)`.
+- **updateSchedulePeriod(month, period, dayUpdates, building)** - Admin only; `building` must pass `scheduleBuildingFor_` (defaults to the caller's own building). Only deletes/rebuilds rows for that building's `scheduleMembers_` — buildings can share period names (OIS and SE both use "Time Range"), so other buildings' rows must survive. Rejects (before touching the sheet) any email in `dayUpdates` that isn't a member.
+- Client: the eye button in the Directory's Actions column calls `startViewAs(email)`, which stashes the admin's `STATE.user`/`STATE.building` in `STATE.viewAs` and swaps in the teacher; `exitViewAs()` (banner or profile menu) restores them. Teacher actions already send `STATE.user.email`, so submissions made while viewing as someone are recorded under that teacher.
 
 Authorization: add/edit/archive/restore require Admin or Super Admin; non-Super-Admins are scoped to their own building(s). Editing Carry Over / Paid Out and running finalize for a person additionally require being that person's **primary** building admin (or Super Admin). Permanent delete and archived-staff listing require Super Admin.
 
@@ -183,6 +201,11 @@ Defined in Tailwind config within [Index.html](Index.html):
 
 ## Important Conventions
 
+### HTML Escaping (XSS)
+Staff names/emails, transaction fields (subbed for, period, hours, notes, denial reasons), App Config values (building codes/names, periods, coverage labels), snapshot/archive names and server error messages are all user-controlled.
+- **Index.html:** wrap every such value in `escapeHtml()` when building markup (text or quoted attribute). Never interpolate data into an inline handler's JS string (`onclick="fn('${x}')"`) — put it in a `data-*` attribute and read `this.dataset.x`. `showToast()` takes plain text. `openConfirmModal()`'s `message` is HTML, so callers escape what they put in it.
+- **Code.js:** use `escapeHtml_()` for values placed in email or `HtmlService` HTML. `sendStyledEmail_()` escapes `subject`/`title`/`buttonText`/`buildingName` itself; `contentHtml` must be escaped by the caller. `handleCoverageAccept_/Reject_` render URL parameters, so always escape them.
+
 ### Editing Earned Requests
 When updating earned requests via `updateEarnedRow()`, **both** sheets must be synchronized:
 1. Update "TST Approvals (New)" directly
@@ -197,7 +220,7 @@ When updating earned requests via `updateEarnedRow()`, **both** sheets must be s
 Class periods are stored as full strings (e.g., "Period 1 - 8:10 - 8:57"). Reference [class_periods.md](class_periods.md) for the complete schedule. Legacy forms may use short numbers ("1") - the `getPeriodOptions()` function handles both formats.
 
 ### Email Templates
-Styled HTML emails are sent via `sendStyledEmail()` with:
+Styled HTML emails are sent via `sendStyledEmail_()` (private; queued through `addToEmailQueue_()`) with:
 - Branded header (Orono Middle School)
 - Color-coded content based on action type
 - Direct link to web app

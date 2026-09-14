@@ -3,10 +3,14 @@
  */
 function doGet(e) {
   if (e && e.parameter && e.parameter.action) {
-    if (e.parameter.action === 'accept') {
-      return handleCoverageAccept(e.parameter);
-    } else if (e.parameter.action === 'reject') {
-      return handleCoverageReject(e.parameter);
+    const action = e.parameter.action;
+    if (action === 'accept' || action === 'reject') {
+      // Coverage links are HMAC-signed by sendCoverageRequest; refuse altered or forged ones.
+      if (!verifyCoverageLink_(e.parameter)) {
+        return coverageMessagePage_('Link not valid',
+          'This coverage link is invalid or has been changed. Ask your administrator to send a new request.');
+      }
+      return action === 'accept' ? handleCoverageAccept_(e.parameter) : handleCoverageReject_(e.parameter);
     }
   }
 
@@ -96,6 +100,58 @@ function getInitialData() {
     config: config,
     defaultBuilding: DEFAULT_BUILDING,
     staffData: getStaffDirectoryData(ctx.building, isTeacherOnly ? ctx.email : null) // Optimized load
+  };
+}
+
+/**
+ * "View as" — lets an admin load the app exactly as a teacher in their building
+ * sees it. Returns the same shape as getInitialData, but for the target.
+ *
+ * Only Teachers can be viewed (admins have no teacher view, and viewing as an
+ * admin would imply privileges the caller doesn't have). Non-Super-Admins must
+ * share a building with the target, and the view is limited to the buildings
+ * they share so submissions can't be tagged to a building the caller doesn't
+ * administer. `building` is the caller's current building; it is used when
+ * allowed, otherwise the target's first allowed building.
+ */
+function getViewAsData(targetEmail, building) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+
+  const sheet = getStaffSheet_();
+  const idx = getStaffIndices_(sheet);
+  const all = sheet.getDataRange().getValues();
+  const rowI = findStaffRowByEmail_(all, idx.email, targetEmail || '');
+  if (rowI === -1) throw new Error('Staff member not found.');
+
+  const row = all[rowI];
+  const buildingCell = row[idx.building];
+  assertCanManageRow_(ctx, buildingCell);
+
+  if ((row[idx.role] || '').toString().trim() !== 'Teacher') {
+    throw new Error('View as is only available for teachers.');
+  }
+
+  const targetBuildings = splitBuildings_(buildingCell);
+  if (targetBuildings.length === 0) targetBuildings.push(DEFAULT_BUILDING);
+  const allowed = ctx.isSuperAdmin
+    ? targetBuildings
+    : targetBuildings.filter(b => ctx.buildings.includes(b));
+  const activeBuilding = allowed.includes(building) ? building : allowed[0];
+
+  const email = row[idx.email].toString().trim();
+  console.log(`[View As] ${ctx.email} is viewing as ${email} (${activeBuilding})`);
+
+  return {
+    email: email,
+    name: row[idx.name],
+    role: 'Teacher',
+    building: activeBuilding,
+    buildings: allowed,
+    isSuperAdmin: false,
+    config: getConfig(),
+    defaultBuilding: DEFAULT_BUILDING,
+    staffData: getStaffDirectoryData(activeBuilding, email)
   };
 }
 
@@ -273,13 +329,15 @@ function getDashboardCounts(buildingFilter) {
 /**
  * Helper to get clean object array of Staff Directory
  */
+// Batch actions authorize every row up front (authorizeRequestRows_), then apply.
 function batchApproveEarned(indices) {
   if (!indices || !Array.isArray(indices)) return;
+  const rows = authorizeRequestRows_(getUserContext(), 'earned', indices);
   // Sort descending just in case, though for updates it matters less than deletes
-  indices.sort((a, b) => b - a);
-  
-  indices.forEach(idx => {
-    approveEarnedRow(idx, { send: false }); // No email for batch
+  rows.sort((a, b) => b - a);
+
+  rows.forEach(idx => {
+    approveEarnedRow_(idx, { send: false }); // No email for batch
   });
   return true;
 }
@@ -289,10 +347,11 @@ function batchApproveEarned(indices) {
  */
 function batchDenyEarned(indices) {
   if (!indices || !Array.isArray(indices)) return;
-  indices.sort((a, b) => b - a);
-  
-  indices.forEach(idx => {
-    denyEarnedRow(idx, { send: false }); // No email, no specific reason
+  const rows = authorizeRequestRows_(getUserContext(), 'earned', indices);
+  rows.sort((a, b) => b - a);
+
+  rows.forEach(idx => {
+    denyEarnedRow_(idx, { send: false }); // No email, no specific reason
   });
   return true;
 }
@@ -302,10 +361,11 @@ function batchDenyEarned(indices) {
  */
 function batchApproveUsed(indices) {
   if (!indices || !Array.isArray(indices)) return;
-  indices.sort((a, b) => b - a);
-  
-  indices.forEach(idx => {
-    approveUsedRow(idx);
+  const rows = authorizeRequestRows_(getUserContext(), 'used', indices);
+  rows.sort((a, b) => b - a);
+
+  rows.forEach(idx => {
+    approveUsedRow_(idx);
   });
   return true;
 }
@@ -316,11 +376,12 @@ function batchApproveUsed(indices) {
  */
 function batchDeleteUsed(indices) {
   if (!indices || !Array.isArray(indices)) return;
+  const rows = authorizeRequestRows_(getUserContext(), 'used', indices);
   // Critical: Sort descending
-  indices.sort((a, b) => b - a);
-  
-  indices.forEach(idx => {
-    deleteUsedRow(idx);
+  rows.sort((a, b) => b - a);
+
+  rows.forEach(idx => {
+    deleteUsedRow_(idx);
   });
   return true;
 }
@@ -477,6 +538,77 @@ function findStaffRowByEmail_(allValues, emailIdx, email) {
     }
   }
   return -1;
+}
+
+// ===== Request authorization =====
+// Every public function here can be called by any signed-in user through
+// google.script.run, so each endpoint authorizes on the server. Internal callers
+// use the private (_) variants to avoid repeating the checks.
+
+// Request rows belong to the building they were filed under (blank = OMS, matching
+// the approval queues). Columns are 1-based.
+const REQUEST_SHEETS_ = {
+  earned: { name: 'TST Approvals (New)', buildingCol: 14 }, // N
+  used: { name: 'TST Usage (New)', buildingCol: 8 }          // H
+};
+
+/**
+ * Admin gate for request-row actions (approve/deny/delete/edit/revert). Checks every
+ * row up front — an integer row index within the sheet (row 1 is the header) whose
+ * building is one of the caller's (Super Admins: any) — so a batch either passes
+ * entirely or changes nothing. Returns the de-duplicated row numbers.
+ */
+function authorizeRequestRows_(ctx, type, rowIndices) {
+  assertAdmin_(ctx);
+  const cfg = REQUEST_SHEETS_[type];
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(cfg.name);
+  if (!sheet) throw new Error("Sheet '" + cfg.name + "' not found.");
+
+  const lastRow = sheet.getLastRow();
+  const rows = [];
+  (rowIndices || []).forEach(r => {
+    const row = Number(r);
+    if (!Number.isInteger(row) || row < 2 || row > lastRow) {
+      throw new Error('Invalid row ' + r + '. The request may have already been removed; refresh and try again.');
+    }
+    if (!rows.includes(row)) rows.push(row);
+  });
+
+  if (rows.length > 0 && !ctx.isSuperAdmin) {
+    const buildings = sheet.getRange(1, cfg.buildingCol, lastRow, 1).getValues();
+    rows.forEach(row => {
+      const rowBuilding = (buildings[row - 1][0] || 'OMS').toString().trim();
+      if (!ctx.buildings.includes(rowBuilding)) {
+        throw new Error('You can only manage requests for your own building(s).');
+      }
+    });
+  }
+  return rows;
+}
+
+// Admin acting for staff: Super Admins for anyone; other admins only for staff who
+// share one of their buildings.
+function assertCanManageStaffEmails_(ctx, emails) {
+  assertAdmin_(ctx);
+  if (ctx.isSuperAdmin) return;
+  const sheet = getStaffSheet_();
+  const idx = getStaffIndices_(sheet);
+  const all = sheet.getDataRange().getValues();
+  (emails || []).forEach(email => {
+    const i = findStaffRowByEmail_(all, idx.email, (email || '').toString());
+    if (i === -1) throw new Error('Staff member not found: ' + email);
+    assertCanManageRow_(ctx, all[i][idx.building]);
+  });
+}
+
+// A person may act on their own requests/history; otherwise the caller must be an
+// admin who manages them (View As, admin-created requests, staff detail).
+function assertSelfOrManagerOf_(targetEmail) {
+  const target = (targetEmail || '').toString().trim();
+  if (!target) throw new Error('A staff email is required.');
+  const sessionEmail = (Session.getActiveUser().getEmail() || '').toString().trim();
+  if (sessionEmail && sessionEmail.toLowerCase() === target.toLowerCase()) return;
+  assertCanManageStaffEmails_(getUserContext(), [target]);
 }
 
 /**
@@ -1449,7 +1581,6 @@ function safeDate(val) {
  */
 function getPendingEarned(buildingFilter) {
   const ctx = getUserContext();
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
 
   let effectiveFilter = ctx.building;
   if (ctx.isSuperAdmin) {
@@ -1460,10 +1591,17 @@ function getPendingEarned(buildingFilter) {
     }
   }
 
+  return pendingEarnedFor_(effectiveFilter);
+}
+
+// Pending (not approved, not denied) earned rows for one building. Callers are
+// responsible for authorizing the building.
+function pendingEarnedFor_(building) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Approvals (New)');
   const data = sheet.getDataRange().getValues();
   data.shift();
-  
+
   return data.map((r, i) => {
     // Col N(13) is Building
     const rowBuilding = r[13] || 'OMS';
@@ -1485,7 +1623,7 @@ function getPendingEarned(buildingFilter) {
     const isApproved = item.status === true || item.status === "TRUE";
     const isDenied = item.denied === true || item.denied === "TRUE";
 
-    if (item.building !== effectiveFilter) return false;
+    if (item.building !== building) return false;
 
     return !isApproved && !isDenied && item.email !== "";
   });
@@ -1533,9 +1671,14 @@ function getPendingUsed(buildingFilter) {
 
 
 /**
- * Gets history for a specific teacher.
+ * Gets history for a specific teacher. Self, or an admin who manages them.
  */
 function getTeacherHistory(targetEmail) {
+  assertSelfOrManagerOf_(targetEmail);
+  return teacherHistory_(targetEmail);
+}
+
+function teacherHistory_(targetEmail) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
   // 1. Get Earned (Approved OR Denied)
@@ -1585,9 +1728,11 @@ function getTeacherHistory(targetEmail) {
 
 /**
  * Gets history for a specific teacher with row indices and sheet info for admin actions.
- * Used by admin to manage approved/denied items.
+ * Used by admin to manage approved/denied items. Self, or an admin who manages them
+ * (the row actions themselves are authorized separately).
  */
 function getStaffHistoryWithActions(targetEmail) {
+  assertSelfOrManagerOf_(targetEmail);
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
   // 1. Get Earned (ALL - Pending, Approved, Denied)
@@ -1658,6 +1803,11 @@ function getStaffHistoryWithActions(targetEmail) {
  * Clears Approved/Denied flags.
  */
 function revertEarnedToPending(rowIndex) {
+  const row = authorizeRequestRows_(getUserContext(), 'earned', [rowIndex])[0];
+  return revertEarnedToPending_(row);
+}
+
+function revertEarnedToPending_(rowIndex) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Approvals (New)');
   
@@ -1676,6 +1826,11 @@ function revertEarnedToPending(rowIndex) {
  * Clears Approved flag.
  */
 function revertUsedToPending(rowIndex) {
+  const row = authorizeRequestRows_(getUserContext(), 'used', [rowIndex])[0];
+  return revertUsedToPending_(row);
+}
+
+function revertUsedToPending_(rowIndex) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Usage (New)');
 
@@ -1691,6 +1846,11 @@ function revertUsedToPending(rowIndex) {
  * Admin Action: Approve an Earned request.
  */
 function approveEarnedRow(rowIndex, emailData) {
+  const row = authorizeRequestRows_(getUserContext(), 'earned', [rowIndex])[0];
+  return approveEarnedRow_(row, emailData);
+}
+
+function approveEarnedRow_(rowIndex, emailData) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Approvals (New)');
   
@@ -1728,12 +1888,12 @@ function approveEarnedRow(rowIndex, emailData) {
       <p>Your request has been approved and added to your balance.</p>
       <div style="background-color: #f8fafc; border-left: 4px solid #2d3f89; padding: 15px; margin: 15px 0;">
         <p style="margin: 0; color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;">Request Details</p>
-        <p style="margin: 5px 0 0 0; color: #1e293b; font-weight: bold;">Subbed for ${rowData.subbedFor}</p>
-        <p style="margin: 0; color: #334155;">${formattedDate} &bull; Period ${rowData.period} &bull; +${rowData.hours} hrs</p>
+        <p style="margin: 5px 0 0 0; color: #1e293b; font-weight: bold;">Subbed for ${escapeHtml_(rowData.subbedFor)}</p>
+        <p style="margin: 0; color: #334155;">${escapeHtml_(formattedDate)} &bull; Period ${escapeHtml_(rowData.period)} &bull; +${escapeHtml_(rowData.hours)} hrs</p>
       </div>
       <p>You can check your up-to-date balance on the TST Portal.</p>
     `;
-    sendStyledEmail(rowData.email, subject, "Your TST Request was Approved!", body, "Visit the TST Portal", buildingName);
+    sendStyledEmail_(rowData.email, subject, "Your TST Request was Approved!", body, "Visit the TST Portal", buildingName);
   }
   
   return true;
@@ -1743,6 +1903,11 @@ function approveEarnedRow(rowIndex, emailData) {
  * Admin Action: Deny an Earned request.
  */
 function denyEarnedRow(rowIndex, emailData) {
+  const row = authorizeRequestRows_(getUserContext(), 'earned', [rowIndex])[0];
+  return denyEarnedRow_(row, emailData);
+}
+
+function denyEarnedRow_(rowIndex, emailData) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Approvals (New)');
   
@@ -1790,11 +1955,11 @@ function denyEarnedRow(rowIndex, emailData) {
     let reasonsHtml = "";
     if (emailData.reasons && emailData.reasons.length > 0) {
       reasonsHtml = `<ul style="margin: 10px 0; padding-left: 20px; color: #b91c1c;">` + 
-        emailData.reasons.map(r => `<li>${r}</li>`).join('') + 
+        emailData.reasons.map(r => `<li>${escapeHtml_(r)}</li>`).join('') +
         `</ul>`;
     }
 
-    const noteHtml = emailData.note ? `<p style="margin-top: 10px;"><em>" ${emailData.note} "</em></p>` : "";
+    const noteHtml = emailData.note ? `<p style="margin-top: 10px;"><em>" ${escapeHtml_(emailData.note)} "</em></p>` : "";
 
     const body = `
       <p>Your request has been processed and denied.</p>
@@ -1807,14 +1972,14 @@ function denyEarnedRow(rowIndex, emailData) {
 
       <div style="background-color: #f8fafc; padding: 15px; margin: 15px 0; border: 1px solid #e2e8f0; border-radius: 4px;">
         <p style="margin: 0; color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;">Request Details</p>
-        <p style="margin: 5px 0 0 0; color: #1e293b; font-weight: bold;">Subbed for ${rowData.subbedFor}</p>
-        <p style="margin: 0; color: #334155;">${formattedDate} &bull; Period ${rowData.period}</p>
+        <p style="margin: 5px 0 0 0; color: #1e293b; font-weight: bold;">Subbed for ${escapeHtml_(rowData.subbedFor)}</p>
+        <p style="margin: 0; color: #334155;">${escapeHtml_(formattedDate)} &bull; Period ${escapeHtml_(rowData.period)}</p>
       </div>
 
       <p>Please review the details and resubmit if necessary, or contact the TST administrator.</p>
     `;
     
-    sendStyledEmail(rowData.email, subject, "TST Request Update", body, "Visit the TST Portal", buildingName);
+    sendStyledEmail_(rowData.email, subject, "TST Request Update", body, "Visit the TST Portal", buildingName);
   }
   
   return true;
@@ -1825,6 +1990,11 @@ function denyEarnedRow(rowIndex, emailData) {
  * Deletes from BOTH 'TST Approvals (New)' and 'Form Responses 1'.
  */
 function deleteEarnedRow(rowIndex) {
+  const row = authorizeRequestRows_(getUserContext(), 'earned', [rowIndex])[0];
+  return deleteEarnedRow_(row);
+}
+
+function deleteEarnedRow_(rowIndex) {
   const row = Number(rowIndex);
   if (!Number.isInteger(row) || row < 2) throw new Error("Invalid row index.");
 
@@ -1875,6 +2045,11 @@ function deleteEarnedRow(rowIndex) {
  * Updates BOTH 'TST Approvals (New)' and 'Form Responses 1'.
  */
 function updateEarnedRow(rowIndex, newData) {
+  const row = authorizeRequestRows_(getUserContext(), 'earned', [rowIndex])[0];
+  return updateEarnedRow_(row, newData);
+}
+
+function updateEarnedRow_(rowIndex, newData) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const approvalSheet = ss.getSheetByName('TST Approvals (New)');
   const formSheet = ss.getSheetByName('Form Responses 1');
@@ -1927,6 +2102,11 @@ function updateEarnedRow(rowIndex, newData) {
  * Admin Action: Approve a Used request.
  */
 function approveUsedRow(rowIndex) {
+  const row = authorizeRequestRows_(getUserContext(), 'used', [rowIndex])[0];
+  return approveUsedRow_(row);
+}
+
+function approveUsedRow_(rowIndex) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Usage (New)');
   // Col E (5) is status, Col F (6) is timestamp
@@ -1939,6 +2119,11 @@ function approveUsedRow(rowIndex) {
  * Admin Action: Delete a Used request.
  */
 function deleteUsedRow(rowIndex) {
+  const row = authorizeRequestRows_(getUserContext(), 'used', [rowIndex])[0];
+  return deleteUsedRow_(row);
+}
+
+function deleteUsedRow_(rowIndex) {
   const row = Number(rowIndex);
   if (!Number.isInteger(row) || row < 2) throw new Error("Invalid row index.");
 
@@ -1958,6 +2143,11 @@ function deleteUsedRow(rowIndex) {
  * Admin Action: Edit a Used request.
  */
 function updateUsedRow(rowIndex, newData) {
+  const row = authorizeRequestRows_(getUserContext(), 'used', [rowIndex])[0];
+  return updateUsedRow_(row, newData);
+}
+
+function updateUsedRow_(rowIndex, newData) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Usage (New)');
   // Cols: C=Date (3), D=Amount (4)
@@ -1967,9 +2157,15 @@ function updateUsedRow(rowIndex, newData) {
 }
 
 /**
- * Create a new Usage entry (Admin or Teacher).
+ * Create a new Usage entry (Admin or Teacher). A teacher may only submit for
+ * themselves; an admin may submit for staff they manage (View As).
  */
 function submitUsage(formObj) {
+  assertSelfOrManagerOf_(formObj && formObj.email);
+  return submitUsage_(formObj);
+}
+
+function submitUsage_(formObj) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Usage (New)');
   
@@ -1997,9 +2193,14 @@ function submitUsage(formObj) {
 
 /**
  * Create a new Earned entry (Teacher subbing).
- * Writes to Form Responses 1.
+ * Writes to Form Responses 1. Same self-or-manager rule as submitUsage.
  */
 function submitEarned(formObj) {
+  assertSelfOrManagerOf_(formObj && formObj.email);
+  return submitEarned_(formObj);
+}
+
+function submitEarned_(formObj) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   
   // 1. Archive to Form Responses 1 (Keep as backup)
@@ -2021,7 +2222,7 @@ function submitEarned(formObj) {
 
   // 2. Process submission immediately (Decoupled from Form Trigger)
   // This ensures script-initiated submissions appear in the app.
-  processEarnedSubmission({
+  processEarnedSubmission_({
     email: formObj.email,
     subbedFor: subbedForName,
     otherText: otherText,
@@ -2046,10 +2247,15 @@ function adminSubmitRequest(data) {
   const ctx = getUserContext();
   const adminBuilding = ctx.building; // Current View Building
 
+  const targets = [];
+  if (data.earner.type === 'Staff' && data.earner.email) targets.push(data.earner.email);
+  if (data.user.type === 'Staff' && data.user.email) targets.push(data.user.email);
+  assertCanManageStaffEmails_(ctx, targets);
+
   // 1. Handle Earner (If staff member is selected)
   if (data.earner.type === 'Staff' && data.earner.email) {
     // We treat this like a form submission so it flows into the normal Pending pipeline
-    submitEarned({
+    submitEarned_({
       email: data.earner.email,
       subbedForType: data.user.type, // 'Staff' or 'Other'
       subbedForName: data.user.name,
@@ -2063,7 +2269,7 @@ function adminSubmitRequest(data) {
 
   // 2. Handle User (If staff member is selected)
   if (data.user.type === 'Staff' && data.user.email) {
-    submitUsage({
+    submitUsage_({
       email: data.user.email,
       name: data.user.name,
       date: data.details.date,
@@ -2080,13 +2286,20 @@ function adminSubmitRequest(data) {
  */
 function processBatch(queue) {
   if (!Array.isArray(queue) || queue.length === 0) return;
-  
+
+  // Admin only. Authorize every target up front so one out-of-building person
+  // rejects the whole batch instead of partially applying it.
+  const targets = queue
+    .filter(item => item && (item.type === 'earned' || item.type === 'used'))
+    .map(item => (item.payload && item.payload.email) || '');
+  assertCanManageStaffEmails_(getUserContext(), targets);
+
   queue.forEach(item => {
     try {
       if (item.type === 'earned') {
-        submitEarned(item.payload);
+        submitEarned_(item.payload);
       } else if (item.type === 'used') {
-        submitUsage(item.payload);
+        submitUsage_(item.payload);
       }
     } catch (e) {
       console.error("Error processing batch item:", item, e);
@@ -2103,8 +2316,9 @@ function processBatch(queue) {
 function sendBatchStatusEmails(emails) {
   if (!emails || !Array.isArray(emails)) throw new Error("Invalid email list.");
   
-  // Get sender context
+  // Get sender context; every recipient must be staff this admin manages.
   const ctx = getUserContext();
+  assertCanManageStaffEmails_(ctx, emails);
   const senderName = ctx.name || "TST Admin";
   const senderEmail = ctx.email;
   
@@ -2126,7 +2340,7 @@ function sendBatchStatusEmails(emails) {
       const staff = staffDir.find(s => s.email.toLowerCase() === email.toLowerCase());
       const name = staff ? staff.name : "Staff Member";
 
-      sendStatusEmail(email, name, emailOptions);
+      sendStatusEmail_(email, name, emailOptions);
       successCount++;
     } catch (e) {
       console.error(`Failed to send email to ${email}:`, e);
@@ -2138,10 +2352,15 @@ function sendBatchStatusEmails(emails) {
 }
 
 /**
- * Sends an email report to a staff member.
+ * Sends an email report to a staff member the calling admin manages.
  */
 function sendStatusEmail(targetEmail, targetName, emailOptions) {
-  const history = getTeacherHistory(targetEmail);
+  assertCanManageStaffEmails_(getUserContext(), [targetEmail]);
+  return sendStatusEmail_(targetEmail, targetName, emailOptions);
+}
+
+function sendStatusEmail_(targetEmail, targetName, emailOptions) {
+  const history = teacherHistory_(targetEmail);
   const staff = getStaffDirectoryData().find(s => s.email.toLowerCase() === targetEmail.toLowerCase());
   
   if (!staff) throw new Error("Staff member not found.");
@@ -2211,7 +2430,7 @@ function sendStatusEmail(targetEmail, targetName, emailOptions) {
         amountStyle += 'color: #2d3f89;'; 
         amountDisplay = `+${Number(h.amount).toFixed(2)}`;
         typeLabel = `<span style="background-color: #eaecf5; color: #2d3f89; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">EARNED</span>`;
-        details = `<div style="font-weight: 500; color: #333;">${h.period}</div><div style="font-size: 11px; color: #666;">Covered: ${h.subbedFor}</div>`;
+        details = `<div style="font-weight: 500; color: #333;">${escapeHtml_(h.period)}</div><div style="font-size: 11px; color: #666;">Covered: ${escapeHtml_(h.subbedFor)}</div>`;
         rowBg = '#f8fafc';
       } else if (h.type === 'Used') {
         amountStyle += 'color: #ad2122;';
@@ -2223,15 +2442,15 @@ function sendStatusEmail(targetEmail, targetName, emailOptions) {
         amountStyle += 'color: #854d0e;';
         amountDisplay = `${Number(h.amount).toFixed(2)}`;
         typeLabel = `<span style="background-color: #fef9c3; color: #854d0e; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">PENDING</span>`;
-        details = `<div style="font-weight: 500; color: #333;">${h.period !== 'N/A' ? h.period : 'Usage Request'}</div>`;
+        details = `<div style="font-weight: 500; color: #333;">${escapeHtml_(h.period !== 'N/A' ? h.period : 'Usage Request')}</div>`;
         rowBg = '#ffffff';
       } else { // Denied
         amountStyle += 'color: #999; text-decoration: line-through;';
         amountDisplay = `${Number(h.amount).toFixed(2)}`;
         typeLabel = `<span style="background-color: #f2f2f3; color: #666; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">DENIED</span>`;
-        details = `<div style="font-weight: 500; color: #666; text-decoration: line-through;">${h.period}</div>`;
+        details = `<div style="font-weight: 500; color: #666; text-decoration: line-through;">${escapeHtml_(h.period)}</div>`;
         if (h.denialReason) {
-          details += `<div style="font-size: 11px; color: #ad2122; margin-top: 2px;">Reason: ${h.denialReason}</div>`;
+          details += `<div style="font-size: 11px; color: #ad2122; margin-top: 2px;">Reason: ${escapeHtml_(h.denialReason)}</div>`;
         }
         rowBg = '#ffffff';
       }
@@ -2261,7 +2480,7 @@ function sendStatusEmail(targetEmail, targetName, emailOptions) {
     </p>
   `;
   
-  sendStyledEmail(
+  sendStyledEmail_(
     targetEmail,
     "Your TST Hours Report",
     `TST Report for ${targetName}`,
@@ -2281,7 +2500,7 @@ function sendStatusEmail(targetEmail, targetName, emailOptions) {
  * 
  * @param {Object} data - Standardized submission data.
  */
-function processEarnedSubmission(data) {
+function processEarnedSubmission_(data) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const approvalSheet = ss.getSheetByName('TST Approvals (New)');
 
@@ -2388,6 +2607,12 @@ function normDateKey_(d) {
  */
 function onFormSubmit(e) {
   if (!e || !e.values) return; // Safety check
+  // This function must stay public for the installable trigger, so it is also
+  // reachable through google.script.run. A real trigger event carries a live Range;
+  // a client call can only pass plain JSON, so refuse anything without one.
+  if (!e.range || typeof e.range.getSheet !== 'function') {
+    throw new Error('onFormSubmit can only be run by the form submit trigger.');
+  }
   
   // [0] Timestamp, [1] Email, [2] SubbedFor, [3] Other, [4] Date, [5] Period, [6] Type, [7] Decimal
   const data = {
@@ -2401,7 +2626,7 @@ function onFormSubmit(e) {
     building: null // Will be resolved by staff lookup
   };
 
-  processEarnedSubmission(data);
+  processEarnedSubmission_(data);
 }
 
 /**
@@ -2583,7 +2808,7 @@ function processEmailQueue(e) {
 /**
  * Adds an email to the queue for processing.
  */
-function addToEmailQueue(recipient, subject, body, building, options) {
+function addToEmailQueue_(recipient, subject, body, building, options) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName('Email Queue');
   
@@ -2606,10 +2831,23 @@ function addToEmailQueue(recipient, subject, body, building, options) {
 }
 
 /**
+ * Escapes a value for HTML text or a double-quoted attribute. Use it on every
+ * user-controlled value (names, emails, periods, notes, URL parameters, config
+ * values) that goes into email or page HTML.
+ */
+function escapeHtml_(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/**
  * Helper to send a styled HTML email.
  * NOW UPDATED to use the Queue System.
+ * subject, title, buttonText and buildingName are plain text (escaped here);
+ * contentHtml is trusted HTML — callers must escape any data they put in it.
  */
-function sendStyledEmail(recipient, subject, title, contentHtml, buttonText, buildingName, options) {
+function sendStyledEmail_(recipient, subject, title, contentHtml, buttonText, buildingName, options) {
   const appUrl = ScriptApp.getService().getUrl();
   const headerName = buildingName || 'Orono Schools';
   
@@ -2619,7 +2857,7 @@ function sendStyledEmail(recipient, subject, title, contentHtml, buttonText, bui
     <head>
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>${subject}</title>
+      <title>${escapeHtml_(subject)}</title>
       <style>
         body { 
           font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
@@ -2698,13 +2936,13 @@ function sendStyledEmail(recipient, subject, title, contentHtml, buttonText, bui
     <body>
       <div class="container">
         <div class="header">
-          <h1>${headerName}</h1>
+          <h1>${escapeHtml_(headerName)}</h1>
         </div>
         <div class="content">
-          <h2>${title}</h2>
+          <h2>${escapeHtml_(title)}</h2>
           ${contentHtml}
           <div class="button-container">
-            <a href="${appUrl}" class="button">${buttonText || 'Visit the TST Portal'}</a>
+            <a href="${escapeHtml_(appUrl)}" class="button">${escapeHtml_(buttonText || 'Visit the TST Portal')}</a>
           </div>
         </div>
         <div class="footer">
@@ -2739,28 +2977,50 @@ function sendStyledEmail(recipient, subject, title, contentHtml, buttonText, bui
   }
 
   // Queue the email instead of sending directly
-  addToEmailQueue(recipient, subject, htmlTemplate, buildingCode, options);
+  addToEmailQueue_(recipient, subject, htmlTemplate, buildingCode, options);
 }
 // --- SCHEDULE / TST AVAILABILITY FEATURE ---
 
 const MONTH_ORDER = ["September", "October", "November", "December", "January", "February", "March", "April", "May", "June"];
 
 /**
- * @param {string} buildingFilter - Optional building code to filter by (Only honored if Super Admin)
+ * Resolves which building's schedule the caller may read or edit. No request means
+ * the caller's own (primary) building. Otherwise Super Admins may pick any known
+ * building, and everyone else one of their own assigned buildings (e.g. a
+ * multi-building admin who switched school, or is viewing as a teacher in their
+ * secondary building). Returns null when the requested building isn't allowed.
+ */
+function scheduleBuildingFor_(ctx, requested) {
+  if (!requested || requested === ctx.building) return ctx.building;
+  if (BUILDING_CONFIG.hasOwnProperty(requested) &&
+      (ctx.isSuperAdmin || ctx.buildings.includes(requested))) {
+    return requested;
+  }
+  return null;
+}
+
+// Schedule membership for a building, keyed by lowercased email: staff assigned to
+// it (anywhere in a multi-building list) and not archived from it — the same set
+// the Directory shows. Values are display names.
+function scheduleMembers_(building) {
+  const members = new Map();
+  getStaffDirectoryData(building).forEach(s => {
+    members.set(s.email.toString().trim().toLowerCase(), s.name);
+  });
+  return members;
+}
+
+/**
+ * @param {string} buildingFilter - Optional building code to filter by (honored for
+ *   Super Admins, or when the caller is assigned to that building)
  */
 function getScheduleData(buildingFilter) {
   const ctx = getUserContext();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  // Security & Validation Enforcement
-  let effectiveFilter = ctx.building;
-  if (ctx.isSuperAdmin) {
-    if (buildingFilter && BUILDING_CONFIG.hasOwnProperty(buildingFilter)) {
-      effectiveFilter = buildingFilter;
-    } else {
-      effectiveFilter = ctx.building;
-    }
-  }
+  // Security & Validation Enforcement: an unauthorized request falls back to the
+  // caller's own building.
+  const effectiveFilter = scheduleBuildingFor_(ctx, buildingFilter) || ctx.building;
 
   let schedSheet = ss.getSheetByName('TST Availability');
   if (!schedSheet) {
@@ -2772,18 +3032,18 @@ function getScheduleData(buildingFilter) {
   const data = schedSheet.getDataRange().getValues();
   data.shift(); // Remove header
 
-  // 0. Build Staff Building Map
-  const staffDir = getStaffDirectoryData();
-  const staffBuildingMap = {};
-  staffDir.forEach(s => {
-    staffBuildingMap[s.email.toLowerCase()] = s.building;
-  });
+  // 0. Building membership, matching the Directory: staff assigned to this building
+  //    (anywhere in a multi-building list) and not archived from it. Availability
+  //    rows aren't building-tagged, so a multi-building person appears in each of
+  //    their buildings; rows for anyone else (other buildings, archived, removed
+  //    from the directory) are left out.
+  const memberEmails = scheduleMembers_(effectiveFilter);
 
   // 1. Calculate Hours per Teacher per Month
-  const hoursMap = calculateMonthlyHours(); // Returns { "email_Month": hours }
-  
-  // 2. Get Pending Requests Map
-  const pendingMap = getPendingEarnedMap();
+  const hoursMap = calculateMonthlyHours(); // Returns { "email_Month": hours }, email lowercased
+
+  // 2. Get Pending Requests Map (same building as the schedule)
+  const pendingMap = getPendingEarnedMap(effectiveFilter);
 
   // 3. Process Schedule Data
   // We return a structured object: { "September": [ { name, email, days, period, hours, pendingRequests }, ... ], ... }
@@ -2794,15 +3054,14 @@ function getScheduleData(buildingFilter) {
     const [month, days, period, name, email] = row;
 
     // Filter by Building
-    const userBuilding = staffBuildingMap[email.toLowerCase()] || DEFAULT_BUILDING;
-    if (userBuilding !== effectiveFilter) return;
+    const emailKey = (email || '').toString().trim().toLowerCase();
+    if (!memberEmails.has(emailKey)) return;
 
     if (schedule[month]) {
-      const key = `${email}_${month}`;
-      const hours = hoursMap[key] || 0;
+      const hours = hoursMap[`${emailKey}_${month}`] || 0;
       schedule[month].push({
         month, days, period, name, email, hours,
-        pendingRequests: pendingMap[email] || []
+        pendingRequests: pendingMap[emailKey] || []
       });
     }
   });
@@ -2810,16 +3069,18 @@ function getScheduleData(buildingFilter) {
   return schedule;
 }
 
-function getPendingEarnedMap() {
-  const pendingList = getPendingEarned(); // Reuse existing function
+// Pending earned requests for one building, keyed by lowercased email.
+function getPendingEarnedMap(building) {
+  const pendingList = pendingEarnedFor_(building);
   const map = {};
-  
+
   pendingList.forEach(item => {
-    if (!map[item.email]) {
-      map[item.email] = [];
+    const key = item.email.toString().trim().toLowerCase();
+    if (!map[key]) {
+      map[key] = [];
     }
     // Minimal data needed for the tooltip/indicator
-    map[item.email].push({
+    map[key].push({
       date: item.date, // Already safeDate string
       subbedFor: item.subbedFor,
       period: item.period
@@ -2835,7 +3096,7 @@ function calculateMonthlyHours() {
   const data = sheet.getDataRange().getValues();
   data.shift();
 
-  const sums = {}; // "email_MonthName" -> total
+  const sums = {}; // "email_MonthName" -> total (email lowercased)
   const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
   // Determine current school year context
@@ -2851,7 +3112,7 @@ function calculateMonthlyHours() {
   const schoolYearEnd = new Date(endYear, 6, 30); // July 30
 
   data.forEach(row => {
-    const email = row[0];
+    const email = (row[0] || '').toString().trim().toLowerCase();
     const date = new Date(row[4]);
     const hours = Number(row[7]);
     
@@ -2866,22 +3127,41 @@ function calculateMonthlyHours() {
   return sums;
 }
 
-function saveAvailability(month, availabilityList) {
+function saveAvailability(month, availabilityList, targetEmail, periodsShown) {
   // availabilityList: [{ days: "Mon,Tue", period: "Period 1" }, ...]
-  const userEmail = Session.getActiveUser().getEmail();
+  // targetEmail: set only when an admin saves on a teacher's behalf via "View as".
+  // periodsShown: the periods on the form that was saved. Availability rows aren't
+  //   building-tagged and buildings name periods differently, so only these periods
+  //   are replaced — a multi-building teacher saving one building's grid keeps their
+  //   rows for the other building. When omitted, every row for the month is replaced.
+  const sessionEmail = Session.getActiveUser().getEmail();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const staffSheet = ss.getSheetByName('Staff Directory');
   const staffData = staffSheet.getDataRange().getValues();
+
+  let userEmail = sessionEmail;
+  if (targetEmail && targetEmail.toLowerCase() !== sessionEmail.toLowerCase()) {
+    const ctx = getUserContext();
+    assertAdmin_(ctx);
+    const idx = getStaffIndices_(staffSheet);
+    const targetI = findStaffRowByEmail_(staffData, idx.email, targetEmail);
+    if (targetI === -1) throw new Error('Staff member not found.');
+    assertCanManageRow_(ctx, staffData[targetI][idx.building]);
+    userEmail = staffData[targetI][idx.email].toString().trim();
+  }
+
   const userRow = staffData.find(r => r[1].toString().toLowerCase() === userEmail.toLowerCase());
   const userName = userRow ? userRow[0] : userEmail;
 
   const sheet = ss.getSheetByName('TST Availability');
   const data = sheet.getDataRange().getValues();
-  
-  // 1. Remove existing rows for this user + month
+
+  // 1. Remove existing rows for this user + month (limited to the periods shown)
   // We loop backwards to delete
+  const periodScope = Array.isArray(periodsShown) ? new Set(periodsShown) : null;
   for (let i = data.length - 1; i >= 1; i--) {
-    if (data[i][0] === month && data[i][4] === userEmail) {
+    if (data[i][0] === month && data[i][4].toString().trim().toLowerCase() === userEmail.toLowerCase() &&
+        (!periodScope || periodScope.has(data[i][2]))) {
       sheet.deleteRow(i + 1);
     }
   }
@@ -2893,30 +3173,90 @@ function saveAvailability(month, availabilityList) {
   });
 }
 
+// ===== Coverage request links =====
+// The Accept / Decline links in a coverage email are served by doGet with no other
+// credential, so every parameter is HMAC-signed with a per-project secret kept in
+// Script Properties. Changing any value (email, hours, building, ...) breaks the
+// signature.
+const COVERAGE_LINK_FIELDS_ = ['action', 'tEmail', 'tName', 'sub', 'date', 'pd', 'amt', 'type', 'adm', 'bld'];
+
+function coverageLinkSecret_() {
+  const props = PropertiesService.getScriptProperties();
+  let secret = props.getProperty('COVERAGE_LINK_SECRET');
+  if (!secret) {
+    secret = Utilities.getUuid() + Utilities.getUuid();
+    props.setProperty('COVERAGE_LINK_SECRET', secret);
+  }
+  return secret;
+}
+
+function coverageSignature_(params) {
+  const canonical = JSON.stringify(COVERAGE_LINK_FIELDS_.map(k => params[k] == null ? '' : String(params[k])));
+  return Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(canonical, coverageLinkSecret_()));
+}
+
+function buildCoverageLink_(baseUrl, params) {
+  const query = COVERAGE_LINK_FIELDS_
+    .filter(k => params[k] != null && params[k] !== '')
+    .map(k => k + '=' + encodeURIComponent(params[k]));
+  query.push('sig=' + encodeURIComponent(coverageSignature_(params)));
+  return baseUrl + '?' + query.join('&');
+}
+
+function verifyCoverageLink_(params) {
+  if (!params || !params.sig) return false;
+  const given = String(params.sig);
+  const expected = coverageSignature_(params);
+  if (given.length !== expected.length) return false;
+  let diff = 0; // constant-time compare
+  for (let i = 0; i < given.length; i++) diff |= given.charCodeAt(i) ^ expected.charCodeAt(i);
+  return diff === 0;
+}
+
+// The person opening a coverage link must be the teacher it was sent to.
+function coverageLinkUserMismatch_(p) {
+  const sessionEmail = (Session.getActiveUser().getEmail() || '').toString().trim().toLowerCase();
+  const invited = (p.tEmail || '').toString().trim().toLowerCase();
+  if (sessionEmail && sessionEmail === invited) return null;
+  return coverageMessagePage_('Wrong account',
+    'This coverage request was sent to ' + (p.tEmail || 'another staff member') +
+    '. Open the link while signed in to that account.');
+}
+
+function coverageMessagePage_(title, message) {
+  return HtmlService.createHtmlOutput(`
+    <div style="font-family: sans-serif; text-align: center; padding: 50px;">
+      <h1 style="color: #ad2122;">${escapeHtml_(title)}</h1>
+      <p>${escapeHtml_(message)}</p>
+    </div>
+  `).setTitle(title);
+}
+
 function sendCoverageRequest(payload) {
   // payload: { teacherEmail, teacherName, subbedFor, date, period, amount, amountType, building }
+  // Admin only, and only for staff this admin manages.
+  const ctx = getUserContext();
+  assertCanManageStaffEmails_(ctx, [payload && payload.teacherEmail]);
+
   const scriptUrl = ScriptApp.getService().getUrl();
-  const adminEmail = Session.getActiveUser().getEmail();
+  const adminEmail = ctx.email;
   const building = payload.building || DEFAULT_BUILDING;
   const config = getConfig();
   const buildingName = (config[building] && config[building].name) ? config[building].name : (building === 'OMS' ? 'Orono Middle School' : 'Orono Schools');
 
-  // Encode params safely
-  const params = [
-    `action=accept`,
-    `tEmail=${encodeURIComponent(payload.teacherEmail)}`,
-    `tName=${encodeURIComponent(payload.teacherName)}`,
-    `sub=${encodeURIComponent(payload.subbedFor)}`,
-    `date=${encodeURIComponent(payload.date)}`,
-    `pd=${encodeURIComponent(payload.period)}`,
-    `amt=${payload.amount}`,
-    `type=${encodeURIComponent(payload.amountType)}`,
-    `adm=${encodeURIComponent(adminEmail)}`,
-    `bld=${encodeURIComponent(building)}`
-  ].join('&');
-  
-  const acceptLink = `${scriptUrl}?${params}`;
-  const rejectLink = `${scriptUrl}?action=reject&tName=${encodeURIComponent(payload.teacherName)}&sub=${encodeURIComponent(payload.subbedFor)}&pd=${encodeURIComponent(payload.period)}&adm=${encodeURIComponent(adminEmail)}&bld=${encodeURIComponent(building)}`;
+  const linkParams = {
+    tEmail: payload.teacherEmail,
+    tName: payload.teacherName,
+    sub: payload.subbedFor,
+    date: payload.date,
+    pd: payload.period,
+    amt: payload.amount,
+    type: payload.amountType,
+    adm: adminEmail,
+    bld: building
+  };
+  const acceptLink = buildCoverageLink_(scriptUrl, Object.assign({ action: 'accept' }, linkParams));
+  const rejectLink = buildCoverageLink_(scriptUrl, Object.assign({ action: 'reject' }, linkParams));
 
   const subject = `TST Coverage Request: ${payload.date} - ${payload.period}`;
   
@@ -2924,23 +3264,24 @@ function sendCoverageRequest(payload) {
   const [y, m, d] = payload.date.split('-');
   const dateDisplay = `${m}/${d}/${y}`;
 
+  const e = escapeHtml_;
   const htmlBody = `
     <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e5e7eb; border-radius: 8px;">
-      <h2 style="color: #2d3f89; margin-top: 0;">${buildingName}</h2>
+      <h2 style="color: #2d3f89; margin-top: 0;">${e(buildingName)}</h2>
       <h3 style="color: #4b5563; margin-top: 0;">TST Coverage Request</h3>
-      <p>Hello <strong>${payload.teacherName}</strong>,</p>
+      <p>Hello <strong>${e(payload.teacherName)}</strong>,</p>
       <p>Can you provide sub coverage?</p>
-      
+
       <div style="background-color: #f3f4f6; padding: 15px; border-radius: 6px; margin: 20px 0;">
-        <p style="margin: 5px 0;"><strong>Date:</strong> ${dateDisplay}</p>
-        <p style="margin: 5px 0;"><strong>Period:</strong> ${payload.period}</p>
-        <p style="margin: 5px 0;"><strong>Covering For:</strong> ${payload.subbedFor}</p>
-        <p style="margin: 5px 0;"><strong>Duration:</strong> ${payload.amountType}</p>
+        <p style="margin: 5px 0;"><strong>Date:</strong> ${e(dateDisplay)}</p>
+        <p style="margin: 5px 0;"><strong>Period:</strong> ${e(payload.period)}</p>
+        <p style="margin: 5px 0;"><strong>Covering For:</strong> ${e(payload.subbedFor)}</p>
+        <p style="margin: 5px 0;"><strong>Duration:</strong> ${e(payload.amountType)}</p>
       </div>
 
       <div style="text-align: center; margin: 30px 0;">
-         <a href="${acceptLink}" style="background-color: #2d3f89; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold; margin-right: 10px;">Accept & Earn</a>
-         <a href="${rejectLink}" style="background-color: #ad2122; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold;">Decline</a>
+         <a href="${e(acceptLink)}" style="background-color: #2d3f89; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold; margin-right: 10px;">Accept & Earn</a>
+         <a href="${e(rejectLink)}" style="background-color: #ad2122; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold;">Decline</a>
       </div>
       
       <p style="font-size: 12px; color: #6b7280; text-align: center;">Clicking submit will automatically submit the TST form on your behalf.</p>
@@ -2956,19 +3297,23 @@ function sendCoverageRequest(payload) {
   // Also send a tracking email to the Admin
   const adminSubject = `TST Coverage request: ${dateDisplay} - ${payload.teacherName} - ${payload.period}`;
   const adminBody = `
-    <p>You requested coverage from <strong>${payload.teacherName}</strong>.</p>
+    <p>You requested coverage from <strong>${e(payload.teacherName)}</strong>.</p>
     <div style="background-color: #f3f4f6; padding: 15px; border-radius: 6px; margin: 10px 0;">
-      <p style="margin: 5px 0;"><strong>Date:</strong> ${dateDisplay}</p>
-      <p style="margin: 5px 0;"><strong>Period:</strong> ${payload.period}</p>
-      <p style="margin: 5px 0;"><strong>Covering For:</strong> ${payload.subbedFor}</p>
+      <p style="margin: 5px 0;"><strong>Date:</strong> ${e(dateDisplay)}</p>
+      <p style="margin: 5px 0;"><strong>Period:</strong> ${e(payload.period)}</p>
+      <p style="margin: 5px 0;"><strong>Covering For:</strong> ${e(payload.subbedFor)}</p>
     </div>
     <p>This email serves as a record of your request. You will receive another notification if they accept or decline.</p>
   `;
 
-  sendStyledEmail(adminEmail, adminSubject, "Coverage Requested", adminBody, "View Dashboard", buildingName);
+  sendStyledEmail_(adminEmail, adminSubject, "Coverage Requested", adminBody, "View Dashboard", buildingName);
 }
 
-function handleCoverageAccept(p) {
+// Reached only through doGet after verifyCoverageLink_ (private: not callable via google.script.run).
+function handleCoverageAccept_(p) {
+  const mismatch = coverageLinkUserMismatch_(p);
+  if (mismatch) return mismatch;
+
   const building = p.bld || DEFAULT_BUILDING;
   const config = getConfig();
   const buildingName = (config[building] && config[building].name) ? config[building].name : (building === 'OMS' ? 'Orono Middle School' : 'Orono Schools');
@@ -2985,22 +3330,25 @@ function handleCoverageAccept(p) {
     building: building
   };
   
-  // Reuse submit logic
-  submitEarned(formObj);
+  // Reuse submit logic (the signed link + session check above authorize it)
+  submitEarned_(formObj);
   
+  // Every p.* value comes straight from the URL — escape before it touches HTML.
+  const e = escapeHtml_;
+
   // Notify Admin of Acceptance
   if (p.adm) {
     const emailBody = `
-      <p><strong>${p.tName}</strong> has accepted the request to cover for <strong>${p.sub}</strong>.</p>
+      <p><strong>${e(p.tName)}</strong> has accepted the request to cover for <strong>${e(p.sub)}</strong>.</p>
       <div style="background-color: #f8fafc; border-left: 4px solid #2d3f89; padding: 15px; margin: 15px 0;">
         <p style="margin: 0; color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;">Coverage Details</p>
-        <p style="margin: 5px 0 0 0; color: #1e293b; font-weight: bold;">Date: ${p.date}</p>
-        <p style="margin: 0; color: #334155;">Period: ${p.pd} &bull; Duration: ${p.type}</p>
+        <p style="margin: 5px 0 0 0; color: #1e293b; font-weight: bold;">Date: ${e(p.date)}</p>
+        <p style="margin: 0; color: #334155;">Period: ${e(p.pd)} &bull; Duration: ${e(p.type)}</p>
       </div>
       <p>A pending earned request has been automatically created.</p>
     `;
     
-    sendStyledEmail(p.adm, `TST Coverage Accepted: ${p.tName}`, "Coverage Confirmed", emailBody, "View Dashboard", buildingName);
+    sendStyledEmail_(p.adm, `TST Coverage Accepted: ${p.tName}`, "Coverage Confirmed", emailBody, "View Dashboard", buildingName);
   }
   
   let appUrl = ScriptApp.getService().getUrl();
@@ -3044,21 +3392,21 @@ function handleCoverageAccept(p) {
           <div class="icon-circle">
             <i class="fas fa-check"></i>
           </div>
-          <h1 style="margin:0; font-size:20px; font-weight:600;">${buildingName}</h1>
+          <h1 style="margin:0; font-size:20px; font-weight:600;">${e(buildingName)}</h1>
           <p style="margin:4px 0 0 0; opacity:0.8; font-size:12px; text-transform:uppercase; letter-spacing:1px;">TST Manager</p>
         </div>
         <div class="content">
           <h2 class="title">Coverage Confirmed!</h2>
-          <p class="subtitle">Thank you, <strong>${p.tName}</strong>. Your request has been successfully processed.</p>
-          
+          <p class="subtitle">Thank you, <strong>${e(p.tName)}</strong>. Your request has been successfully processed.</p>
+
           <div class="details-box">
-            <div class="detail-row"><span class="label">Date:</span> ${dateDisplay}</div>
-            <div class="detail-row"><span class="label">Period:</span> ${p.pd}</div>
-            <div class="detail-row"><span class="label">Subbing For:</span> ${p.sub}</div>
-            <div class="detail-row"><span class="label">Duration:</span> ${p.type}</div>
+            <div class="detail-row"><span class="label">Date:</span> ${e(dateDisplay)}</div>
+            <div class="detail-row"><span class="label">Period:</span> ${e(p.pd)}</div>
+            <div class="detail-row"><span class="label">Subbing For:</span> ${e(p.sub)}</div>
+            <div class="detail-row"><span class="label">Duration:</span> ${e(p.type)}</div>
           </div>
 
-          <a href="${dashboardLink}" class="btn">Go to Dashboard</a>
+          <a href="${e(dashboardLink)}" class="btn">Go to Dashboard</a>
         </div>
       </div>
     </body>
@@ -3070,24 +3418,28 @@ function handleCoverageAccept(p) {
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
-function handleCoverageReject(p) {
+// Reached only through doGet after verifyCoverageLink_ (private: not callable via google.script.run).
+function handleCoverageReject_(p) {
+  const mismatch = coverageLinkUserMismatch_(p);
+  if (mismatch) return mismatch;
+
   const building = p.bld || DEFAULT_BUILDING;
   const config = getConfig();
   const buildingName = (config[building] && config[building].name) ? config[building].name : (building === 'OMS' ? 'Orono Middle School' : 'Orono Schools');
 
-  // Notify Admin
+  // Notify Admin (p.* values come from the URL — escape them)
   const emailBody = `
-    <p>Teacher <strong>${p.tName}</strong> has <span style="color: #ad2122; font-weight: bold;">declined</span> the coverage request for <strong>${p.sub}</strong>.</p>
-    
+    <p>Teacher <strong>${escapeHtml_(p.tName)}</strong> has <span style="color: #ad2122; font-weight: bold;">declined</span> the coverage request for <strong>${escapeHtml_(p.sub)}</strong>.</p>
+
     <div style="background-color: #fef2f2; border-left: 4px solid #ef4444; padding: 15px; margin: 15px 0;">
        <p style="margin: 0; color: #991b1b; font-weight: bold;">Declined Request</p>
-       <p style="margin: 5px 0 0 0; color: #7f1d1d;">Period: ${p.pd || 'Not specified'}</p>
+       <p style="margin: 5px 0 0 0; color: #7f1d1d;">Period: ${escapeHtml_(p.pd || 'Not specified')}</p>
     </div>
 
     <p>Please select another teacher from the schedule.</p>
   `;
 
-  sendStyledEmail(p.adm, `TST Request Declined: ${p.tName}`, "Coverage Declined", emailBody, "Find Replacement", buildingName);
+  sendStyledEmail_(p.adm, `TST Request Declined: ${p.tName}`, "Coverage Declined", emailBody, "Find Replacement", buildingName);
   
   return HtmlService.createHtmlOutput(`
     <div style="font-family: sans-serif; text-align: center; padding: 50px;">
@@ -3103,64 +3455,63 @@ function handleCoverageReject(p) {
  * @param {string} month - e.g. "September"
  * @param {string} period - e.g. "Period 1 - ..."
  * @param {Object} dayUpdates - { "Mon": ["email1", "email2"], "Tue": [] ... }
+ * @param {string} building - The building whose schedule was edited (client sends
+ *   STATE.building). Availability rows aren't building-tagged and buildings can share
+ *   period names (e.g. "Time Range"), so only this building's members are replaced.
  */
-function updateSchedulePeriod(month, period, dayUpdates) {
+function updateSchedulePeriod(month, period, dayUpdates, building) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  const effectiveBuilding = scheduleBuildingFor_(ctx, building);
+  if (!effectiveBuilding) {
+    throw new Error('You can only edit the schedule for your own building(s).');
+  }
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Availability');
-  const staffSheet = ss.getSheetByName('Staff Directory');
-  
-  // 1. Get all staff map for name lookup (Email -> Name)
-  const staffData = staffSheet.getDataRange().getValues();
-  staffData.shift(); // Header
-  const staffMap = {};
-  staffData.forEach(r => {
-    staffMap[r[1].toString().toLowerCase()] = r[0]; // Email -> Name
-  });
 
-  // 2. Get current availability data
-  const range = sheet.getDataRange();
-  const data = range.getValues();
-  
-  // 3. Identify rows to delete (Matching Month + Period)
-  // We will rebuild rows for this Month+Period context to ensure clean state.
-  // Note: This deletes ALL entries for this Period in this Month and recreates them.
-  // This is safer than trying to diff row-by-row for multi-day entries.
-  
-  const rowsToDelete = [];
-  for (let i = data.length - 1; i >= 1; i--) {
-    // Cols: A=Month, C=Period
-    if (data[i][0] === month && data[i][2] === period) {
-      rowsToDelete.push(i + 1); // 1-based index
-    }
-  }
-  
-  // Batch delete is hard in Apps Script (indexes shift). 
-  // Strategy: Clear content of rows, then sort/filter? No.
-  // Strategy: Delete from bottom up.
-  rowsToDelete.forEach(idx => sheet.deleteRow(idx));
+  // 1. This building's schedule members (lowercased email -> name)
+  const members = scheduleMembers_(effectiveBuilding);
 
-  // 4. Rebuild Rows from dayUpdates
+  // 2. Invert dayUpdates into TeacherEmail -> Set(Days), refusing anyone outside the
+  //    building before touching the sheet so a rejected save changes nothing.
   // dayUpdates format: { "Mon": ["a@b.com", "c@d.com"], "Tue": ["a@b.com"] }
-  // We want to group by Teacher to create multi-day rows if possible, 
-  // OR just create single-day rows for simplicity?
-  // The existing system seems to support "Mon,Tue" (comma separated).
-  
-  // Invert the map: TeacherEmail -> Set(Days)
   const teacherDays = {};
-  Object.keys(dayUpdates).forEach(day => {
-    const emails = dayUpdates[day]; // List of emails for this day
+  const outsiders = [];
+  Object.keys(dayUpdates || {}).forEach(day => {
+    const emails = Array.isArray(dayUpdates[day]) ? dayUpdates[day] : [];
     emails.forEach(email => {
-      const e = email.toLowerCase().trim();
+      const e = (email || '').toString().toLowerCase().trim();
+      if (!e) return;
+      if (!members.has(e)) {
+        if (!outsiders.includes(e)) outsiders.push(e);
+        return;
+      }
       if (!teacherDays[e]) teacherDays[e] = new Set();
       teacherDays[e].add(day);
     });
   });
+  if (outsiders.length > 0) {
+    throw new Error('Not on the ' + effectiveBuilding + ' schedule: ' + outsiders.join(', '));
+  }
 
-  // Create new rows
+  // 3. Delete this building's members' rows for Month + Period (other buildings'
+  //    rows with the same period name survive), bottom-up so indices stay valid.
+  // Rebuilding the rows is safer than diffing row-by-row for multi-day entries.
+  const data = sheet.getDataRange().getValues();
+  for (let i = data.length - 1; i >= 1; i--) {
+    // Cols: A=Month, C=Period, E=Email
+    const rowEmail = (data[i][4] || '').toString().trim().toLowerCase();
+    if (data[i][0] === month && data[i][2] === period && members.has(rowEmail)) {
+      sheet.deleteRow(i + 1); // 1-based index
+    }
+  }
+
+  // 4. Rebuild this building's rows from dayUpdates
   const newRows = [];
   Object.keys(teacherDays).forEach(email => {
     const days = Array.from(teacherDays[email]).sort().join(','); // "Mon,Tue"
-    const name = staffMap[email] || email; // Fallback to email if name not found
+    const name = members.get(email) || email; // Fallback to email if name not found
     
     // Cols: Month, Day(s), Period, Name, Email, Hours(empty)
     newRows.push([month, days, period, name, email, ""]);
@@ -3267,7 +3618,7 @@ function syncMissingSubmissions() {
     
     if (!existingKeys.has(key)) {
       // Missing! Process it using the shared logic
-      processEarnedSubmission({
+      processEarnedSubmission_({
         email: email,
         subbedFor: r[2],
         otherText: r[3],
