@@ -1,4 +1,19 @@
 /**
+ * NOT DEPLOYED — kept for reference only.
+ *
+ * This is the original period-based tracker, superseded by Code.js. It is excluded
+ * from `clasp push` by .claspignore: it defines onFormSubmit, onOpen and
+ * calculatePeriods at the top level, and because Apps Script shares one global
+ * scope and evaluates files in project order (alphabetical, so this file loaded
+ * after Code.js), these definitions used to shadow the real ones — the installed
+ * form trigger ran this onFormSubmit, writing to the retired 'TST Approvals' sheet
+ * instead of 'TST Approvals (New)'.
+ *
+ * Do not add this file back to .claspignore's allow-list. If something here is
+ * still needed, port it into Code.js under a name that doesn't collide.
+ */
+
+/**
  * Middle School TST Time Tracking System - Period-Based
  * Adds a custom menu to the spreadsheet when it's opened.
  */

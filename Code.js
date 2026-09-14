@@ -86,10 +86,6 @@ function getInitialData() {
   const ctx = getUserContext();
   const config = getConfig(); // Load from Sheet
 
-  // Optimization: If Teacher, only calculate balances for them.
-  // Admins need balances for everyone in their building view.
-  const isTeacherOnly = ctx.role === 'Teacher'; 
-
   return {
     email: ctx.email,
     name: ctx.name,
@@ -99,7 +95,10 @@ function getInitialData() {
     isSuperAdmin: ctx.isSuperAdmin,
     config: config,
     defaultBuilding: DEFAULT_BUILDING,
-    staffData: getStaffDirectoryData(ctx.building, isTeacherOnly ? ctx.email : null) // Optimized load
+    // Same rule as getStaffDirectoryData: admins get the building's balances, a
+    // teacher gets their own row plus a name/email roster, and anyone who isn't in
+    // the directory gets nothing (the client shows them Access Denied).
+    staffData: directoryFor_(ctx, ctx.building)
   };
 }
 
@@ -151,7 +150,7 @@ function getViewAsData(targetEmail, building) {
     isSuperAdmin: false,
     config: getConfig(),
     defaultBuilding: DEFAULT_BUILDING,
-    staffData: getStaffDirectoryData(activeBuilding, email)
+    staffData: staffDirectoryData_(activeBuilding, email)
   };
 }
 
@@ -267,68 +266,20 @@ function carryOverMaxFor_(building) {
 }
 
 /**
- * Lightweight helper to get pending counts for badges
- * Now respects building scope.
+ * Pending counts for the admin badges. Admin only, and counted for exactly the
+ * building the queues themselves return, so the badge and the list always agree.
  */
 function getDashboardCounts(buildingFilter) {
   const ctx = getUserContext();
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  
-  // Use explicit building column in sheets instead of directory lookup
-  const effectiveFilter = buildingFilter || ctx.building;
+  assertAdmin_(ctx);
+  const building = allowedBuildingFor_(ctx, buildingFilter) || ctx.building;
 
-  // Earned
-  const earnedSheet = ss.getSheetByName('TST Approvals (New)');
-  const earnedData = earnedSheet.getDataRange().getValues();
-  earnedData.shift();
-
-  // Col N (index 13) is Building. Col I (8) is Approved, K (10) is Denied.
-  const earnedCount = earnedData.filter(r => {
-    const isPending = r[8] !== true && r[8] !== "TRUE" && r[10] !== true && r[10] !== "TRUE" && r[0] !== "";
-    if (!isPending) return false;
-
-    const rowBuilding = r[13] || 'OMS'; // Default to OMS if missing
-
-    if (ctx.isSuperAdmin) {
-       // Super Admin sees all if no filter, or specific building
-       if (buildingFilter && rowBuilding !== buildingFilter) return false;
-    } else {
-       // Regular admin sees their building
-       if (rowBuilding !== effectiveFilter) return false;
-    }
-    return true;
-  }).length;
-  
-  // Used
-  const usedSheet = ss.getSheetByName('TST Usage (New)');
-  const usedData = usedSheet.getDataRange().getValues();
-  usedData.shift();
-
-  // Col H (index 7) is Building (Check Schema: A=0, G=6, H=7). 
-  // Wait, Schema said "G | Building". Let's verify indexes.
-  // Usage: A(0), B(1), C(2), D(3), E(4), F(5), G(6)=Notes, H(7)=Building.
-  // Actually, I added Building as last column.
-  
-  const usedCount = usedData.filter(r => {
-    const isPending = (r[4] === false || r[4] === "" || r[4] === "FALSE") && r[0] !== "";
-    if (!isPending) return false;
-
-    const rowBuilding = r[7] || 'OMS'; 
-
-    if (ctx.isSuperAdmin) {
-      if (buildingFilter && rowBuilding !== buildingFilter) return false;
-    } else {
-       if (rowBuilding !== effectiveFilter) return false;
-    }
-    return true;
-  }).length;
-  
-  return { earned: earnedCount, used: usedCount };
+  return {
+    earned: pendingEarnedFor_(building).length,
+    used: pendingUsedFor_(building).length
+  };
 }
 
-/**
- * Helper to get clean object array of Staff Directory
- */
 // Batch actions authorize every row up front (authorizeRequestRows_), then apply.
 function batchApproveEarned(indices) {
   if (!indices || !Array.isArray(indices)) return;
@@ -486,10 +437,32 @@ function splitBuildings_(buildingCell) {
   return (buildingCell || '').toString().split(',').map(b => b.trim()).filter(Boolean);
 }
 
+function isAdmin_(ctx) {
+  return ctx.role === 'Admin' || ctx.role === 'Super Admin';
+}
+
 function assertAdmin_(ctx) {
-  if (ctx.role !== 'Admin' && ctx.role !== 'Super Admin') {
+  if (!isAdmin_(ctx)) {
     throw new Error('Unauthorized: admin access required.');
   }
+}
+
+/**
+ * Resolves which building a read may be scoped to. No request (or an unknown code)
+ * means the caller's own (primary) building; otherwise anyone may pick one of their
+ * own assigned buildings — a multi-building admin who switched school, or a teacher
+ * assigned to two buildings — and Super Admins may pick any configured building.
+ * Returns null when the requested building isn't allowed, so callers decide between
+ * falling back to ctx.building and refusing.
+ */
+function allowedBuildingFor_(ctx, requested) {
+  if (!requested || requested === ctx.building) return ctx.building;
+  // Buildings can be added through Settings without a config.js edit, so an
+  // assignment in the directory is authority enough; BUILDING_CONFIG only bounds
+  // Super Admins, who aren't limited to their own assignment.
+  if (ctx.buildings.includes(requested)) return requested;
+  if (ctx.isSuperAdmin && BUILDING_CONFIG.hasOwnProperty(requested)) return requested;
+  return null;
 }
 
 // Non-super admins may only touch staff who share at least one of their buildings.
@@ -787,7 +760,7 @@ function deleteStaffMemberPermanent(email) {
 function getArchivedStaff() {
   const ctx = getUserContext();
   if (!ctx.isSuperAdmin) throw new Error('Unauthorized: Super Admin access required.');
-  return getStaffDirectoryData(null, null, true).filter(s => s.archived);
+  return staffDirectoryData_(null, null, true).filter(s => s.archived);
 }
 
 // ===== Year-End Finalize / Archived Years =====
@@ -835,7 +808,7 @@ function finalizeSchoolYear(yearName, building, force) {
 
   // 1. COMBINED balances (across all buildings), computed BEFORE any transactions
   //    are moved. Only the primary building rolls/archives them.
-  const balances = calculateDynamicBalances(null);
+  const balances = calculateDynamicBalances_(null);
 
   // 2. Build the plan from staff assigned to this building.
   const sheet = getStaffSheet_();
@@ -1096,9 +1069,9 @@ function getArchivedYearData(sheetName) {
 function buildDirectorySnapshotRows_(bldg) {
   // Mirror the directory exactly as displayed: COMBINED totals (Earned/Used summed
   // across all of a person's buildings, per the ownership model), non-archived
-  // staff assigned to this building. Reusing getStaffDirectoryData keeps the
+  // staff assigned to this building. Reusing staffDirectoryData_ keeps the
   // snapshot in lock-step with the on-screen table.
-  const staff = getStaffDirectoryData(bldg);
+  const staff = staffDirectoryData_(bldg);
   const rows = staff.map(s => [
     s.name,
     s.email,
@@ -1188,7 +1161,7 @@ function createSnapshot(building, title, description, date) {
   snap.addDeveloperMetadata('tstSnapshotCreated', created);
 
   // Capture the building's counted (approved) transactions so the snapshot can
-  // later be restored to identical totals. Predicate matches calculateDynamicBalances:
+  // later be restored to identical totals. Predicate matches calculateDynamicBalances_:
   //   Approvals: building col N(13), approved col I(8).
   //   Usage:     building col H(7),  status   col E(4).
   captureBuildingTransactions_(ss, 'TST Approvals (New)', 13, 8, bldg, '__snap_' + id + '_appr');
@@ -1203,7 +1176,7 @@ function createSnapshot(building, title, description, date) {
 /**
  * Copies a source transaction sheet's approved rows for one building into a new
  * hidden companion sheet (header + matching rows). Used to make snapshots
- * restorable. Predicate mirrors archiveRowsByBuilding_ / calculateDynamicBalances.
+ * restorable. Predicate mirrors archiveRowsByBuilding_ / calculateDynamicBalances_.
  */
 function captureBuildingTransactions_(ss, srcName, buildingIdx, approvedIdx, bldg, destName) {
   const dest = ss.insertSheet(destName);
@@ -1415,15 +1388,55 @@ function ensureColumn_(sheet, keyword, headerName) {
   return newColNum - 1; // 0-based
 }
 
-function ensureArchivedColumn(sheet) {
-  return ensureColumn_(sheet, 'archiv', 'Archived');
+/**
+ * Directory read for the client. Balances, Carry Over and Paid Out are admin data,
+ * so what comes back depends on who is asking:
+ *   - Admin / Super Admin: the full table for one building they manage.
+ *   - Teacher: their own complete row, plus name/email only for the colleagues in
+ *     that building (all the Submit forms need to name who was covered).
+ * The building is always resolved through allowedBuildingFor_ — an unauthorized or
+ * missing building falls back to the caller's own, so no call returns the district.
+ */
+function getStaffDirectoryData(buildingFilter, targetEmail, includeArchived) {
+  const ctx = getUserContext();
+  const building = allowedBuildingFor_(ctx, buildingFilter) || ctx.building;
+  return directoryFor_(ctx, building, targetEmail, includeArchived);
+}
+
+/**
+ * The directory rows a given caller may have for one (already authorized) building:
+ *   - Admin / Super Admin: everything, balances included.
+ *   - Teacher: their own row in full — the balance their usage form is capped by —
+ *     and nothing but a name and email for everyone else.
+ *   - Anyone not in the directory: nothing.
+ */
+function directoryFor_(ctx, building, targetEmail, includeArchived) {
+  if (isAdmin_(ctx)) return staffDirectoryData_(building, targetEmail, includeArchived);
+  if (ctx.role !== 'Teacher') return [];
+
+  const self = (ctx.email || '').toString().trim().toLowerCase();
+
+  // targetEmail limits the balance scan to the caller — every other row's balance
+  // is dropped below anyway.
+  return staffDirectoryData_(building, ctx.email, false).map(s => {
+    if (s.email.toString().trim().toLowerCase() === self) return s;
+    return {
+      name: s.name,
+      email: s.email,
+      building: s.building,
+      primaryBuilding: s.primaryBuilding,
+      archived: false
+    };
+  });
 }
 
 /**
  * Helper to get clean object array of Staff Directory with DYNAMIC balances.
  * When includeArchived is falsy, archived staff are omitted.
+ * Private: callers are responsible for authorizing the building (see
+ * getStaffDirectoryData for the client-facing, role-aware version).
  */
-function getStaffDirectoryData(buildingFilter, targetEmail, includeArchived) {
+function staffDirectoryData_(buildingFilter, targetEmail, includeArchived) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('Staff Directory');
   const data = sheet.getDataRange().getValues();
@@ -1451,7 +1464,7 @@ function getStaffDirectoryData(buildingFilter, targetEmail, includeArchived) {
   //    building. The buildingFilter is used ONLY for directory membership and the
   //    per-building archived logic below — NOT for the totals. targetEmail is kept
   //    for the single-teacher optimization.
-  const balances = calculateDynamicBalances(null, targetEmail);
+  const balances = calculateDynamicBalances_(null, targetEmail);
 
   return data.map((r, i) => {
     const email = r[iEmail].toString().toLowerCase();
@@ -1501,7 +1514,7 @@ function getStaffDirectoryData(buildingFilter, targetEmail, includeArchived) {
  * Optionally filters transactions by building.
  * Optionally filters by a specific target email (optimization).
  */
-function calculateDynamicBalances(buildingFilter, targetEmail) {
+function calculateDynamicBalances_(buildingFilter, targetEmail) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const stats = {}; // { email: { earned: 0, used: 0 } }
 
@@ -1578,20 +1591,13 @@ function safeDate(val) {
 /**
  * Fetches data for the Admin Pending Earned view.
  * Source: TST Approvals (New)
+ * Admin only — the queue lists other people's requests. Scoped to one building the
+ * caller manages (a building they aren't assigned to falls back to their own).
  */
 function getPendingEarned(buildingFilter) {
   const ctx = getUserContext();
-
-  let effectiveFilter = ctx.building;
-  if (ctx.isSuperAdmin) {
-    if (buildingFilter && BUILDING_CONFIG.hasOwnProperty(buildingFilter)) {
-      effectiveFilter = buildingFilter;
-    } else {
-      effectiveFilter = ctx.building;
-    }
-  }
-
-  return pendingEarnedFor_(effectiveFilter);
+  assertAdmin_(ctx);
+  return pendingEarnedFor_(allowedBuildingFor_(ctx, buildingFilter) || ctx.building);
 }
 
 // Pending (not approved, not denied) earned rows for one building. Callers are
@@ -1632,24 +1638,22 @@ function pendingEarnedFor_(building) {
 /**
  * Fetches data for the Admin Pending Used view.
  * Source: TST Usage (New)
+ * Admin only, scoped like getPendingEarned.
  */
 function getPendingUsed(buildingFilter) {
   const ctx = getUserContext();
+  assertAdmin_(ctx);
+  return pendingUsedFor_(allowedBuildingFor_(ctx, buildingFilter) || ctx.building);
+}
+
+// Pending (unprocessed) usage rows for one building. Callers are responsible for
+// authorizing the building.
+function pendingUsedFor_(building) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-
-  let effectiveFilter = ctx.building;
-  if (ctx.isSuperAdmin) {
-    if (buildingFilter && BUILDING_CONFIG.hasOwnProperty(buildingFilter)) {
-      effectiveFilter = buildingFilter;
-    } else {
-      effectiveFilter = ctx.building;
-    }
-  }
-
   const sheet = ss.getSheetByName('TST Usage (New)');
   const data = sheet.getDataRange().getValues();
   data.shift();
-  
+
   return data.map((r, i) => {
     // Col H(7) is Building
     const rowBuilding = r[7] || 'OMS';
@@ -1664,7 +1668,7 @@ function getPendingUsed(buildingFilter) {
       rowIndex: i + 2
     };
   }).filter(item => {
-    if (item.building !== effectiveFilter) return false;
+    if (item.building !== building) return false;
     return (item.status === false || item.status === "" || item.status === "FALSE") && item.email !== "";
   });
 }
@@ -2172,7 +2176,7 @@ function submitUsage_(formObj) {
   // Resolve Building
   let building = formObj.building;
   if (!building) {
-    const staff = getStaffDirectoryData().find(s => s.email.toLowerCase() === formObj.email.toLowerCase());
+    const staff = staffDirectoryData_().find(s => s.email.toLowerCase() === formObj.email.toLowerCase());
     // Get first building from list
     building = staff ? (staff.building.includes(',') ? staff.building.split(',')[0].trim() : staff.building) : DEFAULT_BUILDING;
   }
@@ -2331,7 +2335,7 @@ function sendBatchStatusEmails(emails) {
   let successCount = 0;
   let failCount = 0;
   
-  const staffDir = getStaffDirectoryData();
+  const staffDir = staffDirectoryData_();
 
   emails.forEach(email => {
     try {
@@ -2361,7 +2365,7 @@ function sendStatusEmail(targetEmail, targetName, emailOptions) {
 
 function sendStatusEmail_(targetEmail, targetName, emailOptions) {
   const history = teacherHistory_(targetEmail);
-  const staff = getStaffDirectoryData().find(s => s.email.toLowerCase() === targetEmail.toLowerCase());
+  const staff = staffDirectoryData_().find(s => s.email.toLowerCase() === targetEmail.toLowerCase());
   
   if (!staff) throw new Error("Staff member not found.");
   
@@ -2521,7 +2525,7 @@ function processEarnedSubmission_(data) {
   }
 
   // Lookup Name & Building using helper
-  const staff = getStaffDirectoryData().find(s => s.email.toLowerCase() === email.toString().toLowerCase());
+  const staff = staffDirectoryData_().find(s => s.email.toLowerCase() === email.toString().toLowerCase());
   const earnerName = staff ? staff.name : email;
 
   // Resolve Building: Use provided OR Staff Primary
@@ -2674,8 +2678,10 @@ function onOpen() {
  */
 function setupEmailService() {
   const ui = SpreadsheetApp.getUi();
-  const userEmail = Session.getActiveUser().getEmail();
-  
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  const userEmail = ctx.email;
+
   // 1. Delete ALL existing triggers for this function to prevent duplicates
   const triggers = ScriptApp.getUserTriggers(SpreadsheetApp.getActiveSpreadsheet());
   triggers.forEach(t => {
@@ -2706,8 +2712,31 @@ function setupEmailService() {
 /**
  * Trigger Handler: Processes the Email Queue.
  * Runs as the user who installed the trigger (The Admin).
+ *
+ * Has to stay public for the installable triggers setupEmailService creates, which
+ * also makes it reachable from google.script.run: it sends the queue as whoever
+ * calls it (ctx.name / ctx.email become the From name and Reply-To), so a client
+ * call must be an admin. Trigger runs are recognised by their event object and are
+ * never blocked, even if the trigger owner has since left the directory.
  */
 function processEmailQueue(e) {
+  if (!isTriggerEvent_(e)) assertAdmin_(getUserContext());
+  return processEmailQueue_();
+}
+
+/**
+ * True for an event object Apps Script itself passed in. Every trigger event carries
+ * an authMode enum; google.script.run parameters are JSON, so a client can send the
+ * property but never the enum object the comparison needs.
+ */
+function isTriggerEvent_(e) {
+  if (!e || !e.authMode) return false;
+  const modes = ScriptApp.AuthMode;
+  return e.authMode === modes.FULL || e.authMode === modes.LIMITED ||
+         e.authMode === modes.CUSTOM_FUNCTION || e.authMode === modes.NONE;
+}
+
+function processEmailQueue_() {
   const MAX_BATCH = 200; // Process up to 200 at a time to cover full building reports
   
   const lock = LockService.getScriptLock();
@@ -2983,44 +3012,39 @@ function sendStyledEmail_(recipient, subject, title, contentHtml, buttonText, bu
 
 const MONTH_ORDER = ["September", "October", "November", "December", "January", "February", "March", "April", "May", "June"];
 
-/**
- * Resolves which building's schedule the caller may read or edit. No request means
- * the caller's own (primary) building. Otherwise Super Admins may pick any known
- * building, and everyone else one of their own assigned buildings (e.g. a
- * multi-building admin who switched school, or is viewing as a teacher in their
- * secondary building). Returns null when the requested building isn't allowed.
- */
-function scheduleBuildingFor_(ctx, requested) {
-  if (!requested || requested === ctx.building) return ctx.building;
-  if (BUILDING_CONFIG.hasOwnProperty(requested) &&
-      (ctx.isSuperAdmin || ctx.buildings.includes(requested))) {
-    return requested;
-  }
-  return null;
-}
-
 // Schedule membership for a building, keyed by lowercased email: staff assigned to
 // it (anywhere in a multi-building list) and not archived from it — the same set
 // the Directory shows. Values are display names.
 function scheduleMembers_(building) {
   const members = new Map();
-  getStaffDirectoryData(building).forEach(s => {
+  staffDirectoryData_(building).forEach(s => {
     members.set(s.email.toString().trim().toLowerCase(), s.name);
   });
   return members;
 }
 
 /**
+ * The master availability grid. Admins get the whole building (that is the view);
+ * a teacher's Schedule tab only ever renders their own rows, so a teacher only gets
+ * those — the rest of the building's availability and pending requests stay with
+ * the admins.
+ *
  * @param {string} buildingFilter - Optional building code to filter by (honored for
  *   Super Admins, or when the caller is assigned to that building)
  */
 function getScheduleData(buildingFilter) {
   const ctx = getUserContext();
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  return scheduleData_(allowedBuildingFor_(ctx, buildingFilter) || ctx.building,
+                       isAdmin_(ctx) ? null : ctx.email);
+}
 
-  // Security & Validation Enforcement: an unauthorized request falls back to the
-  // caller's own building.
-  const effectiveFilter = scheduleBuildingFor_(ctx, buildingFilter) || ctx.building;
+/**
+ * Builds the availability grid for one building. Callers are responsible for
+ * authorizing the building; onlyEmail (optional) narrows it to one person's rows.
+ */
+function scheduleData_(effectiveFilter, onlyEmail) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const onlyEmailKey = onlyEmail ? onlyEmail.toString().trim().toLowerCase() : null;
 
   let schedSheet = ss.getSheetByName('TST Availability');
   if (!schedSheet) {
@@ -3040,10 +3064,10 @@ function getScheduleData(buildingFilter) {
   const memberEmails = scheduleMembers_(effectiveFilter);
 
   // 1. Calculate Hours per Teacher per Month
-  const hoursMap = calculateMonthlyHours(); // Returns { "email_Month": hours }, email lowercased
+  const hoursMap = calculateMonthlyHours_(); // Returns { "email_Month": hours }, email lowercased
 
   // 2. Get Pending Requests Map (same building as the schedule)
-  const pendingMap = getPendingEarnedMap(effectiveFilter);
+  const pendingMap = getPendingEarnedMap_(effectiveFilter);
 
   // 3. Process Schedule Data
   // We return a structured object: { "September": [ { name, email, days, period, hours, pendingRequests }, ... ], ... }
@@ -3056,6 +3080,7 @@ function getScheduleData(buildingFilter) {
     // Filter by Building
     const emailKey = (email || '').toString().trim().toLowerCase();
     if (!memberEmails.has(emailKey)) return;
+    if (onlyEmailKey && emailKey !== onlyEmailKey) return;
 
     if (schedule[month]) {
       const hours = hoursMap[`${emailKey}_${month}`] || 0;
@@ -3070,7 +3095,7 @@ function getScheduleData(buildingFilter) {
 }
 
 // Pending earned requests for one building, keyed by lowercased email.
-function getPendingEarnedMap(building) {
+function getPendingEarnedMap_(building) {
   const pendingList = pendingEarnedFor_(building);
   const map = {};
 
@@ -3090,7 +3115,7 @@ function getPendingEarnedMap(building) {
   return map;
 }
 
-function calculateMonthlyHours() {
+function calculateMonthlyHours_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Approvals (New)');
   const data = sheet.getDataRange().getValues();
@@ -3462,7 +3487,7 @@ function handleCoverageReject_(p) {
 function updateSchedulePeriod(month, period, dayUpdates, building) {
   const ctx = getUserContext();
   assertAdmin_(ctx);
-  const effectiveBuilding = scheduleBuildingFor_(ctx, building);
+  const effectiveBuilding = allowedBuildingFor_(ctx, building);
   if (!effectiveBuilding) {
     throw new Error('You can only edit the schedule for your own building(s).');
   }
@@ -3537,10 +3562,10 @@ function updateStaffCarryOver(email, newAmount) {
   const sheet = ss.getSheetByName('Staff Directory');
   const data = sheet.getDataRange().getValues();
   // Header Row = 0.
-  // Cols: A=Name, B=Email(1), G=CarryOver(6) - based on Schema/getStaffDirectoryData
+  // Cols: A=Name, B=Email(1), G=CarryOver(6) - based on Schema/staffDirectoryData_
 
   // We need to find the correct column index dynamically or hardcode based on known schema
-  // getStaffDirectoryData uses: carryOverIdx = headers.findIndex(...) or 6.
+  // staffDirectoryData_ uses: carryOverIdx = headers.findIndex(...) or 6.
 
   const headers = data[0];
   const emailIdx = headers.findIndex(h => h.toString().toLowerCase().includes('email'));
@@ -3578,8 +3603,13 @@ function updateStaffCarryOver(email, newAmount) {
  * MAINTENANCE UTILITY: Use this to sync any submissions that were archived
  * to 'Form Responses 1' but failed to copy to 'TST Approvals (New)'.
  * Safe to run multiple times; it checks for duplicates.
+ *
+ * Run by an admin from the Apps Script editor; the admin check is what stops it
+ * being called from the browser console, where it would create approval rows for
+ * any staff member in any building.
  */
 function syncMissingSubmissions() {
+  assertAdmin_(getUserContext());
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const formSheet = ss.getSheetByName('Form Responses 1');
   const approvalSheet = ss.getSheetByName('TST Approvals (New)');

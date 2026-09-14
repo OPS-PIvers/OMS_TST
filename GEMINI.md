@@ -26,9 +26,11 @@ This project is a Google Apps Script web application designed to manage "TST" (T
 *   `config.js`: Defines `BUILDING_CONFIG` and `DEFAULT_BUILDING`.
 *   `Index.html`: Client-side code (HTML/JS/CSS). Handles UI state, building switching, and form rendering.
 *   `SPREADSHEET_SCHEMA.md`: **Crucial.** Defines the required Google Sheet structure and column order.
-*   `Code_legacy.js`: Archive of previous logic.
+*   `Code_legacy.js`: Archive of previous logic. **Not deployed** — excluded by `.claspignore`, because its top-level `onFormSubmit`/`onOpen`/`calculatePeriods` shadowed the ones in `Code.js` (Apps Script shares one global scope).
 *   `appsscript.json`: Manifest file.
 *   `.clasp.json`: Clasp configuration.
+*   `.claspignore`: Allow-list of the files `clasp push` deploys. A new server file must be added here.
+*   `test/`: Node test suite (`node test/run.js`) — runs `Code.js` in a `vm` with mocked Apps Script services.
 
 ## Data Structure (Google Sheets)
 

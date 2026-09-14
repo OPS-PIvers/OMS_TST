@@ -42,6 +42,7 @@ clasp deploy -i AKfycbzPvaCCovRLEUVSe05KfRaDlXEs9k64oMCtpcXdOnYzVpP2BW16PaXV5SJV
 **Important:**
 - `clasp push` overwrites remote files completely. Always verify changes before pushing.
 - Always use the deployment ID (`-i` flag) to update the existing web app deployment rather than creating a new one.
+- [.claspignore](.claspignore) is an **allow-list**: only `Code.js`, `config.js`, `Index.html` and `appsscript.json` are pushed. A new server-side file is not deployed until it is added there, and non-Apps-Script files (the Node tests, [Code_legacy.js](Code_legacy.js)) must stay out — Apps Script shares one global scope across a project's files and evaluates them in order, so a stray file's top-level code runs on every execution and its duplicate function names shadow the real ones.
 
 ## Architecture
 
@@ -85,7 +86,7 @@ The application relies on four key sheets within the bound Google Spreadsheet:
    - When adding rows programmatically, set individual cells and leave H blank so the ARRAYFORMULA fills it (do NOT use `appendRow`).
 
    **Ownership model (combined totals + primary building):**
-   - **Earned hours** may be contributed by **any** building the person works in (each transaction is tagged with its building: earned col N/13, used col H/7). Directory/Totals balances and a teacher's own summary are **combined across all of a person's buildings** — `getStaffDirectoryData` computes balances via `calculateDynamicBalances(null, …)`; `buildingFilter` is used only for directory membership and per-building archived logic.
+   - **Earned hours** may be contributed by **any** building the person works in (each transaction is tagged with its building: earned col N/13, used col H/7). Directory/Totals balances and a teacher's own summary are **combined across all of a person's buildings** — `staffDirectoryData_` computes balances via `calculateDynamicBalances_(null, …)`; `buildingFilter` is used only for directory membership and per-building archived logic.
    - **Carry Over, Paid Out, and finalize** are **owned by the PRIMARY building's admin**. `isPrimaryAdminFor_(ctx, buildingCell)` gates the owned-column writers (`updateStaffBatch`, `updateStaffCarryOver`, `updateStaffMember`): Super Admins always pass; otherwise the admin must be assigned to that person's primary building. Non-primary admins see those columns read-only but can still submit/approve **Earned** for their building.
    - **Carry Over cap (`carryOverMax`)** is a per-building config value (default 12) editable **only by Super Admins** in Settings; `saveBuildingConfig` preserves it for non-Super-Admins regardless of payload. It caps the Carry Over rolled at finalize (excess is forfeited) — manual Carry Over edits are **not** capped.
    - **Approval queues + dashboard counts stay building-scoped** (`getDashboardCounts`, `getPendingEarned/Used`) — do not make these combined.
@@ -105,8 +106,8 @@ The application relies on four key sheets within the bound Google Spreadsheet:
 ### Key Server Functions
 
 - **getInitialData()** - Authenticates user, determines role, returns initial app data
-- **getDashboardCounts()** - Returns pending request counts for admin badges
-- **getPendingEarned() / getPendingUsed()** - Fetch pending requests for admin view
+- **getDashboardCounts()** - Returns pending request counts for admin badges (admin only)
+- **getPendingEarned() / getPendingUsed()** - Fetch pending requests for admin view (admin only)
 - **getTeacherHistory(email)** - Fetch complete history for a teacher
 - **approveEarnedRow(rowIndex, emailData)** - Approve earned request, optionally send email
 - **denyEarnedRow(rowIndex, emailData)** - Deny earned request with reason
@@ -121,8 +122,16 @@ Any signed-in domain user can call any public (non-`_`) function from the browse
 - **Acting for staff** (`processBatch`, `adminSubmitRequest`, `sendStatusEmail`, `sendBatchStatusEmails`, `sendCoverageRequest`): `assertCanManageStaffEmails_(ctx, emails)` — admin sharing a building with each person (Super Admins: anyone); all checked up front.
 - **Self or manager** (`submitEarned`, `submitUsage`, `getTeacherHistory`, `getStaffHistoryWithActions`): `assertSelfOrManagerOf_(email)` — the session user's own email, or an admin who manages that person (covers View As).
 - **Coverage links**: `sendCoverageRequest` builds Accept/Decline links with `buildCoverageLink_`, HMAC-SHA256-signed with `COVERAGE_LINK_SECRET` in Script Properties (auto-created). `doGet` rejects links failing `verifyCoverageLink_`; `handleCoverageAccept_/Reject_` also require the signed-in user to be the invited teacher (`tEmail`). Links sent before this change are unsigned and no longer work.
+- **Reads are scoped too** — the queues and the directory are as sensitive as the writes:
+  - **Admin queues** (`getPendingEarned`, `getPendingUsed`, `getDashboardCounts`): `assertAdmin_` plus `allowedBuildingFor_`. The counts are derived from the same `pendingEarnedFor_`/`pendingUsedFor_` helpers as the lists, so a badge can never disagree with the queue under it.
+  - **Directory** (`getStaffDirectoryData`, and the `staffData` in `getInitialData`): `directoryFor_(ctx, building, …)` decides what comes back — an admin gets the building's full table, a Teacher gets their own row plus **name/email only** for colleagues (the Submit forms need to name who was covered), and anyone not in the directory gets `[]`. The unrestricted reader is `staffDirectoryData_` (private).
+  - **Schedule** (`getScheduleData`): admins get the building's grid; a teacher gets only their own availability rows (the teacher Schedule tab renders nothing else).
+  - A missing or unauthorized `buildingFilter` **falls back to the caller's own building** rather than returning the district — no public read is district-wide.
+- **`allowedBuildingFor_(ctx, requested)`** is the one building rule for reads and schedule writes: no request (or an unknown code) means the caller's own building; Super Admins may name any configured building; everyone else may name one of their own assigned buildings (so a multi-building admin who switched school sees that building's queue). Returns `null` when the request isn't allowed — read endpoints fall back, `updateSchedulePeriod` throws.
+- **Maintenance entry points**: `syncMissingSubmissions` is admin-only (run from the Apps Script editor). `processEmailQueue` must stay public for the triggers `setupEmailService` installs, so it allows trigger invocations (`isTriggerEvent_` compares `e.authMode` against the real `ScriptApp.AuthMode` enum, which a `google.script.run` payload cannot carry) and requires an admin otherwise — it sends the queue as whoever calls it. `setupEmailService` is admin-only.
 - `onFormSubmit` stays public for its trigger but refuses events without a live `Range` (i.e. calls from the client).
 - The staff detail modal locks row actions for requests filed under a building the admin doesn't manage (`canActOnRequestBuilding`), mirroring the server.
+- Aggregation helpers that read across the whole district are private: `calculateDynamicBalances_`, `calculateMonthlyHours_`, `getPendingEarnedMap_`.
 
 #### Staff Management (admin-only, self-authorizing via `getUserContext`)
 
@@ -131,7 +140,7 @@ Any signed-in domain user can call any public (non-`_`) function from the browse
 - **archiveStaffMember(email, building) / restoreStaffMember(email, building)** - Add/remove a building from the per-building Archived (J) list. Defaults to the caller's current building.
 - **deleteStaffMemberPermanent(email)** - **Super Admin only.** Deletes the spreadsheet row; only permitted for fully-archived staff (archived from every assigned building).
 - **getArchivedStaff()** - **Super Admin only.** Returns fully-archived staff (for the Settings permanent-delete list).
-- **getStaffDirectoryData(buildingFilter, targetEmail, includeArchived)** - Reads the directory; Earned/Used are **combined across all buildings** (`buildingFilter` only controls membership + the per-building `archived` flag). Also returns `primaryBuilding`, `pendingFinalize` (bool) and `pendingFinalizeYear`. Archived staff are excluded unless `includeArchived` is true.
+- **getStaffDirectoryData(buildingFilter, targetEmail, includeArchived)** - Reads the directory through `directoryFor_` (see Server-side authorization: admins get the full table, teachers a name/email roster plus their own row). Earned/Used are **combined across all buildings** (`buildingFilter` only controls membership + the per-building `archived` flag). Also returns `primaryBuilding`, `pendingFinalize` (bool) and `pendingFinalizeYear`. Archived staff are excluded unless `includeArchived` is true. Server-side callers use the private `staffDirectoryData_(…)`, which has the same signature and no role check.
 - **isPrimaryAdminFor_(ctx, buildingCell) / assertPrimaryAdminFor_(…)** - Gate owned-column edits (Carry Over / Paid Out). True for Super Admins, or when the caller is assigned to the staff member's primary (first-listed) building.
 
 #### Year-End Finalize (primary-aware)
@@ -146,8 +155,8 @@ Any signed-in domain user can call any public (non-`_`) function from the browse
 
 - **getViewAsData(targetEmail, building)** - Returns a `getInitialData`-shaped payload for a **Teacher** so an admin can use the app exactly as that teacher. Requires Admin/Super Admin; non-Super-Admins must share a building with the target (`assertCanManageRow_`), and the returned `buildings` are limited to the buildings they share. Admin/Super Admin targets are rejected. Logs `[View As]` to the execution log.
 - **saveAvailability(month, list, targetEmail, periodsShown)** - `targetEmail` is passed only during View As (same authorization as above); otherwise the session user is used. `periodsShown` limits which of the person's rows for that month get replaced: availability rows aren't building-tagged and buildings name periods differently, so a multi-building teacher saving one building's grid keeps their rows for the other building.
-- **getScheduleData(buildingFilter)** - Membership matches the Directory (`getStaffDirectoryData(building)`): staff assigned to the building anywhere in a multi-building list and not archived from it, compared by lowercased email. Hours/pending lookups are also lowercased; pending requests use the same building as the schedule. The building rule lives in `scheduleBuildingFor_(ctx, requested)` and membership in `scheduleMembers_(building)`.
-- **updateSchedulePeriod(month, period, dayUpdates, building)** - Admin only; `building` must pass `scheduleBuildingFor_` (defaults to the caller's own building). Only deletes/rebuilds rows for that building's `scheduleMembers_` — buildings can share period names (OIS and SE both use "Time Range"), so other buildings' rows must survive. Rejects (before touching the sheet) any email in `dayUpdates` that isn't a member.
+- **getScheduleData(buildingFilter)** - Membership matches the Directory (`staffDirectoryData_(building)`): staff assigned to the building anywhere in a multi-building list and not archived from it, compared by lowercased email. Hours/pending lookups are also lowercased; pending requests use the same building as the schedule. The building rule lives in `allowedBuildingFor_(ctx, requested)` and membership in `scheduleMembers_(building)`; the grid itself is built by `scheduleData_(building, onlyEmail)`, and a Teacher caller is limited to their own rows.
+- **updateSchedulePeriod(month, period, dayUpdates, building)** - Admin only; `building` must pass `allowedBuildingFor_` (defaults to the caller's own building). Only deletes/rebuilds rows for that building's `scheduleMembers_` — buildings can share period names (OIS and SE both use "Time Range"), so other buildings' rows must survive. Rejects (before touching the sheet) any email in `dayUpdates` that isn't a member.
 - Client: the eye button in the Directory's Actions column calls `startViewAs(email)`, which stashes the admin's `STATE.user`/`STATE.building` in `STATE.viewAs` and swaps in the teacher; `exitViewAs()` (banner or profile menu) restores them. Teacher actions already send `STATE.user.email`, so submissions made while viewing as someone are recorded under that teacher.
 
 Authorization: add/edit/archive/restore require Admin or Super Admin; non-Super-Admins are scoped to their own building(s). Editing Carry Over / Paid Out and running finalize for a person additionally require being that person's **primary** building admin (or Super Admin). Permanent delete and archived-staff listing require Super Admin.
@@ -231,7 +240,15 @@ The `onFormSubmit(e)` function must be set up as an **installable trigger** in t
 
 ## Testing & Debugging
 
-Since this is a Google Apps Script project, traditional unit testing is limited. For debugging:
+```bash
+node test/run.js     # no dependencies, no network
+```
+
+[test/](test/) loads the real `Code.js` + `config.js` into a Node `vm` context with mocked Apps Script services (SpreadsheetApp, Session, LockService, PropertiesService, Utilities, MailApp, ScriptApp, HtmlService) and sheets as plain arrays. It covers the authorization rules above, the `google.script.run` calls [Index.html](Index.html) actually makes (recorded from a real browser into `test/ui_calls.json` by `test/record_ui_calls.js`, replayed without one), and the deployed file set. Run it before pushing; CI runs it on PRs and again before every deploy. See [test/README.md](test/README.md).
+
+When adding an endpoint, add a case for what a Teacher, an admin from another building, and a Super Admin each get from it.
+
+For debugging in the live project:
 
 1. Use `Logger.log()` in [Code.js](Code.js) - view logs in Apps Script editor (Ctrl+Enter to run functions)
 2. Use `console.log()` in [Index.html](Index.html) - view in browser console
