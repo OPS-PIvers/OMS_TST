@@ -198,7 +198,7 @@ exports.run = function ({ test, assert }) {
     ['assignCoverage', 'getAssignments', 'getMyAssignments', 'recordAssignment',
      'cancelAssignment', 'remindAssignment',
      'sendTestCalendarEvent', 'getCalendarTestResult',
-     'getEmailServiceStatus', 'setAuthorizeUrl'].forEach(fn => {
+     'getEmailServiceStatus', 'setAuthorizeUrl', 'installBellSchedule'].forEach(fn => {
       assert.ok(html.includes('.' + fn + '('), `Index.html should call ${fn}()`);
     });
   });

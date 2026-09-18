@@ -266,6 +266,20 @@ exports.run = function ({ test, assert }) {
       'what the building set for itself must survive');
   });
 
+  test('installBellSchedule refuses to guess which building it means', () => {
+    const env = envFor(USERS.superAdmin);
+    env.run('saveBuildingConfig', 'OMS', {
+      name: 'Orono Middle School', scheduleType: 'periods', periods: ['Period 1']
+    });
+
+    // The Apps Script editor's Run button passes no arguments. Falling back to the
+    // caller's own building the way reads do would rewrite OMS when someone meant
+    // OHS, so a missing building is an error rather than a default.
+    assert.rejected(env.attempt('installBellSchedule'), /Name the building/i);
+    assert.rejected(env.attempt('installBellSchedule', ''), /Name the building/i);
+    assert.deepEqual(env.run('getConfig').OMS.periods, ['Period 1'], 'OMS is untouched');
+  });
+
   test('installBellSchedule is scoped like every other config write', () => {
     const env = envFor(USERS.omsAdmin);
     assert.rejected(env.attempt('installBellSchedule', 'OHS'), /your own building/i);
