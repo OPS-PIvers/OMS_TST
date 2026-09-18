@@ -32,6 +32,10 @@ const BUILDING_CONFIG = {
     name: 'Orono High School',
     carryOverMax: 12,
     scheduleType: 'periods',
+    // Coverage slots only: the bell chart's 10-minute Break is deliberately not
+    // here, since nobody earns TST covering a passing break and it would sit in
+    // every teacher's availability grid all year.
+    //
     // Listed in Mon/Wed/Fri order, which is three days out of five. Spartan Hour
     // only runs Tue/Thu, so it has no default time — assigning it on a Monday is
     // reported as "no time set for that day" rather than quietly guessing one.
@@ -39,7 +43,6 @@ const BUILDING_CONFIG = {
       "Period 1",
       "Spartan Hour",
       "Period 2",
-      "Break",
       "Period 3",
       "Period 4",
       "Period 5A",
@@ -52,7 +55,6 @@ const BUILDING_CONFIG = {
     periodTimes: {
       "Period 1":  { start: "08:00", end: "08:48" },
       "Period 2":  { start: "08:52", end: "09:40" },
-      "Break":     { start: "09:40", end: "09:50" },
       "Period 3":  { start: "09:54", end: "10:42" },
       "Period 4":  { start: "10:46", end: "11:34" },
       "Period 5A": { start: "11:38", end: "12:02" },
@@ -69,7 +71,6 @@ const BUILDING_CONFIG = {
         times: {
           "Period 1":     { start: "08:00", end: "08:41" },
           "Spartan Hour": { start: "08:45", end: "09:25" },
-          "Break":        { start: "09:25", end: "09:35" },
           "Period 2":     { start: "09:40", end: "10:20" },
           "Period 3":     { start: "10:24", end: "11:04" },
           "Period 4":     { start: "11:08", end: "11:48" },

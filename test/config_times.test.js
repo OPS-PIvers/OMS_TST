@@ -256,8 +256,10 @@ exports.run = function ({ test, assert }) {
     env.run('installBellSchedule', 'OHS');
 
     const ohs = env.run('getConfig').OHS;
-    assert.equal(ohs.periods.length, 11);
+    assert.equal(ohs.periods.length, 10);
     assert.ok(ohs.periods.indexOf('Spartan Hour') > -1);
+    assert.equal(ohs.periods.indexOf('Break'), -1,
+      'the bell chart has a 10-minute Break; it is not something anyone covers');
     assert.equal(ohs.dayGroups.length, 1);
     assert.equal(ohs.periodTimes['Period 7'].end, '14:40');
     assert.equal(ohs.calendarId, 'ohs@group.calendar.google.com',
