@@ -5175,7 +5175,7 @@
                                                      <div class="text-xs font-bold text-ops-blue truncate" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</div>
                                                      ${pendingIndicator}
                                                   </div>
-                                                  <div class="text-[10px] text-gray-500">${Number(t.hours).toFixed(1)} hrs</div>
+                                                  <div class="text-[10px] text-gray-500" title="Approved TST hours earned in ${escapeHtml(month)}">${Number(t.hours).toFixed(1)} hrs in ${escapeHtml(month.slice(0, 3))}</div>
                                                 </div>
                                                 <button ${periodAttrs} data-email="${escapeHtml(t.email)}" data-name="${escapeHtml(t.name)}" onclick="openAssignCoverageModal(this.dataset.email, this.dataset.name, this.dataset.period, this.dataset.month)" class="text-ops-blue bg-white hover:bg-white hover:text-ops-blue-dark border border-blue-200 rounded-full h-6 w-6 flex items-center justify-center shadow-sm opacity-0 group-hover:opacity-100 transition-opacity" title="Assign Coverage">
                                                   <i class="fas fa-paper-plane text-xs"></i>
