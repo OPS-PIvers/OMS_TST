@@ -3938,6 +3938,16 @@ function assignmentCalendarRemovedLine_(a) {
 function installBellSchedule(building) {
   const ctx = getUserContext();
   assertAdmin_(ctx);
+
+  // Name the building explicitly. Every other building-scoped call falls back to
+  // the caller's own when asked for nothing, which is right for a read — but this
+  // one REPLACES a building's periods, and the Apps Script editor's Run button
+  // passes no arguments at all. Defaulting here would quietly rewrite the wrong
+  // school's schedule.
+  if (!building) {
+    throw new Error("Name the building, e.g. installBellSchedule('OHS').");
+  }
+
   const target = allowedBuildingFor_(ctx, building);
   if (!target) throw new Error('You can only install a bell schedule for your own building(s).');
 

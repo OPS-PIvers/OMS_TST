@@ -927,9 +927,15 @@
                         </div>`;
                       }).join('')}
                    </div>
-                   <button type="button" onclick="addPeriodRow()" class="text-xs font-bold text-ops-blue hover:text-ops-blue-dark uppercase tracking-wide flex items-center">
-                      <i class="fas fa-plus-circle mr-1"></i> Add Period
-                   </button>
+                   <div class="flex items-center gap-4 flex-wrap">
+                      <button type="button" onclick="addPeriodRow()" class="text-xs font-bold text-ops-blue hover:text-ops-blue-dark uppercase tracking-wide flex items-center">
+                         <i class="fas fa-plus-circle mr-1"></i> Add Period
+                      </button>
+                      <button type="button" onclick="loadBellSchedule()" class="text-xs font-bold text-ops-blue hover:text-ops-blue-dark uppercase tracking-wide flex items-center">
+                         <i class="fas fa-clock-rotate-left mr-1"></i> Load Built-In Schedule
+                      </button>
+                      <span id="bell-schedule-status" class="text-xs text-ops-gray"></span>
+                   </div>
 
                    <!-- Day-specific schedules: OHS runs different times on MWF and TTh -->
                    <div class="mt-8 pt-4 border-t border-gray-200">
@@ -1181,6 +1187,45 @@
                   </div>`;
                 }).join('')}
          </div>`;
+    }
+
+    /**
+     * Copies this building's bell schedule out of the code into the live config.
+     *
+     * The code's schedule only seeds the App Config sheet when that sheet does not
+     * exist, so a district that has been running for a while never picks up a
+     * schedule added later — which is why these fields can sit empty while the
+     * times are perfectly well defined in the source.
+     */
+    function loadBellSchedule() {
+       const buildingCode = document.getElementById('settings-building-select').value;
+       const status = document.getElementById('bell-schedule-status');
+
+       openConfirmModal(
+          "Load the built-in schedule?",
+          `<p>This replaces <strong>${escapeHtml(buildingCode)}</strong>'s periods and times with the ones defined in the app.</p>
+           <p class="text-sm text-gray-500 mt-2">Anything else the building has set &mdash; its calendar, carry-over cap and name &mdash; is left alone. Unsaved edits on this screen are discarded.</p>`,
+          () => {
+             status.className = 'text-xs text-ops-gray';
+             status.textContent = 'Loading…';
+             google.script.run.withSuccessHandler(summary => {
+                google.script.run.withSuccessHandler(config => {
+                   STATE.config = config;
+                   renderSettingsForm(buildingCode);
+                   const el = document.getElementById('bell-schedule-status');
+                   if (el) {
+                      el.className = 'text-xs font-medium text-green-600';
+                      el.textContent = summary;
+                   }
+                   showToast("Schedule loaded.", "success");
+                }).getConfig();
+             }).withFailureHandler(err => {
+                status.className = 'text-xs font-medium text-ops-red';
+                status.textContent = String(err);
+             }).installBellSchedule(buildingCode);
+          },
+          "Load Schedule"
+       );
     }
 
     function addDayGroupRow() {

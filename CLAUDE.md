@@ -179,7 +179,8 @@ Coverage is **assigned**, not requested — there is no accept/decline handshake
 - `periodTimesFor_(building, period, date)` resolves in order: **day-group override → building default (`periodTimes`) → times written into the label**. It returns `null` when nothing is configured, and that `null` is meaningful — the calendar reports it instead of inventing a time.
 - **OHS runs two bell schedules**: Mon/Wed/Fri are the defaults, Tue/Thu is a `dayGroups` entry. **Spartan Hour only exists on Tue/Thu**, so it deliberately has no default time; assigning it on a Monday reports "no time set for that day". Do not add a Mon/Wed/Fri default to silence that — it would put someone on a calendar at a time that does not exist.
 - `parseTimeRange_` reads a **one-digit hour as 12-hour** and a two-digit one as 24-hour. That is what keeps `Period 8 - 12:37 - 1:08` from becoming a twelve-hour event while leaving an `<input type="time">` value alone.
-- `config.js` seeds App Config **only when the sheet does not exist**, so editing it does nothing to a district already running. `installBellSchedule(building)` merges the schedule keys into the live sheet and leaves calendar ID, carry-over cap and name untouched.
+- `config.js` seeds App Config **only when the sheet does not exist**, so editing it does nothing to a district already running — a schedule added to `config.js` later never appears, and Settings shows empty time fields while the times are perfectly well defined in the source. **Settings → Periods → "Load Built-In Schedule"** (`installBellSchedule(building)`) copies them across, leaving calendar ID, carry-over cap and name untouched.
+  - `installBellSchedule` **requires an explicit building** rather than falling back to the caller's own the way reads do. It replaces a building's periods, and the Apps Script editor's Run button passes no arguments, so a default would quietly rewrite the wrong school.
 
 #### The TST Calendar (per building)
 
