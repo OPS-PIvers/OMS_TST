@@ -216,6 +216,13 @@ function saveBuildingConfig(buildingCode, newConfigObj) {
   const ctx = getUserContext();
   assertAdmin_(ctx);
 
+  // Same building rule as every read: a building admin may edit their own
+  // building(s), a Super Admin any configured one. Without this, any admin could
+  // rewrite another school's periods, coverage types or calendar.
+  if (allowedBuildingFor_(ctx, buildingCode) !== buildingCode) {
+    throw new Error('You can only edit settings for your own building(s).');
+  }
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName('App Config');
 
@@ -259,6 +266,64 @@ function saveBuildingConfig(buildingCode, newConfigObj) {
   }
 
   return true;
+}
+
+/**
+ * Pulls a start/end pair off the end of a label.
+ *
+ * Handles both shapes the app stores: an OMS-style period label with its times
+ * baked in ("Period 8 - 12:37 - 1:08") and a time-range building's period, which
+ * is literally the span ("08:30 - 09:15").
+ *
+ * A one-digit hour comes from a 12-hour label, so 1-6 can only mean the
+ * afternoon of a school day; a two-digit hour is already 24-hour (what an
+ * <input type="time"> produces) and is left alone. That is what keeps
+ * "12:37 - 1:08" from becoming a 12-hour event.
+ */
+function parseTimeRange_(text) {
+  const m = /(\d{1,2}):(\d{2})\s*(?:[-–—]|to)\s*(\d{1,2}):(\d{2})\s*$/.exec(
+    (text == null ? '' : text).toString().trim());
+  if (!m) return null;
+
+  const pad = n => String(n).padStart(2, '0');
+  const to24 = (hRaw, minutes) => {
+    const h = Number(hRaw);
+    const hour = (hRaw.length === 1 && h >= 1 && h <= 6) ? h + 12 : h;
+    return pad(hour) + ':' + pad(Number(minutes));
+  };
+  return { start: to24(m[1], m[2]), end: to24(m[3], m[4]) };
+}
+
+/**
+ * The start/end times for a period on a given date, or null if the building has
+ * not been told what they are.
+ *
+ * Checked in order: a day-group override (OHS runs different times on MWF and
+ * TTh), the building's default times for that period, then any times written
+ * into the label itself. Returning null is meaningful — the calendar reports it
+ * rather than inventing a time.
+ */
+function periodTimesFor_(building, periodLabel, dateStr) {
+  const cfg = (getConfig() || {})[building] || {};
+  const label = (periodLabel == null ? '' : periodLabel).toString().trim();
+
+  const day = parseYmd_(dateStr);
+  if (day && Array.isArray(cfg.dayGroups)) {
+    const short = WEEKDAY_NAMES_[day.getDay()].slice(0, 3);
+    const group = cfg.dayGroups.find(g => g && Array.isArray(g.days) && g.days.indexOf(short) > -1);
+    const t = group && group.times && group.times[label];
+    if (t && t.start && t.end) return { start: t.start, end: t.end, source: group.name || 'day schedule' };
+  }
+
+  const fallback = cfg.periodTimes && cfg.periodTimes[label];
+  if (fallback && fallback.start && fallback.end) {
+    return { start: fallback.start, end: fallback.end, source: 'default' };
+  }
+
+  const parsed = parseTimeRange_(label);
+  if (parsed) return { start: parsed.start, end: parsed.end, source: 'label' };
+
+  return null;
 }
 
 /**

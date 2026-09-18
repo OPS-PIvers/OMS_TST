@@ -909,17 +909,40 @@
                 <!-- Periods Settings -->
                 <div id="settings-periods-container" class="${config.scheduleType === 'periods' ? '' : 'hidden'} mb-8">
                    <h4 class="text-sm font-bold text-ops-blue-dark border-b border-gray-200 pb-2 mb-4">Periods</h4>
+                   <p class="text-xs text-gray-500 mb-3">Start and end times are used for calendar events. They are filled in from the period name where it already contains them.</p>
                    <div id="periods-list" class="space-y-2 mb-3">
-                      ${config.periods.map(p => `
+                      ${config.periods.map(p => {
+                        const t = periodTimesForSettings(config, p);
+                        return `
                         <div class="flex gap-2 items-center">
                            <input type="text" name="period[]" value="${escapeHtml(p)}" class="flex-grow rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+                           <input type="time" name="periodStart[]" value="${escapeHtml(t.start)}" title="Start time" class="w-28 rounded border-gray-300 p-2 border text-sm">
+                           <input type="time" name="periodEnd[]" value="${escapeHtml(t.end)}" title="End time" class="w-28 rounded border-gray-300 p-2 border text-sm">
                            <button type="button" onclick="removeRow(this)" class="text-red-400 hover:text-red-600 p-2"><i class="fas fa-trash"></i></button>
-                        </div>
-                      `).join('')}
+                        </div>`;
+                      }).join('')}
                    </div>
                    <button type="button" onclick="addPeriodRow()" class="text-xs font-bold text-ops-blue hover:text-ops-blue-dark uppercase tracking-wide flex items-center">
                       <i class="fas fa-plus-circle mr-1"></i> Add Period
                    </button>
+
+                   <!-- Day-specific schedules: OHS runs different times on MWF and TTh -->
+                   <div class="mt-8 pt-4 border-t border-gray-200">
+                      <div class="flex items-center gap-2 mb-2">
+                         <h4 class="text-sm font-bold text-ops-blue-dark">Day-Specific Schedules</h4>
+                         <i class="fas fa-info-circle text-ops-blue-light cursor-help text-xs"
+                            onmouseenter="showTooltip(event, 'Only needed when a period runs at different times on different days, such as an MWF and a TTh schedule. Days you do not list here use the default times above.')"
+                            onmousemove="moveTooltip(event)"
+                            onmouseleave="hideTooltip()"></i>
+                      </div>
+                      <p class="text-xs text-gray-500 mb-3">Leave empty if every day follows the times above. Add a period and save before giving it day-specific times.</p>
+                      <div id="day-groups-list" class="space-y-4 mb-3">
+                         ${(config.dayGroups || []).map(g => dayGroupRowHtml(config, g)).join('')}
+                      </div>
+                      <button type="button" onclick="addDayGroupRow()" class="text-xs font-bold text-ops-blue hover:text-ops-blue-dark uppercase tracking-wide flex items-center">
+                         <i class="fas fa-plus-circle mr-1"></i> Add Day Schedule
+                      </button>
+                   </div>
                 </div>
 
                 <!-- Coverage Types -->
@@ -1033,9 +1056,114 @@
        div.className = "flex gap-2 items-center";
        div.innerHTML = `
           <input type="text" name="period[]" placeholder="Period Name" class="flex-grow rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+          <input type="time" name="periodStart[]" title="Start time" class="w-28 rounded border-gray-300 p-2 border text-sm">
+          <input type="time" name="periodEnd[]" title="End time" class="w-28 rounded border-gray-300 p-2 border text-sm">
           <button type="button" onclick="removeRow(this)" class="text-red-400 hover:text-red-600 p-2"><i class="fas fa-trash"></i></button>
        `;
        document.getElementById('periods-list').appendChild(div);
+    }
+
+    const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+
+    /**
+     * The times to show for a period in Settings: what is stored, or failing that
+     * whatever the label already says — which is how OMS periods have always
+     * carried them, so nobody retypes twelve rows. Mirrors periodTimesFor_ on the
+     * server, minus the day-group lookup.
+     */
+    function periodTimesForSettings(config, label, groupTimes) {
+       if (groupTimes) {
+          const override = groupTimes[label];
+          // A day-specific time is opt-in per period; blank means "use the default".
+          return (override && override.start && override.end) ? override : { start: '', end: '' };
+       }
+       const stored = (config.periodTimes || {})[label];
+       if (stored && stored.start && stored.end) return stored;
+       return parseTimeRangeLabel(label) || { start: '', end: '' };
+    }
+
+    /** Client-side twin of parseTimeRange_ — see Code.js for the 12-hour rule. */
+    function parseTimeRangeLabel(text) {
+       const m = /(\d{1,2}):(\d{2})\s*(?:[-–—]|to)\s*(\d{1,2}):(\d{2})\s*$/.exec(String(text || '').trim());
+       if (!m) return null;
+       const pad = n => String(n).padStart(2, '0');
+       const to24 = (hRaw, mins) => {
+          const h = Number(hRaw);
+          const hour = (hRaw.length === 1 && h >= 1 && h <= 6) ? h + 12 : h;
+          return pad(hour) + ':' + pad(Number(mins));
+       };
+       return { start: to24(m[1], m[2]), end: to24(m[3], m[4]) };
+    }
+
+    function dayGroupRowHtml(config, group) {
+       const g = group || { name: '', days: [], times: {} };
+       const periods = config.periods || [];
+       return `
+         <div class="day-group border border-gray-200 rounded p-3 bg-gray-50">
+            <div class="flex gap-2 items-center mb-3">
+               <input type="text" name="dayGroupName" value="${escapeHtml(g.name || '')}" placeholder="Name (e.g. TTh)" class="w-40 rounded border-gray-300 p-2 border text-sm">
+               <div class="flex gap-3 flex-grow flex-wrap">
+                  ${DAY_NAMES.map(d => `
+                    <label class="flex items-center text-xs text-ops-gray-dark">
+                      <input type="checkbox" name="dayGroupDay" value="${escapeHtml(d)}" ${(g.days || []).indexOf(d) > -1 ? 'checked' : ''} class="rounded border-gray-300 text-ops-blue mr-1">${escapeHtml(d)}
+                    </label>`).join('')}
+               </div>
+               <button type="button" onclick="removeDayGroup(this)" class="text-red-400 hover:text-red-600 p-2"><i class="fas fa-trash"></i></button>
+            </div>
+            ${periods.length === 0
+              ? '<p class="text-xs text-gray-400">Add periods above and save first.</p>'
+              : periods.map(p => {
+                  const t = periodTimesForSettings(config, p, g.times || {});
+                  return `
+                  <div class="flex gap-2 items-center mb-1">
+                     <span class="flex-grow text-xs text-ops-gray-dark truncate" title="${escapeHtml(p)}">${escapeHtml(p)}</span>
+                     <input type="hidden" name="dayGroupPeriod" value="${escapeHtml(p)}">
+                     <input type="time" name="dayGroupStart" value="${escapeHtml(t.start)}" class="w-28 rounded border-gray-300 p-1 border text-xs">
+                     <input type="time" name="dayGroupEnd" value="${escapeHtml(t.end)}" class="w-28 rounded border-gray-300 p-1 border text-xs">
+                  </div>`;
+                }).join('')}
+         </div>`;
+    }
+
+    function addDayGroupRow() {
+       const buildingCode = document.getElementById('settings-building-select').value;
+       const config = STATE.config[buildingCode] || {};
+       const wrap = document.createElement('div');
+       wrap.innerHTML = dayGroupRowHtml(config, null);
+       document.getElementById('day-groups-list').appendChild(wrap.firstElementChild);
+    }
+
+    function removeDayGroup(btn) {
+       const group = btn.closest('.day-group');
+       if (group) group.remove();
+    }
+
+    /**
+     * Reads the day-specific schedules out of the Settings form. A group only
+     * counts when it names at least one day and overrides at least one period —
+     * an empty row is someone who opened it and changed their mind.
+     */
+    function collectDayGroups() {
+       return Array.from(document.querySelectorAll('#day-groups-list .day-group')).map(group => {
+          const nameInput = group.querySelector('input[name="dayGroupName"]');
+          const days = Array.from(group.querySelectorAll('input[name="dayGroupDay"]:checked')).map(c => c.value);
+          const periods = group.querySelectorAll('input[name="dayGroupPeriod"]');
+          const starts = group.querySelectorAll('input[name="dayGroupStart"]');
+          const ends = group.querySelectorAll('input[name="dayGroupEnd"]');
+
+          const times = {};
+          Array.from(periods).forEach((periodInput, i) => {
+             const start = starts[i] ? starts[i].value : '';
+             const end = ends[i] ? ends[i].value : '';
+             if (start && end) times[periodInput.value] = { start: start, end: end };
+          });
+
+          return {
+             name: nameInput ? nameInput.value.trim() : '',
+             days: days,
+             times: times
+          };
+       }).filter(g => g.days.length > 0 && Object.keys(g.times).length > 0);
     }
 
     function addCoverageRow() {
@@ -1057,18 +1185,39 @@
        const buildingCode = document.getElementById('settings-building-select').value;
        const form = document.getElementById('settings-form');
        
-       // Construct Object
-       const config = {
+       // Start from what is stored rather than a bare object: saveBuildingConfig
+       // replaces the whole row, so any field this form does not render would be
+       // silently dropped on every save.
+       const stored = STATE.config[buildingCode] || {};
+       const config = Object.assign({}, stored, {
           name: form.name.value,
           scheduleType: form.scheduleType.value
-       };
+       });
 
        if(config.scheduleType === 'time_range') {
           config.increment = parseFloat(form.increment.value) || 15;
+          // These buildings record a span as the period itself, so the times are
+          // already in the label and there is nothing per-period to store.
+          delete config.periodTimes;
+          delete config.dayGroups;
        } else {
-          // Get periods
+          // Periods, each with the start/end a calendar event needs.
           const pInputs = form.querySelectorAll('input[name="period[]"]');
-          config.periods = Array.from(pInputs).map(i => i.value).filter(v => v.trim() !== "");
+          const startInputs = form.querySelectorAll('input[name="periodStart[]"]');
+          const endInputs = form.querySelectorAll('input[name="periodEnd[]"]');
+
+          config.periods = [];
+          config.periodTimes = {};
+          Array.from(pInputs).forEach((input, i) => {
+             const label = input.value.trim();
+             if (!label) return;
+             config.periods.push(label);
+             const start = startInputs[i] ? startInputs[i].value : '';
+             const end = endInputs[i] ? endInputs[i].value : '';
+             if (start && end) config.periodTimes[label] = { start: start, end: end };
+          });
+
+          config.dayGroups = collectDayGroups();
        }
 
        // Get Coverage
