@@ -90,13 +90,24 @@ exports.run = function ({ test, assert }) {
     assert.equal(env.run('calculatePeriods', 'Period 6 ', 'Full Period', 'OHS'), 0.5);
   });
 
-  test('setupEmailService still installs the trigger for an admin', () => {
+  test('setupEmailService still installs the triggers for an admin', () => {
     const env = createEnv({ activeUser: USERS.omsAdmin, sheets: sheets(), files: DEPLOYED });
     env.run('setupEmailService');
 
     const handlers = env.installedTriggers.map(t => t.getHandlerFunction());
-    assert.deepEqual(handlers, ['processEmailQueue', 'processEmailQueue'],
-      'onChange + 1-minute timer, both still named processEmailQueue');
+    assert.deepEqual(handlers,
+      ['processEmailQueue', 'processEmailQueue', 'nudgeOutstandingAssignments'],
+      'onChange + 1-minute timer for the queue, plus the daily assignment nudge');
+  });
+
+  test('setupEmailService re-run does not stack duplicate triggers', () => {
+    const env = createEnv({ activeUser: USERS.omsAdmin, sheets: sheets(), files: DEPLOYED });
+    env.run('setupEmailService');
+    env.run('setupEmailService');
+
+    // Re-authorizing is the documented fix for a broken email service, so it has to
+    // clear the nudge trigger as well as the queue ones rather than pile them up.
+    assert.equal(env.installedTriggers.length, 3);
   });
 
   test('setupEmailService refuses a teacher', () => {

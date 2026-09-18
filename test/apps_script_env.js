@@ -202,10 +202,20 @@ function createEnv(options) {
 
     Utilities: {
       computeHmacSha256Signature: (value, key) => {
-        // Deterministic stand-in: the tests only need "same input, same bytes".
-        const bytes = [];
+        // Deterministic stand-in — not cryptographic, but every byte of the key AND
+        // the value has to reach every byte of the digest. An earlier version read
+        // only the first 32 characters of key + '|' + value; the secret alone is
+        // longer than that, so the signed payload never changed the signature and a
+        // tampered link verified happily.
         const s = String(key) + '|' + String(value);
-        for (let i = 0; i < 32; i++) bytes.push((s.charCodeAt(i % s.length) + i) % 256);
+        const bytes = [];
+        for (let i = 0; i < 32; i++) {
+          let h = (0x811c9dc5 ^ Math.imul(i + 1, 0x9e3779b1)) >>> 0; // FNV-1a, salted per byte
+          for (let j = 0; j < s.length; j++) {
+            h = Math.imul((h ^ s.charCodeAt(j)) >>> 0, 16777619) >>> 0;
+          }
+          bytes.push(h & 0xff);
+        }
         return bytes;
       },
       base64EncodeWebSafe: bytes => Buffer.from(bytes).toString('base64url'),
@@ -234,6 +244,8 @@ function createEnv(options) {
           timeBased: () => builder,
           onChange: () => builder,
           everyMinutes: () => builder,
+          everyDays: () => builder,
+          atHour: () => builder,
           create: () => {
             const t = { getHandlerFunction: () => handler };
             installedTriggers.push(t);
@@ -247,13 +259,24 @@ function createEnv(options) {
 
     HtmlService: {
       XFrameOptionsMode: { ALLOWALL: 'ALLOWALL' },
-      createHtmlOutputFromFile: name => ({
-        setTitle: () => ({ setXFrameOptionsMode: () => ({ file: name }) })
-      }),
-      createHtmlOutput: html => ({
-        setTitle: () => ({ setXFrameOptionsMode: () => ({ html }) }),
-        getContent: () => html
-      })
+      createHtmlOutputFromFile: name => {
+        const out = {
+          file: name,
+          getContent: () => '',
+          setTitle: () => out,
+          setXFrameOptionsMode: () => out
+        };
+        return out;
+      },
+      createHtmlOutput: html => {
+        const out = {
+          html: html,
+          getContent: () => html,
+          setTitle: () => out,
+          setXFrameOptionsMode: () => out
+        };
+        return out;
+      }
     }
   };
   sandbox.globalThis = sandbox;

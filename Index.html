@@ -497,6 +497,7 @@
         updateBadges(); // Fetch initial counts
       } else if (data.role === 'Teacher') {
         switchTab('teacher-totals');
+        updateBadges(); // surfaces coverage they have not recorded yet
       } else {
         document.getElementById('view-container').innerHTML = `
           <div class="bg-ops-red-lighter border-l-4 border-ops-red p-4 rounded text-ops-red-dark">
@@ -631,32 +632,38 @@
        switchTab(STATE.currentTab);
     }
 
+    /** A missing element just means that tab is not on screen for this role. */
+    function setBadge(id, count) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (count > 0) {
+        el.textContent = count;
+        el.classList.remove('hidden');
+      } else {
+        el.classList.add('hidden');
+      }
+    }
+
     function updateBadges() {
       const isAdmin = STATE.user.role === 'Admin' || STATE.user.role === 'Super Admin' || STATE.user.isSuperAdmin;
-      if (!isAdmin) return;
 
-      google.script.run.withSuccessHandler(counts => {
-        const eBadge = document.getElementById('badge-earned');
-        const uBadge = document.getElementById('badge-used');
-        
-        if (eBadge) {
-           if (counts.earned > 0) {
-             eBadge.textContent = counts.earned;
-             eBadge.classList.remove('hidden');
-           } else {
-             eBadge.classList.add('hidden');
-           }
-        }
-        
-        if (uBadge) {
-           if (counts.used > 0) {
-             uBadge.textContent = counts.used;
-             uBadge.classList.remove('hidden');
-           } else {
-             uBadge.classList.add('hidden');
-           }
-        }
-      }).getDashboardCounts(STATE.building);
+      if (isAdmin) {
+        google.script.run.withSuccessHandler(counts => {
+          setBadge('badge-earned', counts.earned);
+          setBadge('badge-used', counts.used);
+          setBadge('badge-assignments', counts.assignments);
+        }).getDashboardCounts(STATE.building);
+        return;
+      }
+
+      // A teacher lands on My Report, so the Submit tab's badge is what tells them
+      // there is coverage of theirs still waiting to be recorded.
+      if (STATE.user.role === 'Teacher') {
+        google.script.run.withSuccessHandler(list => {
+          STATE.myAssignments = list || [];
+          setBadge('badge-my-assignments', countRecordableAssignments(STATE.myAssignments));
+        }).getMyAssignments(STATE.user.email);
+      }
     }
 
     // --- Carry Over Modal ---
@@ -1132,7 +1139,8 @@
         tabs = [
           { id: 'admin-earned', label: 'TST Earned', sub: 'Pending', icon: 'fa-inbox' },
           { id: 'admin-used', label: 'TST Used', sub: 'Pending', icon: 'fa-hand-holding-usd' },
-          { id: 'admin-schedule', label: 'Schedule', sub: 'Coverage', icon: 'fa-calendar-alt' },
+          { id: 'admin-assignments', label: 'Assignments', sub: 'Coverage', icon: 'fa-user-clock' },
+          { id: 'admin-schedule', label: 'Schedule', sub: 'Availability', icon: 'fa-calendar-alt' },
           { id: 'admin-totals', label: 'Directory', sub: 'Finalized', icon: 'fa-users' }
         ];
       } else if (STATE.user.role === 'Teacher') {
@@ -1143,9 +1151,15 @@
         ];
       }
 
+      const BADGE_IDS = {
+        'admin-earned': 'badge-earned',
+        'admin-used': 'badge-used',
+        'admin-assignments': 'badge-assignments',
+        'teacher-submit': 'badge-my-assignments'
+      };
+
       navContainer.innerHTML = tabs.map(t => {
-        // Badge ID logic
-        const badgeId = t.id === 'admin-earned' ? 'badge-earned' : (t.id === 'admin-used' ? 'badge-used' : '');
+        const badgeId = BADGE_IDS[t.id] || '';
         const badgeHtml = badgeId ? `<span id="${badgeId}" class="hidden ml-2 bg-ops-red text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-sm"></span>` : '';
         
         return `
@@ -1236,6 +1250,7 @@
 
       // Dispatch
       if (tabId === 'admin-earned') loadAdminEarned();
+      else if (tabId === 'admin-assignments') loadAdminAssignments();
       else if (tabId === 'admin-used') loadAdminUsed();
       else if (tabId === 'admin-totals') loadAdminTotals();
       else if (tabId === 'admin-schedule') loadAdminSchedule();
@@ -2715,6 +2730,7 @@
       }
       
       const html = `
+        <div id="my-assignments"></div>
         <div class="max-w-2xl mx-auto bg-white rounded-lg shadow-lg overflow-hidden border border-gray-200">
           <div class="bg-ops-blue px-6 py-4 border-b border-blue-800">
             <h2 class="text-xl font-bold text-white"><i class="fas fa-pencil-alt mr-2"></i>Submit Earned TST</h2>
@@ -2769,6 +2785,7 @@
           </div>
         </div>`;
       document.getElementById('view-container').innerHTML = html;
+      loadMyAssignments();
     }
 
     function renderTeacherRequest() {
@@ -2858,6 +2875,266 @@
         dropdown.innerHTML = staffOptions;
         dropdown.value = prevVal;
       }
+    }
+
+    // --- Coverage Assignments ---
+
+    /** yyyy-MM-dd for today, to compare against an assignment's date key. */
+    function todayKey() {
+      const d = new Date();
+      const pad = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    }
+
+    /**
+     * Coverage a teacher has provided but not recorded. Upcoming assignments are
+     * not actionable yet, so they stay off the badge — the same rule the server
+     * uses for the admin badge.
+     */
+    function countRecordableAssignments(list) {
+      const today = todayKey();
+      return (list || []).filter(a =>
+        a.role === 'covering' && a.status === 'Assigned' && a.date && a.date <= today).length;
+    }
+
+    function loadAdminAssignments() {
+      google.script.run.withSuccessHandler(list => {
+        STATE.assignments = list || [];
+        updateBadges();
+        renderAdminAssignments(STATE.assignments);
+      }).withFailureHandler(err => {
+        showToast("Error loading assignments: " + err, "error");
+      }).getAssignments(STATE.building);
+    }
+
+    function assignmentStatusChip(a) {
+      if (a.status === 'Cancelled') {
+        return `<span class="text-xs font-bold px-2 py-1 rounded-full bg-gray-100 text-gray-500">Cancelled</span>`;
+      }
+      if (a.status === 'Recorded') {
+        const byAdmin = /^admin:/.test(a.recordedBy || '');
+        return `<span class="text-xs font-bold px-2 py-1 rounded-full bg-green-100 text-green-700">Recorded${byAdmin ? ' by admin' : ''}</span>`;
+      }
+      if (a.outstanding) {
+        return `<span class="text-xs font-bold px-2 py-1 rounded-full bg-ops-red-lighter text-ops-red">Not recorded</span>`;
+      }
+      return `<span class="text-xs font-bold px-2 py-1 rounded-full bg-ops-blue-lighter text-ops-blue-dark">Upcoming</span>`;
+    }
+
+    function renderAdminAssignments(list) {
+      const outstanding = list.filter(a => a.outstanding).length;
+
+      const rows = list.map(a => {
+        const open = a.status === 'Assigned';
+        const actions = [];
+        if (open) {
+          actions.push(`<button data-id="${escapeHtml(a.id)}" onclick="remindAssignment(this.dataset.id)" title="Re-send the Record email" class="text-ops-blue hover:text-ops-blue-dark px-2"><i class="fas fa-bell"></i></button>`);
+          actions.push(`<button data-id="${escapeHtml(a.id)}" data-name="${escapeHtml(a.subName)}" onclick="recordAssignmentForStaff(this.dataset.id, this.dataset.name)" title="Record on their behalf" class="text-green-600 hover:text-green-800 px-2"><i class="fas fa-check-circle"></i></button>`);
+        }
+        if (a.status !== 'Cancelled') {
+          actions.push(`<button data-id="${escapeHtml(a.id)}" data-name="${escapeHtml(a.subName)}" onclick="reassignCoverage(this.dataset.id, this.dataset.name)" title="Cancel and assign someone else" class="text-ops-blue hover:text-ops-blue-dark px-2"><i class="fas fa-exchange-alt"></i></button>`);
+          actions.push(`<button data-id="${escapeHtml(a.id)}" data-name="${escapeHtml(a.subName)}" onclick="cancelAssignment(this.dataset.id, this.dataset.name)" title="Cancel this assignment" class="text-ops-red hover:text-red-800 px-2"><i class="fas fa-times-circle"></i></button>`);
+        }
+
+        return `
+          <tr class="border-b border-gray-100 hover:bg-gray-50 ${a.status === 'Cancelled' ? 'opacity-60' : ''}">
+            <td class="px-4 py-3 text-sm text-ops-gray-dark whitespace-nowrap">${escapeHtml(a.dateDisplay)}</td>
+            <td class="px-4 py-3 text-sm font-bold text-ops-blue-dark">${escapeHtml(a.subName)}</td>
+            <td class="px-4 py-3 text-sm text-ops-gray-dark">${escapeHtml(a.coveredFor)}</td>
+            <td class="px-4 py-3 text-sm text-ops-gray">${escapeHtml(a.period)}</td>
+            <td class="px-4 py-3 text-sm text-ops-gray whitespace-nowrap">${escapeHtml(a.durationLabel)}</td>
+            <td class="px-4 py-3 whitespace-nowrap">${assignmentStatusChip(a)}</td>
+            <td class="px-4 py-3 text-right whitespace-nowrap">${actions.join('')}</td>
+          </tr>`;
+      }).join('');
+
+      document.getElementById('view-container').innerHTML = `
+        <div class="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
+          <div class="bg-ops-blue px-6 py-4 border-b border-blue-800 flex items-center justify-between">
+            <div>
+              <h2 class="text-xl font-bold text-white"><i class="fas fa-user-clock mr-2"></i>Coverage Assignments</h2>
+              <p class="text-blue-200 text-sm mt-1">Everything you have assigned in ${escapeHtml(STATE.building)}.</p>
+            </div>
+            ${outstanding > 0
+              ? `<span class="bg-white text-ops-red font-bold text-sm px-3 py-1 rounded-full shadow-sm">${outstanding} not recorded</span>`
+              : ''}
+          </div>
+          ${list.length === 0
+            ? `<div class="p-12 text-center text-ops-gray">
+                 <i class="fas fa-calendar-plus text-4xl mb-3 text-gray-300"></i>
+                 <p class="font-bold text-ops-gray-dark">No assignments yet.</p>
+                 <p class="text-sm">Assign coverage from the Schedule tab.</p>
+               </div>`
+            : `<div class="overflow-x-auto">
+                 <table class="min-w-full">
+                   <thead class="bg-gray-50 border-b border-gray-200">
+                     <tr>
+                       <th class="px-4 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Date</th>
+                       <th class="px-4 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Covering</th>
+                       <th class="px-4 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">For</th>
+                       <th class="px-4 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Period</th>
+                       <th class="px-4 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Duration</th>
+                       <th class="px-4 py-3 text-left text-xs font-bold text-ops-gray uppercase tracking-wider">Status</th>
+                       <th class="px-4 py-3"></th>
+                     </tr>
+                   </thead>
+                   <tbody>${rows}</tbody>
+                 </table>
+               </div>`}
+        </div>`;
+    }
+
+    function remindAssignment(id) {
+      showLoading(true);
+      google.script.run.withSuccessHandler(() => {
+        showLoading(false);
+        showToast("Reminder sent.", "success");
+        loadAdminAssignments();
+      }).withFailureHandler(err => {
+        showLoading(false);
+        showToast("Error: " + err, "error");
+      }).remindAssignment(id);
+    }
+
+    function recordAssignmentForStaff(id, name) {
+      const assignment = (STATE.assignments || []).find(a => a.id === id);
+      const who = escapeHtml(name || 'this staff member');
+      openConfirmModal(
+        "Record on their behalf",
+        `<p>File the TST request for <strong>${who}</strong> exactly as assigned?</p>
+         <p class="text-sm text-gray-500 mt-2">It still comes to you for approval, and the assignment is marked as recorded by an admin.</p>`,
+        () => {
+          showLoading(true);
+          google.script.run.withSuccessHandler(() => {
+            showLoading(false);
+            showToast("Recorded for " + (name || 'staff member') + ".", "success");
+            loadAdminAssignments();
+          }).withFailureHandler(err => {
+            showLoading(false);
+            showToast("Error: " + err, "error");
+          }).recordAssignment(id, assignment ? assignment.subEmail : null);
+        },
+        "Record"
+      );
+    }
+
+    function cancelAssignment(id, name, onDone) {
+      const who = escapeHtml(name || 'this staff member');
+      openConfirmModal(
+        "Cancel this assignment?",
+        `<p><strong>${who}</strong> and the person being covered for will both be emailed that it is off.</p>
+         <p class="text-sm text-gray-500 mt-2">If they already recorded their time, that pending request is removed too. Hours you have already approved are never removed this way.</p>`,
+        () => {
+          showLoading(true);
+          google.script.run.withSuccessHandler(() => {
+            showLoading(false);
+            showToast("Assignment cancelled.", "success");
+            if (onDone) onDone(); else loadAdminAssignments();
+          }).withFailureHandler(err => {
+            showLoading(false);
+            showToast("Could not cancel: " + err, "error");
+          }).cancelAssignment(id);
+        },
+        "Cancel Assignment",
+        "bg-ops-red hover:bg-red-700"
+      );
+    }
+
+    /** Cancel, then reopen the assign modal pre-filled with the same slot. */
+    function reassignCoverage(id, name) {
+      const a = (STATE.assignments || []).find(x => x.id === id);
+      cancelAssignment(id, name, () => {
+        loadAdminAssignments();
+        if (a) {
+          openAssignCoverageModal('', '', a.period, '', {
+            date: a.date,
+            coveredForName: a.coveredFor,
+            coveredForEmail: a.coveredForEmail
+          });
+        }
+      });
+    }
+
+    // --- The teacher's own assignments ---
+
+    function loadMyAssignments() {
+      const holder = document.getElementById('my-assignments');
+      if (!holder) return;
+      google.script.run.withSuccessHandler(list => {
+        STATE.myAssignments = list || [];
+        setBadge('badge-my-assignments', countRecordableAssignments(STATE.myAssignments));
+        renderMyAssignments(STATE.myAssignments);
+      }).getMyAssignments(STATE.user.email);
+    }
+
+    function renderMyAssignments(list) {
+      const holder = document.getElementById('my-assignments');
+      if (!holder) return;
+
+      const today = todayKey();
+      const covering = list.filter(a => a.role === 'covering' && a.status !== 'Cancelled');
+      const covered = list.filter(a => a.role === 'covered' && a.status !== 'Cancelled' && a.date >= today);
+
+      if (covering.length === 0 && covered.length === 0) {
+        holder.innerHTML = '';
+        return;
+      }
+
+      const coveringRows = covering.map(a => {
+        const canRecord = a.status === 'Assigned' && a.date <= today;
+        const action = a.status === 'Recorded'
+          ? `<span class="text-xs font-bold text-green-700 whitespace-nowrap"><i class="fas fa-check mr-1"></i>Recorded</span>`
+          : (canRecord
+            ? `<button data-id="${escapeHtml(a.id)}" onclick="recordMyAssignment(this.dataset.id)" class="bg-ops-blue hover:bg-ops-blue-dark text-white text-xs font-bold px-3 py-2 rounded shadow-sm whitespace-nowrap"><i class="fas fa-clock mr-1"></i>Record My TST</button>`
+            : `<span class="text-xs text-ops-gray whitespace-nowrap">Upcoming</span>`);
+
+        return `
+          <div class="flex items-center justify-between gap-4 p-3 border-b border-blue-100 last:border-0">
+            <div class="min-w-0">
+              <div class="font-bold text-ops-blue-dark text-sm">${escapeHtml(a.coveredFor)} &middot; ${escapeHtml(a.period)}</div>
+              <div class="text-xs text-ops-gray">${escapeHtml(a.dateDisplay)} &middot; ${escapeHtml(a.durationLabel)}</div>
+              ${a.note ? `<div class="text-xs text-ops-gray-dark mt-1 italic">${escapeHtml(a.note)}</div>` : ''}
+            </div>
+            ${action}
+          </div>`;
+      }).join('');
+
+      const coveredRows = covered.map(a => `
+          <div class="p-3 border-b border-gray-100 last:border-0">
+            <div class="font-bold text-ops-gray-dark text-sm">${escapeHtml(a.subName)} is covering your ${escapeHtml(a.period)}</div>
+            <div class="text-xs text-ops-gray">${escapeHtml(a.dateDisplay)}</div>
+            ${a.note ? `<div class="text-xs text-ops-gray-dark mt-1 italic">${escapeHtml(a.note)}</div>` : ''}
+          </div>`).join('');
+
+      holder.innerHTML = `
+        <div class="max-w-2xl mx-auto mb-6 space-y-4">
+          ${covering.length ? `
+            <div class="bg-ops-blue-lighter border border-blue-200 rounded-lg overflow-hidden">
+              <div class="px-4 py-2 bg-ops-blue text-white text-sm font-bold">
+                <i class="fas fa-user-clock mr-2"></i>Assigned to you
+              </div>
+              ${coveringRows}
+            </div>` : ''}
+          ${covered.length ? `
+            <div class="bg-white border border-gray-200 rounded-lg overflow-hidden">
+              <div class="px-4 py-2 bg-gray-100 text-ops-gray-dark text-sm font-bold">
+                <i class="fas fa-hands-helping mr-2"></i>Coverage arranged for your classes
+              </div>
+              ${coveredRows}
+            </div>` : ''}
+        </div>`;
+    }
+
+    function recordMyAssignment(id) {
+      showLoading(true);
+      google.script.run.withSuccessHandler(() => {
+        showLoading(false);
+        showToast("TST time recorded — it is now pending approval.", "success");
+        loadMyAssignments();
+      }).withFailureHandler(err => {
+        showLoading(false);
+        showToast("Could not record: " + err, "error");
+      }).recordAssignment(id, STATE.user.email);
     }
 
     // --- Actions & Handlers ---
@@ -4505,7 +4782,7 @@
                                                   </div>
                                                   <div class="text-[10px] text-gray-500">${Number(t.hours).toFixed(1)} hrs</div>
                                                 </div>
-                                                <button ${periodAttrs} data-email="${escapeHtml(t.email)}" data-name="${escapeHtml(t.name)}" onclick="openRequestCoverageModal(this.dataset.email, this.dataset.name, this.dataset.period, this.dataset.month)" class="text-ops-blue bg-white hover:bg-white hover:text-ops-blue-dark border border-blue-200 rounded-full h-6 w-6 flex items-center justify-center shadow-sm opacity-0 group-hover:opacity-100 transition-opacity" title="Request Coverage">
+                                                <button ${periodAttrs} data-email="${escapeHtml(t.email)}" data-name="${escapeHtml(t.name)}" onclick="openAssignCoverageModal(this.dataset.email, this.dataset.name, this.dataset.period, this.dataset.month)" class="text-ops-blue bg-white hover:bg-white hover:text-ops-blue-dark border border-blue-200 rounded-full h-6 w-6 flex items-center justify-center shadow-sm opacity-0 group-hover:opacity-100 transition-opacity" title="Assign Coverage">
                                                   <i class="fas fa-paper-plane text-xs"></i>
                                                 </button>
                                              </div>
@@ -4649,114 +4926,244 @@
       }).updateSchedulePeriod(month, period, dayUpdates, STATE.building);
     }
 
-    function openRequestCoverageModal(tEmail, tName, period, month) {
-      // Default date to tomorrow or reasonable guess based on month?
-      // Since month is "September", we could pick current date if match, or blank.
-      
-      const modalContent = `
-        <form onsubmit="handleCoverageRequestSubmit(event)">
-          <input type="hidden" name="teacherEmail" value="${escapeHtml(tEmail)}">
-          <input type="hidden" name="teacherName" value="${escapeHtml(tName)}">
-          <input type="hidden" name="period" value="${escapeHtml(period)}">
+    /**
+     * Assign coverage. Opened from the Schedule grid with a teacher already chosen,
+     * or from Reassign with the slot pre-filled and the teacher left open.
+     *
+     * The duration controls mirror the teacher's own Submit form rather than being
+     * hardcoded to Full/Half Period: a periods building gets its configured coverage
+     * types, and a time-range building gets start/end pickers with the hours worked
+     * out from the span, which is how OIS and SE record time everywhere else.
+     */
+    function openAssignCoverageModal(tEmail, tName, period, month, prefill) {
+      const pre = prefill || {};
+      const bConfig = STATE.config[STATE.building] || STATE.config[STATE.defaultBuilding] || {};
+      const isPeriods = bConfig.scheduleType !== 'time_range';
+      const coverageTypes = (bConfig.coverageTypes || []).filter(t => t.value !== 'custom');
+      const sortedStaff = sortStaffData(STATE.user.staffData, STATE.sortOption);
 
-          <div class="mb-4 bg-blue-50 p-4 rounded border border-blue-100">
-            <label class="block text-xs font-bold text-ops-blue uppercase tracking-wider mb-1">Requesting Coverage From</label>
-            <div class="text-lg font-bold text-ops-blue-dark">${escapeHtml(tName)}</div>
-            <div class="text-sm text-ops-gray">${escapeHtml(period)}</div>
-          </div>
+      const teacherHtml = tEmail
+        ? `<input type="hidden" name="teacherEmail" value="${escapeHtml(tEmail)}">
+           <input type="hidden" name="teacherName" value="${escapeHtml(tName)}">
+           <div class="mb-4 bg-blue-50 p-4 rounded border border-blue-100">
+             <label class="block text-xs font-bold text-ops-blue uppercase tracking-wider mb-1">Assigning Coverage To</label>
+             <div class="text-lg font-bold text-ops-blue-dark">${escapeHtml(tName)}</div>
+             <div class="text-sm text-ops-gray">${escapeHtml(period)}</div>
+           </div>`
+        : `<div class="mb-4">
+             <label class="block text-sm font-bold text-ops-gray-dark mb-2">Who is covering?</label>
+             <select name="teacherPick" required class="block w-full rounded border-gray-300 p-2 border bg-gray-50">
+               <option value="">-- Select Staff Member --</option>
+               ${sortedStaff.map(s => `<option value="${escapeHtml(s.email)}" data-name="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join('')}
+             </select>
+           </div>`;
+
+      const timeHtml = isPeriods
+        ? `<input type="hidden" name="period" value="${escapeHtml(period)}">`
+        : `<div class="grid grid-cols-2 gap-4 mb-4">
+             <div>
+               <label class="block text-sm font-bold text-ops-gray-dark mb-2">Start Time</label>
+               <input type="time" name="startTime" step="${escapeHtml((bConfig.increment || 15) * 60)}" required class="block w-full rounded border-gray-300 p-2 border">
+             </div>
+             <div>
+               <label class="block text-sm font-bold text-ops-gray-dark mb-2">End Time</label>
+               <input type="time" name="endTime" step="${escapeHtml((bConfig.increment || 15) * 60)}" required class="block w-full rounded border-gray-300 p-2 border">
+             </div>
+           </div>`;
+
+      const durationHtml = isPeriods
+        ? `<div class="mb-4">
+             <label class="block text-sm font-bold text-ops-gray-dark mb-2">Duration</label>
+             <div class="flex gap-4">
+               ${coverageTypes.map((t, idx) => `
+                 <label class="flex-1 cursor-pointer">
+                   <input type="radio" name="duration" value="${escapeHtml(t.value)}" data-label="${escapeHtml(t.label)}" ${idx === 0 ? 'checked' : ''} class="peer sr-only">
+                   <div class="rounded-lg border border-gray-300 p-3 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
+                     <div class="font-bold">${escapeHtml(t.label)}</div>
+                   </div>
+                 </label>`).join('')}
+             </div>
+           </div>`
+        : `<div class="mb-4 text-sm text-ops-gray"><i class="fas fa-info-circle mr-1"></i> Duration is calculated from the time range.</div>`;
+
+      const modalContent = `
+        <form onsubmit="handleAssignCoverageSubmit(event)">
+          ${teacherHtml}
 
           <div class="mb-4">
             <label class="block text-sm font-bold text-ops-gray-dark mb-2">Date Needed</label>
-            <input type="date" name="date" required class="block w-full rounded border-gray-300 p-2 border focus:border-ops-blue focus:ring-1 focus:ring-ops-blue">
-            <p class="text-xs text-gray-400 mt-1">Month: ${escapeHtml(month)}</p>
+            <input type="date" name="date" value="${escapeHtml(pre.date || '')}" required class="block w-full rounded border-gray-300 p-2 border focus:border-ops-blue focus:ring-1 focus:ring-ops-blue">
+            ${month ? `<p class="text-xs text-gray-400 mt-1">Month: ${escapeHtml(month)}</p>` : ''}
           </div>
 
+          ${timeHtml}
+          ${durationHtml}
+
           <div class="mb-4">
-             <label class="block text-sm font-bold text-ops-gray-dark mb-2">Duration</label>
-             <div class="flex gap-4">
-              <label class="flex-1 cursor-pointer">
-                <input type="radio" name="duration" value="1" checked class="peer sr-only">
-                <div class="rounded-lg border border-gray-300 p-3 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
-                  <div class="font-bold">Full Period</div>
-                </div>
-              </label>
-              <label class="flex-1 cursor-pointer">
-                <input type="radio" name="duration" value="0.5" class="peer sr-only">
-                <div class="rounded-lg border border-gray-300 p-3 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
-                  <div class="font-bold">Half Period</div>
-                </div>
-              </label>
+            <label class="block text-sm font-bold text-ops-gray-dark mb-2">Who needs coverage?</label>
+            <select id="req-sub-type" onchange="toggleAssignSubInput(this.value)" class="block w-full rounded border-gray-300 shadow-sm p-2 border bg-gray-50 mb-2">
+              <option value="Staff">Staff Member</option>
+              <option value="Other" ${pre.coveredForName && !pre.coveredForEmail ? 'selected' : ''}>Other (Manual)</option>
+            </select>
+
+            <div id="req-sub-staff-container" class="${pre.coveredForName && !pre.coveredForEmail ? 'hidden' : ''}">
+              <select name="subbedNameDropdown" class="block w-full rounded border-gray-300 p-2 border">
+                ${sortedStaff.map(s => `<option value="${escapeHtml(s.email)}" data-name="${escapeHtml(s.name)}" ${pre.coveredForEmail === s.email ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}
+              </select>
+            </div>
+            <div id="req-sub-manual-container" class="${pre.coveredForName && !pre.coveredForEmail ? '' : 'hidden'}">
+              <input type="text" name="subbedNameManual" value="${escapeHtml(pre.coveredForEmail ? '' : (pre.coveredForName || ''))}" placeholder="e.g. Activity Bus / Meeting" class="block w-full rounded border-gray-300 p-2 border">
+              <p class="text-xs text-gray-400 mt-1">A manual entry has no email address, so nobody is notified that their class is covered.</p>
             </div>
           </div>
 
-          <div class="mb-6">
-            <label class="block text-sm font-bold text-ops-gray-dark mb-2">Who needs coverage?</label>
-            <div class="relative">
-               <select id="req-sub-type" onchange="toggleReqSubInput(this.value)" class="block w-full rounded border-gray-300 shadow-sm p-2 border bg-gray-50 mb-2">
-                 <option value="Staff">Staff Member</option>
-                 <option value="Other">Other (Manual)</option>
-               </select>
-               
-               <div id="req-sub-staff-container">
-                  <select name="subbedNameDropdown" class="block w-full rounded border-gray-300 p-2 border">
-                    ${STATE.user.staffData.map(s => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join('')}
-                  </select>
-               </div>
-               <div id="req-sub-manual-container" class="hidden">
-                  <input type="text" name="subbedNameManual" placeholder="e.g. Activity Bus / Meeting" class="block w-full rounded border-gray-300 p-2 border">
-               </div>
+          <div class="mb-6 border-t border-gray-200 pt-4">
+            <label class="block text-sm font-bold text-ops-gray-dark mb-2">Note <span class="font-normal text-ops-gray">(optional)</span></label>
+            <textarea name="note" rows="2" placeholder="e.g. Sub plans are on the desk" class="block w-full rounded border-gray-300 p-2 border text-sm"></textarea>
+            <div class="flex flex-wrap gap-4 mt-2">
+              <label class="flex items-center text-xs text-ops-gray-dark">
+                <input type="checkbox" name="noteToSub" checked class="rounded border-gray-300 text-ops-blue mr-2"> Include for the person covering
+              </label>
+              <label class="flex items-center text-xs text-ops-gray-dark">
+                <input type="checkbox" name="noteToCovered" class="rounded border-gray-300 text-ops-blue mr-2"> Include for the person being covered
+              </label>
             </div>
           </div>
 
           <div class="flex justify-end gap-3">
-            <button type="button" onclick="closeModal()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300">
-              Cancel
-            </button>
+            <button type="button" onclick="closeModal()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300">Cancel</button>
             <button type="submit" class="px-4 py-2 bg-ops-blue text-white rounded hover:bg-ops-blue-dark font-bold shadow-sm">
-              <i class="fas fa-envelope mr-2"></i> Send Request
+              <i class="fas fa-paper-plane mr-2"></i> Assign Coverage
             </button>
           </div>
-        </form>
-      `;
-      
-      showModal("Request Coverage", modalContent);
+        </form>`;
+
+      showModal("Assign Coverage", modalContent);
     }
 
-    function toggleReqSubInput(val) {
-       if(val === 'Other') {
-         document.getElementById('req-sub-staff-container').classList.add('hidden');
-         document.getElementById('req-sub-manual-container').classList.remove('hidden');
-       } else {
-         document.getElementById('req-sub-staff-container').classList.remove('hidden');
-         document.getElementById('req-sub-manual-container').classList.add('hidden');
-       }
+    function toggleAssignSubInput(val) {
+      const staff = document.getElementById('req-sub-staff-container');
+      const manual = document.getElementById('req-sub-manual-container');
+      if (val === 'Other') {
+        staff.classList.add('hidden');
+        manual.classList.remove('hidden');
+      } else {
+        staff.classList.remove('hidden');
+        manual.classList.add('hidden');
+      }
     }
 
-    function handleCoverageRequestSubmit(e) {
-      e.preventDefault();
-      const form = e.target;
+    /** Reads the modal into the payload assignCoverage expects, or null if invalid. */
+    function buildAssignPayload(form) {
+      const bConfig = STATE.config[STATE.building] || STATE.config[STATE.defaultBuilding] || {};
+      const isPeriods = bConfig.scheduleType !== 'time_range';
       const isOther = form.querySelector('#req-sub-type').value === 'Other';
-      
-      const payload = {
-        teacherEmail: form.teacherEmail.value,
-        teacherName: form.teacherName.value,
-        subbedFor: isOther ? form.subbedNameManual.value : form.subbedNameDropdown.value,
+
+      let teacherEmail = '';
+      let teacherName = '';
+      if (form.teacherEmail) {
+        teacherEmail = form.teacherEmail.value;
+        teacherName = form.teacherName.value;
+      } else {
+        const pick = form.teacherPick;
+        teacherEmail = pick.value;
+        teacherName = pick.selectedOptions.length ? pick.selectedOptions[0].dataset.name : '';
+        if (!teacherEmail) {
+          showToast("Choose who is covering.", "error");
+          return null;
+        }
+      }
+
+      let period = '';
+      let amount = 0;
+      let amountType = '';
+
+      if (isPeriods) {
+        period = form.period.value;
+        amount = parseFloat(form.duration.value);
+        const checked = form.querySelector('input[name="duration"]:checked');
+        amountType = checked ? checked.dataset.label : '';
+      } else {
+        const start = form.startTime.value;
+        const end = form.endTime.value;
+        period = `${start} - ${end}`;
+        const diffHrs = (new Date(`2000-01-01T${end}`) - new Date(`2000-01-01T${start}`)) / 3600000;
+        if (!(diffHrs > 0)) {
+          showToast("End time must be after start time.", "error");
+          return null;
+        }
+        amount = Number(diffHrs.toFixed(2));
+        amountType = "Time Range";
+      }
+
+      let subbedFor = '';
+      let coveredForEmail = '';
+      if (isOther) {
+        subbedFor = form.subbedNameManual.value.trim();
+      } else {
+        const picked = form.subbedNameDropdown;
+        coveredForEmail = picked.value;
+        subbedFor = picked.selectedOptions.length ? picked.selectedOptions[0].dataset.name : '';
+      }
+      if (!subbedFor) {
+        showToast("Say who needs coverage.", "error");
+        return null;
+      }
+
+      const note = form.note.value.trim();
+      return {
+        teacherEmail: teacherEmail,
+        teacherName: teacherName,
+        subbedFor: subbedFor,
+        coveredForEmail: coveredForEmail,
         date: form.date.value,
-        period: form.period.value,
-        amountType: form.duration.value == '1' ? 'Full Period' : 'Half Period',
-        amount: parseFloat(form.duration.value)
+        period: period,
+        amount: amount,
+        amountType: amountType,
+        building: STATE.building,
+        note: note,
+        noteToSub: note ? form.noteToSub.checked : false,
+        noteToCovered: note ? form.noteToCovered.checked : false
       };
-      
-      showLoading(true);
+    }
+
+    function handleAssignCoverageSubmit(e) {
+      e.preventDefault();
+      const payload = buildAssignPayload(e.target);
+      if (!payload) return;
       closeModal();
-      
-      google.script.run.withSuccessHandler(() => {
+      sendAssignment(payload);
+    }
+
+    function sendAssignment(payload) {
+      showLoading(true);
+      google.script.run.withSuccessHandler(res => {
         showLoading(false);
-        showToast(`Request sent to ${payload.teacherName}.`, "success");
+
+        // Covering twice in one day is legitimate, so the server asks rather than
+        // refusing. Confirm and re-send with force.
+        if (res && res.conflict) {
+          const list = res.existing
+            .map(x => `<li>${escapeHtml(x.period)} &mdash; covering for ${escapeHtml(x.coveredFor)}</li>`)
+            .join('');
+          openConfirmModal(
+            "Already covering that day",
+            `<p><strong>${escapeHtml(res.name)}</strong> is already assigned on ${escapeHtml(res.date)}:</p>
+             <ul class="text-sm text-left list-disc list-inside mt-2 text-ops-gray-dark">${list}</ul>
+             <p class="text-sm text-gray-500 mt-3">Assign this period as well?</p>`,
+            () => sendAssignment(Object.assign({}, payload, { force: true })),
+            "Assign Anyway"
+          );
+          return;
+        }
+
+        showToast(`${payload.teacherName} has been assigned.`, "success");
+        if (STATE.currentTab === 'admin-assignments') loadAdminAssignments();
+        else updateBadges();
       }).withFailureHandler(err => {
         showLoading(false);
-        showToast("Error sending request: " + err, "error");
-      }).sendCoverageRequest(payload);
+        showToast("Could not assign: " + err, "error");
+      }).assignCoverage(payload);
     }
 
   </script>

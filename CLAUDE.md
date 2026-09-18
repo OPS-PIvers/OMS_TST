@@ -103,6 +103,13 @@ The application relies on four key sheets within the bound Google Spreadsheet:
    - Source of truth for form-based earned requests
    - Synced to TST Approvals (New) via `onFormSubmit()` trigger
 
+5. **TST Assignments** - Coverage the admin has assigned (auto-created)
+   - Columns: ID (A), Created (B), Building (C), Assigned By (D), Assigned By Name (E), Sub Email (F), Sub Name (G), Covered For (H), Covered For Email (I), Date (J), Period (K), Time Type (L), Hours (M), Note (N), Note To Sub (O), Note To Covered (P), Status (Q), Recorded TS (R), Recorded By (S), Nudged TS (T), Calendar Event ID (U), Calendar Status (V)
+   - Column indexes live in `A_` and the status values in `ASSIGNMENT_STATUS_` (`Assigned` → `Recorded` | `Cancelled`); use those rather than literals.
+   - The row is written **when the admin assigns**, not when the teacher acts. That is what makes the app the record: the Assignments queue, Cancel/Reassign/Remind, Record-on-behalf, the nudge and the duplicate guard all read it, and it is why an un-acted-on assignment is still visible.
+   - Covered For Email is blank for free-text entries ("Activity Bus"), which is the only reason the covered-for notification is ever skipped.
+   - Rows archive to **TST Assignments Archive** at year-end, by building (`archiveAssignmentsForBuilding_`).
+
 ### Key Server Functions
 
 - **getInitialData()** - Authenticates user, determines role, returns initial app data
@@ -114,21 +121,29 @@ The application relies on four key sheets within the bound Google Spreadsheet:
 - **submitEarned(formObj) / submitUsage(formObj)** - Create new requests
 - **batch* functions** - Process multiple actions at once (batchApproveEarned, batchDenyEarned, etc.)
 - **sendStatusEmail(email, name)** - Generate and send TST report email
+- **assignCoverage(payload)** - Assign coverage: writes the TST Assignments row, then queues three emails (the person covering, the person being covered for, the admin's record copy)
+- **getAssignments(building) / getMyAssignments(email)** - The admin queue, and a teacher's own (both the coverage they are providing and the coverage arranged for their classes)
+- **recordAssignment(id, email) / cancelAssignment(id) / remindAssignment(id)** - Record, cancel, re-send
+- **nudgeOutstandingAssignments()** - The one automatic 7am reminder, installed by `setupEmailService`
 
 #### Server-side authorization (every public function is callable via `google.script.run`)
 
 Any signed-in domain user can call any public (non-`_`) function from the browser console, so each endpoint checks on the server. Public wrappers authorize, then call a private `_` variant; internal code calls the `_` variants directly. Apps Script does not expose functions ending in `_` to the client.
 - **Request rows** (approve/deny/delete/edit/revert Earned & Used, and the `batch*` versions): `authorizeRequestRows_(ctx, 'earned'|'used', rows)` — Admin/Super Admin; row must be an integer within the sheet (>= 2); the row's building (Approvals col N, Usage col H, blank = OMS) must be one of the caller's buildings (Super Admins: any). Batches authorize **every** row before applying anything.
-- **Acting for staff** (`processBatch`, `adminSubmitRequest`, `sendStatusEmail`, `sendBatchStatusEmails`, `sendCoverageRequest`): `assertCanManageStaffEmails_(ctx, emails)` — admin sharing a building with each person (Super Admins: anyone); all checked up front.
+- **Acting for staff** (`processBatch`, `adminSubmitRequest`, `sendStatusEmail`, `sendBatchStatusEmails`, `assignCoverage`): `assertCanManageStaffEmails_(ctx, emails)` — admin sharing a building with each person (Super Admins: anyone); all checked up front. `assignCoverage` checks the person covering **and** the person being covered for.
 - **Self or manager** (`submitEarned`, `submitUsage`, `getTeacherHistory`, `getStaffHistoryWithActions`): `assertSelfOrManagerOf_(email)` — the session user's own email, or an admin who manages that person (covers View As).
-- **Coverage links**: `sendCoverageRequest` builds Accept/Decline links with `buildCoverageLink_`, HMAC-SHA256-signed with `COVERAGE_LINK_SECRET` in Script Properties (auto-created). `doGet` rejects links failing `verifyCoverageLink_`; `handleCoverageAccept_/Reject_` also require the signed-in user to be the invited teacher (`tEmail`). Links sent before this change are unsigned and no longer work.
+- **Assignments** (`getAssignments`, `cancelAssignment`, `remindAssignment`): `assertCanManageAssignment_(ctx, a)` — Admin/Super Admin, and the assignment's building must be one of the caller's (Super Admins: any). `getAssignments` resolves its building through `allowedBuildingFor_` like every other queue, so a bad filter falls back to the caller's own building rather than returning the district.
+- **Recording** (`recordAssignment`): `assertSelfOrManagerOf_(target)` — the teacher's own, or an admin who manages them (which is Record-on-behalf). The target must match the assignment's Sub Email, so a valid session cannot record someone else's row. `recordAssignment_` **claims the row before writing the earned request** (status → `Recorded`, then `submitEarned_`, rolling back on failure), the same way `processEmailQueue_` claims a queue row — that is the duplicate guard, and a double-click or re-opened link cannot produce two requests.
+- **Record links**: `sendAssignmentEmails_` builds them with `buildAssignmentLink_`, HMAC-SHA256-signed with `COVERAGE_LINK_SECRET` in Script Properties (auto-created). The signature covers only `action`, `id` and `tEmail` — every other detail is read from the assignment row, so nothing about the coverage can be forged from a URL. `doGet` rejects links failing `verifyAssignmentLink_`; `handleAssignmentRecord_` also requires the signed-in user to be the invited teacher, and refuses a cancelled, already-recorded or **expired** assignment (`ASSIGNMENT_LINK_DAYS_`, 14 days past the coverage date).
+  - The **in-app** Record button deliberately has no expiry: the emailed link is a bearer token sitting in an inbox, the button is an authenticated action on a row the admin created. Don't "fix" this inconsistency.
+  - Old `accept` / `reject` links from the request-era flow are answered with a plain "no longer valid" page rather than a forged-link error.
 - **Reads are scoped too** — the queues and the directory are as sensitive as the writes:
   - **Admin queues** (`getPendingEarned`, `getPendingUsed`, `getDashboardCounts`): `assertAdmin_` plus `allowedBuildingFor_`. The counts are derived from the same `pendingEarnedFor_`/`pendingUsedFor_` helpers as the lists, so a badge can never disagree with the queue under it.
   - **Directory** (`getStaffDirectoryData`, and the `staffData` in `getInitialData`): `directoryFor_(ctx, building, …)` decides what comes back — an admin gets the building's full table, a Teacher gets their own row plus **name/email only** for colleagues (the Submit forms need to name who was covered), and anyone not in the directory gets `[]`. The unrestricted reader is `staffDirectoryData_` (private).
   - **Schedule** (`getScheduleData`): admins get the building's grid; a teacher gets only their own availability rows (the teacher Schedule tab renders nothing else).
   - A missing or unauthorized `buildingFilter` **falls back to the caller's own building** rather than returning the district — no public read is district-wide.
 - **`allowedBuildingFor_(ctx, requested)`** is the one building rule for reads and schedule writes: no request (or an unknown code) means the caller's own building; Super Admins may name any configured building; everyone else may name one of their own assigned buildings (so a multi-building admin who switched school sees that building's queue). Returns `null` when the request isn't allowed — read endpoints fall back, `updateSchedulePeriod` throws.
-- **Maintenance entry points**: `syncMissingSubmissions` is admin-only (run from the Apps Script editor). `processEmailQueue` must stay public for the triggers `setupEmailService` installs, so it allows trigger invocations (`isTriggerEvent_` compares `e.authMode` against the real `ScriptApp.AuthMode` enum, which a `google.script.run` payload cannot carry) and requires an admin otherwise — it sends the queue as whoever calls it. `setupEmailService` is admin-only.
+- **Maintenance entry points**: `syncMissingSubmissions` is admin-only (run from the Apps Script editor). `processEmailQueue` and `nudgeOutstandingAssignments` must stay public for the triggers `setupEmailService` installs, so they allow trigger invocations (`isTriggerEvent_` compares `e.authMode` against the real `ScriptApp.AuthMode` enum, which a `google.script.run` payload cannot carry) and require an admin otherwise. `setupEmailService` is admin-only.
 - `onFormSubmit` stays public for its trigger but refuses events without a live `Range` (i.e. calls from the client).
 - The staff detail modal locks row actions for requests filed under a building the admin doesn't manage (`canActOnRequestBuilding`), mirroring the server.
 - Aggregation helpers that read across the whole district are private: `calculateDynamicBalances_`, `calculateMonthlyHours_`, `getPendingEarnedMap_`.
@@ -142,6 +157,17 @@ Any signed-in domain user can call any public (non-`_`) function from the browse
 - **getArchivedStaff()** - **Super Admin only.** Returns fully-archived staff (for the Settings permanent-delete list).
 - **getStaffDirectoryData(buildingFilter, targetEmail, includeArchived)** - Reads the directory through `directoryFor_` (see Server-side authorization: admins get the full table, teachers a name/email roster plus their own row). Earned/Used are **combined across all buildings** (`buildingFilter` only controls membership + the per-building `archived` flag). Also returns `primaryBuilding`, `pendingFinalize` (bool) and `pendingFinalizeYear`. Archived staff are excluded unless `includeArchived` is true. Server-side callers use the private `staffDirectoryData_(…)`, which has the same signature and no role check.
 - **isPrimaryAdminFor_(ctx, buildingCell) / assertPrimaryAdminFor_(…)** - Gate owned-column edits (Carry Over / Paid Out). True for Super Admins, or when the caller is assigned to the staff member's primary (first-listed) building.
+
+#### Coverage Assignments
+
+Coverage is **assigned**, not requested — there is no accept/decline handshake. A teacher who is picked is expected to cover, and a genuine conflict goes to their administrator directly. Don't reintroduce a decline path (including a Google Calendar RSVP prompt); it was removed deliberately, because an easy "no" was being used to opt out in the moment.
+
+- **Assign** from the Schedule grid (hover a teacher's cell) or via Reassign. The modal mirrors the teacher's own Submit form rather than hardcoding Full/Half Period: a `periods` building gets its configured `coverageTypes`, a `time_range` building gets start/end pickers with hours from the span (matching how OIS/SE record time everywhere else).
+- **Duplicate guard:** the same person, date and period is refused outright. A *different* period on the same date is legitimate, so `assignCoverage` returns `{ conflict: true, existing: [...] }` — the same block-with-override shape `finalizeSchoolYear` uses — and the client confirms and re-sends with `force: true`.
+- **Cancel** removes a *pending* earned request and emails both staff. If the hours are already **approved** it refuses and points at the existing Revert flow — approved hours are never clawed back silently.
+- **Reminders:** one automatic nudge at ~7am the day after the coverage date (`nudgeOutstandingAssignments`, marked via Nudged TS so it fires once), plus a manual Remind button. A manual reminder counts as the one nudge.
+- **Badges:** the admin Assignments badge and the teacher's Submit badge both count only **past-date, not-yet-recorded** coverage. Upcoming assignments are not actionable, so counting them would leave a permanent number on the tab. The admin count comes from `assignmentsFor_`, the same helper as the list, so badge and list cannot disagree.
+- **Emails all go through the queue** (`addToEmailQueue_`), which is what makes the **building's own admin** the sender. Nothing about an assignment may call `MailApp.sendEmail` directly — that was the bug in the old `sendCoverageRequest`, which sent as the deployer.
 
 #### Year-End Finalize (primary-aware)
 
@@ -238,13 +264,21 @@ Styled HTML emails are sent via `sendStyledEmail_()` (private; queued through `a
 ### Triggers
 The `onFormSubmit(e)` function must be set up as an **installable trigger** in the Apps Script editor. This syncs Google Form submissions into the approval workflow.
 
+**Each building admin** installs their own triggers from the spreadsheet menu (**TST Admin → Authorize Email Service**), which is what makes queued mail go out as them. `setupEmailService` installs three: `processEmailQueue` on change, `processEmailQueue` every minute, and `nudgeOutstandingAssignments` daily at 7am. Re-running it clears the old set first, so it is also the fix for a trigger Apps Script has disabled.
+
+Because triggers are per-user, a building admin needs **standing access to the TST spreadsheet** — `processEmailQueue_` reads and writes the Email Queue sheet as the trigger owner. Without it, that building's mail queues and never sends.
+
+A Super Admin's trigger **does not** process other buildings' queue rows (`processEmailQueue_`). It used to, which raced the building admin every minute and made the From name a coin flip. The trade-off is deliberate: a building with nobody authorized queues mail rather than sending it under the wrong name.
+
 ## Testing & Debugging
 
 ```bash
 node test/run.js     # no dependencies, no network
 ```
 
-[test/](test/) loads the real `Code.js` + `config.js` into a Node `vm` context with mocked Apps Script services (SpreadsheetApp, Session, LockService, PropertiesService, Utilities, MailApp, ScriptApp, HtmlService) and sheets as plain arrays. It covers the authorization rules above, the `google.script.run` calls [Index.html](Index.html) actually makes (recorded from a real browser into `test/ui_calls.json` by `test/record_ui_calls.js`, replayed without one), and the deployed file set. Run it before pushing; CI runs it on PRs and again before every deploy. See [test/README.md](test/README.md).
+[test/](test/) loads the real `Code.js` + `config.js` into a Node `vm` context with mocked Apps Script services (SpreadsheetApp, Session, LockService, PropertiesService, Utilities, MailApp, ScriptApp, HtmlService) and sheets as plain arrays. It covers the authorization rules above, the coverage-assignment flow, the `google.script.run` calls [Index.html](Index.html) actually makes (recorded from a real browser into `test/ui_calls.json` by `test/record_ui_calls.js`, replayed without one), and the deployed file set. Run it before pushing; CI runs it on PRs and again before every deploy. See [test/README.md](test/README.md).
+
+`ui_calls.json` is **stale for the assignment screens** — re-recording needs Playwright (`npm i playwright`), which is not installed here. The new endpoints are covered directly by `test/assignments.test.js` with the arguments the client sends, and `ui_flows.test.js` additionally checks statically that Index.html never calls a private (`_`) server function and that the endpoints it dispatches by computed name still exist.
 
 When adding an endpoint, add a case for what a Teacher, an admin from another building, and a Super Admin each get from it.
 

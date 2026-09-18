@@ -68,6 +68,11 @@ const USAGE_ROWS = [
   [USERS.ohsTeacher, 'Hank Teacher', '2025-10-03', 1, false, '2025-10-03', '', 'OHS']
 ];
 
+// submitEarned_ mirrors every submission into Form Responses 1 before processing it,
+// so anything that records an earned request needs this sheet present.
+const FORM_RESPONSES_HEADER = ['Timestamp', 'Email', 'Subbed For', 'Other', 'Date',
+  'Period', 'Time Type', 'Hours'];
+
 const AVAILABILITY_HEADER = ['Month', 'Day(s) Available', 'Period', 'Name', 'Email', 'Hours Earned This Month'];
 
 const AVAILABILITY_ROWS = [
@@ -83,7 +88,8 @@ function sheets(overrides) {
     'Staff Directory': [STAFF_HEADER, ...STAFF_ROWS],
     'TST Approvals (New)': [APPROVALS_HEADER, ...APPROVALS_ROWS],
     'TST Usage (New)': [USAGE_HEADER, ...USAGE_ROWS],
-    'TST Availability': [AVAILABILITY_HEADER, ...AVAILABILITY_ROWS]
+    'TST Availability': [AVAILABILITY_HEADER, ...AVAILABILITY_ROWS],
+    'Form Responses 1': [FORM_RESPONSES_HEADER]
   };
   const out = {};
   Object.keys(base).forEach(k => { out[k] = base[k].map(r => r.slice()); });

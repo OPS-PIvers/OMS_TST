@@ -4,13 +4,21 @@
 function doGet(e) {
   if (e && e.parameter && e.parameter.action) {
     const action = e.parameter.action;
-    if (action === 'accept' || action === 'reject') {
-      // Coverage links are HMAC-signed by sendCoverageRequest; refuse altered or forged ones.
-      if (!verifyCoverageLink_(e.parameter)) {
-        return coverageMessagePage_('Link not valid',
-          'This coverage link is invalid or has been changed. Ask your administrator to send a new request.');
+    if (action === 'record') {
+      // Record links are HMAC-signed by sendAssignmentEmails_; refuse altered or forged ones.
+      if (!verifyAssignmentLink_(e.parameter)) {
+        return assignmentMessagePage_('Link not valid',
+          'This coverage link is invalid or has been changed. Ask your administrator to re-send your assignment.');
       }
-      return action === 'accept' ? handleCoverageAccept_(e.parameter) : handleCoverageReject_(e.parameter);
+      return handleAssignmentRecord_(e.parameter);
+    }
+    if (action === 'accept' || action === 'reject') {
+      // Links sent before coverage became an assignment. They cannot be honoured
+      // (the signature now covers different fields, and there is no decline path),
+      // so say so plainly rather than failing as though they were forged.
+      return assignmentMessagePage_('This link is no longer valid',
+        'TST coverage is now assigned rather than requested, so this link no longer works. ' +
+        'Ask your administrator to re-send your assignment.');
     }
   }
 
@@ -276,7 +284,9 @@ function getDashboardCounts(buildingFilter) {
 
   return {
     earned: pendingEarnedFor_(building).length,
-    used: pendingUsedFor_(building).length
+    used: pendingUsedFor_(building).length,
+    // Coverage that has already happened with no TST recorded yet.
+    assignments: assignmentsFor_(building).filter(a => a.outstanding).length
   };
 }
 
@@ -917,6 +927,10 @@ function finalizeSchoolYear(yearName, building, force) {
   if (primaryEmails.length > 0) {
     archiveTransactionsByEmails_(primaryEmails, name);
   }
+
+  // 6b. Assignment rows are per-building, so they archive with the building that
+  //     created them rather than with the primary-here staff set.
+  archiveAssignmentsForBuilding_(bldg, name);
 
   const forfeitedCount = rolls.filter(rr => rr.forfeited > 0).length;
   return { building: bldg, name: name, count: snapshotRows.length, pending: pendingFlags.length, cap: cap, forfeitedCount: forfeitedCount };
@@ -2685,7 +2699,8 @@ function setupEmailService() {
   // 1. Delete ALL existing triggers for this function to prevent duplicates
   const triggers = ScriptApp.getUserTriggers(SpreadsheetApp.getActiveSpreadsheet());
   triggers.forEach(t => {
-    if (t.getHandlerFunction() === 'processEmailQueue') {
+    const fn = t.getHandlerFunction();
+    if (fn === 'processEmailQueue' || fn === 'nudgeOutstandingAssignments') {
       ScriptApp.deleteTrigger(t);
     }
   });
@@ -2701,10 +2716,19 @@ function setupEmailService() {
     .timeBased()
     .everyMinutes(1)
     .create();
+
+  // 4. Daily nudge: one reminder per assignment whose coverage date has passed
+  //    with no TST recorded. It only queues mail, tagged with the assignment's own
+  //    building, so the building's admin trigger is still what sends it.
+  ScriptApp.newTrigger('nudgeOutstandingAssignments')
+    .timeBased()
+    .atHour(7)
+    .everyDays(1)
+    .create();
     
   ui.alert(
     'Email Service Authorized',
-    `Success! The script will now check for new emails every minute and send them from: ${userEmail}.\n\n(Triggers installed: OnChange + 1-Minute Timer)`,
+    `Success! The script will now check for new emails every minute and send them from: ${userEmail}.\n\n(Triggers installed: OnChange + 1-Minute Timer + 7am Assignment Reminders)`,
     ui.ButtonSet.OK
   );
 }
@@ -2762,7 +2786,6 @@ function processEmailQueue_() {
     if (statusIdx === -1 || buildingIdx === -1) return;
 
     const ctx = getUserContext();
-    const isSuper = ctx.isSuperAdmin;
     const assignedBuildings = ctx.buildings || [DEFAULT_BUILDING];
 
     const rowsToProcess = [];
@@ -2776,7 +2799,11 @@ function processEmailQueue_() {
 
       if (status !== 'Pending') continue;
 
-      const canProcess = isSuper || assignedBuildings.includes(rowBuilding);
+      // Only the building's own admin sends its mail. A Super Admin's trigger used
+      // to sweep every building, racing the building admin each minute and making
+      // the From name a coin flip. A building with nobody authorized now queues
+      // rather than going out under the wrong name.
+      const canProcess = assignedBuildings.includes(rowBuilding || DEFAULT_BUILDING);
       
       if (canProcess) {
         rowsToProcess.push({
@@ -2879,6 +2906,9 @@ function escapeHtml_(value) {
 function sendStyledEmail_(recipient, subject, title, contentHtml, buttonText, buildingName, options) {
   const appUrl = ScriptApp.getService().getUrl();
   const headerName = buildingName || 'Orono Schools';
+  // Assignment emails point their button at that assignment's signed Record link
+  // instead of the app root; every other email keeps the plain app URL.
+  const buttonUrl = (options && options.buttonUrl) ? options.buttonUrl : appUrl;
   
   const htmlTemplate = `
     <!DOCTYPE html>
@@ -2971,7 +3001,7 @@ function sendStyledEmail_(recipient, subject, title, contentHtml, buttonText, bu
           <h2>${escapeHtml_(title)}</h2>
           ${contentHtml}
           <div class="button-container">
-            <a href="${escapeHtml_(appUrl)}" class="button">${escapeHtml_(buttonText || 'Visit the TST Portal')}</a>
+            <a href="${escapeHtml_(buttonUrl)}" class="button">${escapeHtml_(buttonText || 'Visit the TST Portal')}</a>
           </div>
         </div>
         <div class="footer">
@@ -3198,12 +3228,176 @@ function saveAvailability(month, availabilityList, targetEmail, periodsShown) {
   });
 }
 
-// ===== Coverage request links =====
-// The Accept / Decline links in a coverage email are served by doGet with no other
-// credential, so every parameter is HMAC-signed with a per-project secret kept in
-// Script Properties. Changing any value (email, hours, building, ...) breaks the
-// signature.
-const COVERAGE_LINK_FIELDS_ = ['action', 'tEmail', 'tName', 'sub', 'date', 'pd', 'amt', 'type', 'adm', 'bld'];
+// ===== TST Coverage Assignments =====
+// Coverage is *assigned*, not requested: there is no accept/decline handshake, so a
+// teacher who is picked is expected to cover, and a genuine conflict goes to their
+// administrator directly.
+//
+// The assignment row is written the moment an admin creates it, which makes the app
+// — not an email sitting in someone's inbox — the record. Everything else hangs off
+// that row: the Assignments queue, Cancel / Reassign / Remind, the overnight nudge,
+// the duplicate guard, and the signed Record link.
+//
+// All notification emails go through addToEmailQueue_ so they are sent by the
+// building's own admin trigger rather than by whoever deployed the web app.
+
+const ASSIGNMENTS_SHEET_ = 'TST Assignments';
+const ASSIGNMENTS_ARCHIVE_SHEET_ = 'TST Assignments Archive';
+
+const ASSIGNMENT_HEADER_ = [
+  'ID', 'Created', 'Building', 'Assigned By', 'Assigned By Name',
+  'Sub Email', 'Sub Name', 'Covered For', 'Covered For Email',
+  'Date', 'Period', 'Time Type', 'Hours',
+  'Note', 'Note To Sub', 'Note To Covered',
+  'Status', 'Recorded TS', 'Recorded By', 'Nudged TS',
+  'Calendar Event ID', 'Calendar Status'
+];
+
+// 0-based indexes into a row shaped like ASSIGNMENT_HEADER_.
+const A_ = {
+  id: 0, created: 1, building: 2, byEmail: 3, byName: 4,
+  subEmail: 5, subName: 6, coveredFor: 7, coveredForEmail: 8,
+  date: 9, period: 10, timeType: 11, hours: 12,
+  note: 13, noteToSub: 14, noteToCovered: 15,
+  status: 16, recordedTs: 17, recordedBy: 18, nudgedTs: 19,
+  calendarEventId: 20, calendarStatus: 21
+};
+
+const ASSIGNMENT_STATUS_ = { assigned: 'Assigned', recorded: 'Recorded', cancelled: 'Cancelled' };
+
+/** Days after the coverage date that the emailed Record link keeps working. */
+const ASSIGNMENT_LINK_DAYS_ = 14;
+
+const WEEKDAY_NAMES_ = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const MONTH_NAMES_ = ['January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'];
+
+// 'YYYY-MM-DD' -> a local Date at noon, so no timezone offset can roll it a day.
+function parseYmd_(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normDateKey_(value));
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0);
+}
+
+function longDate_(value) {
+  const d = parseYmd_(value);
+  if (!d) return (value == null ? '' : value).toString();
+  return WEEKDAY_NAMES_[d.getDay()] + ', ' + MONTH_NAMES_[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear();
+}
+
+function shortDate_(value) {
+  const d = parseYmd_(value);
+  if (!d) return (value == null ? '' : value).toString();
+  return WEEKDAY_NAMES_[d.getDay()].slice(0, 3) + ' ' + (d.getMonth() + 1) + '/' + d.getDate();
+}
+
+/** Whole days from the coverage date to today. Negative while it is still upcoming. */
+function daysSinceDate_(value) {
+  const d = parseYmd_(value);
+  if (!d) return 0;
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0);
+  return Math.round((today.getTime() - d.getTime()) / 86400000);
+}
+
+function buildingNameFor_(building) {
+  const config = getConfig();
+  const c = config && config[building];
+  if (c && c.name) return c.name;
+  return building === 'OMS' ? 'Orono Middle School' : 'Orono Schools';
+}
+
+/** The web app URL with any query string stripped. */
+function scriptUrl_() {
+  const url = ScriptApp.getService().getUrl();
+  return url ? url.split('?')[0] : '';
+}
+
+function assignmentsSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(ASSIGNMENTS_SHEET_);
+  if (!sheet) {
+    sheet = ss.insertSheet(ASSIGNMENTS_SHEET_);
+    sheet.appendRow(ASSIGNMENT_HEADER_.slice());
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function assignmentFromRow_(row, rowIndex) {
+  const str = i => (row[i] == null ? '' : row[i]).toString();
+  const bool = i => row[i] === true || row[i] === 'TRUE';
+  return {
+    rowIndex: rowIndex,
+    id: str(A_.id),
+    created: row[A_.created] || '',
+    building: str(A_.building) || DEFAULT_BUILDING,
+    assignedBy: str(A_.byEmail),
+    assignedByName: str(A_.byName),
+    subEmail: str(A_.subEmail),
+    subName: str(A_.subName),
+    coveredFor: str(A_.coveredFor),
+    coveredForEmail: str(A_.coveredForEmail),
+    date: normDateKey_(row[A_.date]),
+    period: str(A_.period),
+    amountType: str(A_.timeType),
+    hours: Number(row[A_.hours]) || 0,
+    note: str(A_.note),
+    noteToSub: bool(A_.noteToSub),
+    noteToCovered: bool(A_.noteToCovered),
+    status: str(A_.status) || ASSIGNMENT_STATUS_.assigned,
+    recordedTs: row[A_.recordedTs] || '',
+    recordedBy: str(A_.recordedBy),
+    nudgedTs: row[A_.nudgedTs] || '',
+    calendarEventId: str(A_.calendarEventId),
+    calendarStatus: str(A_.calendarStatus)
+  };
+}
+
+function assignmentRows_(filterFn) {
+  const data = assignmentsSheet_().getDataRange().getValues();
+  const out = [];
+  for (let i = 1; i < data.length; i++) {
+    if (!data[i][A_.id]) continue;
+    const item = assignmentFromRow_(data[i], i + 1);
+    if (!filterFn || filterFn(item)) out.push(item);
+  }
+  return out;
+}
+
+function findAssignment_(id) {
+  const key = (id == null ? '' : id).toString().trim();
+  if (!key) return null;
+  return assignmentRows_(a => a.id === key)[0] || null;
+}
+
+/** updates: { <0-based column index>: value }. */
+function setAssignmentCells_(sheet, rowIndex, updates) {
+  Object.keys(updates).forEach(col => {
+    sheet.getRange(rowIndex, Number(col) + 1).setValue(updates[col]);
+  });
+}
+
+/** Badge material: coverage that has already happened with nothing recorded. */
+function isAssignmentOutstanding_(a) {
+  return a.status === ASSIGNMENT_STATUS_.assigned && daysSinceDate_(a.date) > 0;
+}
+
+function assertCanManageAssignment_(ctx, a) {
+  assertAdmin_(ctx);
+  if (ctx.isSuperAdmin) return;
+  if (!ctx.buildings.includes(a.building)) {
+    throw new Error('You can only manage assignments for your own building(s).');
+  }
+}
+
+// ===== Signed Record links =====
+// The link in an assignment email is served by doGet with no other credential, so
+// its parameters are HMAC-signed with a per-project secret in Script Properties.
+// The signature covers only the assignment id and the invited teacher; every other
+// detail is read from the assignment row, so none of it can be forged from a URL.
+
+const ASSIGNMENT_LINK_FIELDS_ = ['action', 'id', 'tEmail'];
 
 function coverageLinkSecret_() {
   const props = PropertiesService.getScriptProperties();
@@ -3215,176 +3409,600 @@ function coverageLinkSecret_() {
   return secret;
 }
 
-function coverageSignature_(params) {
-  const canonical = JSON.stringify(COVERAGE_LINK_FIELDS_.map(k => params[k] == null ? '' : String(params[k])));
+function assignmentSignature_(params) {
+  const canonical = JSON.stringify(ASSIGNMENT_LINK_FIELDS_.map(k => params[k] == null ? '' : String(params[k])));
   return Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(canonical, coverageLinkSecret_()));
 }
 
-function buildCoverageLink_(baseUrl, params) {
-  const query = COVERAGE_LINK_FIELDS_
+function buildAssignmentLink_(baseUrl, params) {
+  const query = ASSIGNMENT_LINK_FIELDS_
     .filter(k => params[k] != null && params[k] !== '')
     .map(k => k + '=' + encodeURIComponent(params[k]));
-  query.push('sig=' + encodeURIComponent(coverageSignature_(params)));
+  query.push('sig=' + encodeURIComponent(assignmentSignature_(params)));
   return baseUrl + '?' + query.join('&');
 }
 
-function verifyCoverageLink_(params) {
+function verifyAssignmentLink_(params) {
   if (!params || !params.sig) return false;
   const given = String(params.sig);
-  const expected = coverageSignature_(params);
+  const expected = assignmentSignature_(params);
   if (given.length !== expected.length) return false;
   let diff = 0; // constant-time compare
   for (let i = 0; i < given.length; i++) diff |= given.charCodeAt(i) ^ expected.charCodeAt(i);
   return diff === 0;
 }
 
-// The person opening a coverage link must be the teacher it was sent to.
-function coverageLinkUserMismatch_(p) {
-  const sessionEmail = (Session.getActiveUser().getEmail() || '').toString().trim().toLowerCase();
-  const invited = (p.tEmail || '').toString().trim().toLowerCase();
-  if (sessionEmail && sessionEmail === invited) return null;
-  return coverageMessagePage_('Wrong account',
-    'This coverage request was sent to ' + (p.tEmail || 'another staff member') +
-    '. Open the link while signed in to that account.');
+function assignmentMessagePage_(title, message) {
+  return HtmlService.createHtmlOutput(
+    '<div style="font-family: sans-serif; text-align: center; padding: 50px;">' +
+    '<h1 style="color: #ad2122;">' + escapeHtml_(title) + '</h1>' +
+    '<p>' + escapeHtml_(message) + '</p>' +
+    '</div>'
+  ).setTitle(title);
 }
 
-function coverageMessagePage_(title, message) {
-  return HtmlService.createHtmlOutput(`
-    <div style="font-family: sans-serif; text-align: center; padding: 50px;">
-      <h1 style="color: #ad2122;">${escapeHtml_(title)}</h1>
-      <p>${escapeHtml_(message)}</p>
-    </div>
-  `).setTitle(title);
+// ===== Assignment emails =====
+// Every value below comes from the assignment row, which is user-controlled, so
+// each one is escaped: sendStyledEmail_ escapes only subject/title/buttonText/
+// buildingName, never contentHtml.
+
+/** pairs: [['Date', '...'], ...]. Blank values are dropped. */
+function detailsBox_(pairs) {
+  const rows = pairs
+    .filter(p => p && p[1] !== '' && p[1] != null)
+    .map(p => `<p style="margin: 5px 0;"><strong>${escapeHtml_(p[0])}:</strong> ${escapeHtml_(p[1])}</p>`)
+    .join('');
+  if (!rows) return '';
+  return `<div style="background-color: #f3f4f6; padding: 15px; border-radius: 6px; margin: 20px 0;">${rows}</div>`;
 }
 
-function sendCoverageRequest(payload) {
-  // payload: { teacherEmail, teacherName, subbedFor, date, period, amount, amountType, building }
-  // Admin only, and only for staff this admin manages.
-  const ctx = getUserContext();
-  assertCanManageStaffEmails_(ctx, [payload && payload.teacherEmail]);
+function noteBlock_(note) {
+  if (!note) return '';
+  return `<div style="background-color: #eff6ff; border-left: 4px solid #2d3f89; padding: 12px 15px; margin: 20px 0;">
+      <p style="margin: 0; color: #2d3f89; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: bold;">Note from your administrator</p>
+      <p style="margin: 6px 0 0 0; color: #334155;">${escapeHtml_(note)}</p>
+    </div>`;
+}
 
-  const scriptUrl = ScriptApp.getService().getUrl();
-  const adminEmail = ctx.email;
-  const building = payload.building || DEFAULT_BUILDING;
-  const config = getConfig();
-  const buildingName = (config[building] && config[building].name) ? config[building].name : (building === 'OMS' ? 'Orono Middle School' : 'Orono Schools');
+/** "Full Period (1.0 hr)" — the label staff picked, with the hours it is worth. */
+function durationLabel_(a) {
+  const hrs = a.hours === 1 ? '1 hr' : a.hours + ' hrs';
+  return a.amountType ? a.amountType + ' (' + hrs + ')' : hrs;
+}
 
-  const linkParams = {
-    tEmail: payload.teacherEmail,
-    tName: payload.teacherName,
-    sub: payload.subbedFor,
-    date: payload.date,
-    pd: payload.period,
-    amt: payload.amount,
-    type: payload.amountType,
-    adm: adminEmail,
-    bld: building
-  };
-  const acceptLink = buildCoverageLink_(scriptUrl, Object.assign({ action: 'accept' }, linkParams));
-  const rejectLink = buildCoverageLink_(scriptUrl, Object.assign({ action: 'reject' }, linkParams));
+function assignmentSubject_(a, prefix) {
+  return prefix + ': ' + shortDate_(a.date) + ' — ' + a.period;
+}
 
-  const subject = `TST Coverage Request: ${payload.date} - ${payload.period}`;
-  
-  // Parse YYYY-MM-DD to MM/DD/YYYY manually to avoid timezone shifts
-  const [y, m, d] = payload.date.split('-');
-  const dateDisplay = `${m}/${d}/${y}`;
+/**
+ * The three emails an assignment sends: the person covering (the only one with an
+ * action), the person being covered for (when a real staff member was picked), and
+ * the administrator's own record copy.
+ */
+function sendAssignmentEmails_(a) {
+  const buildingName = buildingNameFor_(a.building);
+  const opts = { buildingCode: a.building };
+  const adminName = a.assignedByName || a.assignedBy;
+  const dateLong = longDate_(a.date);
 
-  const e = escapeHtml_;
-  const htmlBody = `
-    <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e5e7eb; border-radius: 8px;">
-      <h2 style="color: #2d3f89; margin-top: 0;">${e(buildingName)}</h2>
-      <h3 style="color: #4b5563; margin-top: 0;">TST Coverage Request</h3>
-      <p>Hello <strong>${e(payload.teacherName)}</strong>,</p>
-      <p>Can you provide sub coverage?</p>
-
-      <div style="background-color: #f3f4f6; padding: 15px; border-radius: 6px; margin: 20px 0;">
-        <p style="margin: 5px 0;"><strong>Date:</strong> ${e(dateDisplay)}</p>
-        <p style="margin: 5px 0;"><strong>Period:</strong> ${e(payload.period)}</p>
-        <p style="margin: 5px 0;"><strong>Covering For:</strong> ${e(payload.subbedFor)}</p>
-        <p style="margin: 5px 0;"><strong>Duration:</strong> ${e(payload.amountType)}</p>
-      </div>
-
-      <div style="text-align: center; margin: 30px 0;">
-         <a href="${e(acceptLink)}" style="background-color: #2d3f89; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold; margin-right: 10px;">Accept & Earn</a>
-         <a href="${e(rejectLink)}" style="background-color: #ad2122; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold;">Decline</a>
-      </div>
-      
-      <p style="font-size: 12px; color: #6b7280; text-align: center;">Clicking submit will automatically submit the TST form on your behalf.</p>
-    </div>
-  `;
-
-  MailApp.sendEmail({
-    to: payload.teacherEmail,
-    subject: subject,
-    htmlBody: htmlBody
+  const recordUrl = buildAssignmentLink_(scriptUrl_(), {
+    action: 'record', id: a.id, tEmail: a.subEmail
   });
 
-  // Also send a tracking email to the Admin
-  const adminSubject = `TST Coverage request: ${dateDisplay} - ${payload.teacherName} - ${payload.period}`;
-  const adminBody = `
-    <p>You requested coverage from <strong>${e(payload.teacherName)}</strong>.</p>
-    <div style="background-color: #f3f4f6; padding: 15px; border-radius: 6px; margin: 10px 0;">
-      <p style="margin: 5px 0;"><strong>Date:</strong> ${e(dateDisplay)}</p>
-      <p style="margin: 5px 0;"><strong>Period:</strong> ${e(payload.period)}</p>
-      <p style="margin: 5px 0;"><strong>Covering For:</strong> ${e(payload.subbedFor)}</p>
-    </div>
-    <p>This email serves as a record of your request. You will receive another notification if they accept or decline.</p>
-  `;
+  const subBody =
+    `<p>Hello <strong>${escapeHtml_(a.subName)}</strong>,</p>` +
+    `<p>You have been assigned for TST Coverage for <strong>${escapeHtml_(a.coveredFor)}</strong> on ` +
+    `<strong>${escapeHtml_(dateLong)}</strong>, <strong>${escapeHtml_(a.period)}</strong>.</p>` +
+    detailsBox_([
+      ['Date', dateLong],
+      ['Period', a.period],
+      ['Covering For', a.coveredFor],
+      ['Duration', durationLabel_(a)]
+    ]) +
+    (a.noteToSub ? noteBlock_(a.note) : '') +
+    assignmentCalendarLine_(a) +
+    `<p style="font-size: 13px; color: #6b7280;">If you have a conflict, contact ${escapeHtml_(adminName)} directly.</p>`;
 
-  sendStyledEmail_(adminEmail, adminSubject, "Coverage Requested", adminBody, "View Dashboard", buildingName);
+  sendStyledEmail_(
+    a.subEmail,
+    assignmentSubject_(a, 'TST Coverage Assignment'),
+    'TST Coverage Assignment',
+    subBody,
+    'Record My TST Time',
+    buildingName,
+    Object.assign({ buttonUrl: recordUrl }, opts)
+  );
+
+  // The person being covered for. Free-text entries ("Activity Bus") have no email.
+  if (a.coveredForEmail) {
+    const coveredBody =
+      `<p>Hello <strong>${escapeHtml_(a.coveredFor)}</strong>,</p>` +
+      `<p><strong>${escapeHtml_(a.subName)}</strong> has been assigned to cover your ` +
+      `<strong>${escapeHtml_(a.period)}</strong> class on <strong>${escapeHtml_(dateLong)}</strong>.</p>` +
+      detailsBox_([
+        ['Date', dateLong],
+        ['Period', a.period],
+        ['Covered By', a.subName]
+      ]) +
+      (a.noteToCovered ? noteBlock_(a.note) : '') +
+      assignmentCalendarLine_(a);
+
+    sendStyledEmail_(
+      a.coveredForEmail,
+      assignmentSubject_(a, 'TST Coverage Arranged'),
+      'TST Coverage Arranged',
+      coveredBody,
+      'View My TST',
+      buildingName,
+      opts
+    );
+  }
+
+  // The administrator's record copy.
+  const adminBody =
+    `<p>You assigned <strong>${escapeHtml_(a.subName)}</strong> to cover for <strong>${escapeHtml_(a.coveredFor)}</strong>.</p>` +
+    detailsBox_([
+      ['Date', dateLong],
+      ['Period', a.period],
+      ['Duration', durationLabel_(a)]
+    ]) +
+    (a.note ? noteBlock_(a.note) : '') +
+    `<p>${escapeHtml_(a.coveredForEmail ? 'Both staff have been emailed.' : a.subName + ' has been emailed.')} ` +
+    `You will be notified when ${escapeHtml_(a.subName)} records their TST time.</p>`;
+
+  sendStyledEmail_(
+    a.assignedBy,
+    'TST Assignment: ' + shortDate_(a.date) + ' — ' + a.subName + ' — ' + a.period,
+    'Coverage Assigned',
+    adminBody,
+    'View Dashboard',
+    buildingName,
+    opts
+  );
 }
 
-// Reached only through doGet after verifyCoverageLink_ (private: not callable via google.script.run).
-function handleCoverageAccept_(p) {
-  const mismatch = coverageLinkUserMismatch_(p);
-  if (mismatch) return mismatch;
+/**
+ * The "added to the X TST Calendar" sentence. Phase 2 fills this in once a building
+ * has a calendar configured and the event has actually been created; until then an
+ * assignment never claims a calendar entry that does not exist.
+ */
+function assignmentCalendarLine_(a) {
+  return '';
+}
 
-  const building = p.bld || DEFAULT_BUILDING;
-  const config = getConfig();
-  const buildingName = (config[building] && config[building].name) ? config[building].name : (building === 'OMS' ? 'Orono Middle School' : 'Orono Schools');
+function sendAssignmentReminder_(a) {
+  const buildingName = buildingNameFor_(a.building);
+  const recordUrl = buildAssignmentLink_(scriptUrl_(), {
+    action: 'record', id: a.id, tEmail: a.subEmail
+  });
+  const expiry = parseYmd_(a.date);
+  const expiryText = expiry
+    ? longDate_(normDateKey_(new Date(expiry.getTime() + ASSIGNMENT_LINK_DAYS_ * 86400000)))
+    : '';
 
-  // Decode
-  const formObj = {
-    email: p.tEmail,
-    subbedForName: p.sub,
-    subbedForType: 'Staff', // Assumption
-    date: p.date,
-    period: p.pd,
-    amountType: p.type,
-    amountDecimal: parseFloat(p.amt),
-    building: building
-  };
-  
-  // Reuse submit logic (the signed link + session check above authorize it)
-  submitEarned_(formObj);
-  
-  // Every p.* value comes straight from the URL — escape before it touches HTML.
+  const body =
+    `<p>Hello <strong>${escapeHtml_(a.subName)}</strong>,</p>` +
+    `<p>You were assigned to cover <strong>${escapeHtml_(a.period)}</strong> for ` +
+    `<strong>${escapeHtml_(a.coveredFor)}</strong> on <strong>${escapeHtml_(longDate_(a.date))}</strong>, ` +
+    `but your TST time has not been recorded yet.</p>` +
+    (expiryText
+      ? `<p style="font-size: 13px; color: #6b7280;">This link expires on ${escapeHtml_(expiryText)}. ` +
+        `After that, contact ${escapeHtml_(a.assignedByName || a.assignedBy)}.</p>`
+      : '');
+
+  sendStyledEmail_(
+    a.subEmail,
+    'Reminder: Record your TST time — ' + shortDate_(a.date) + ', ' + a.period,
+    'Record Your TST Time',
+    body,
+    'Record My TST Time',
+    buildingName,
+    { buildingCode: a.building, buttonUrl: recordUrl }
+  );
+}
+
+function sendAssignmentCancelledEmails_(a) {
+  const buildingName = buildingNameFor_(a.building);
+  const opts = { buildingCode: a.building };
+  const dateLong = longDate_(a.date);
+  const subject = assignmentSubject_(a, 'TST Coverage Cancelled');
+
+  const subBody =
+    `<p>Hello <strong>${escapeHtml_(a.subName)}</strong>,</p>` +
+    `<p>The TST Coverage assignment for <strong>${escapeHtml_(a.coveredFor)}</strong> on ` +
+    `<strong>${escapeHtml_(dateLong)}</strong>, <strong>${escapeHtml_(a.period)}</strong> has been cancelled. ` +
+    `You do not need to cover this class.</p>` +
+    assignmentCalendarRemovedLine_(a);
+
+  sendStyledEmail_(a.subEmail, subject, 'Coverage Cancelled', subBody, 'View My TST', buildingName, opts);
+
+  if (a.coveredForEmail) {
+    const coveredBody =
+      `<p>Hello <strong>${escapeHtml_(a.coveredFor)}</strong>,</p>` +
+      `<p>The coverage arranged for your <strong>${escapeHtml_(a.period)}</strong> class on ` +
+      `<strong>${escapeHtml_(dateLong)}</strong> has been cancelled. ` +
+      `<strong>${escapeHtml_(a.subName)}</strong> is no longer assigned.</p>` +
+      assignmentCalendarRemovedLine_(a);
+
+    sendStyledEmail_(a.coveredForEmail, subject, 'Coverage Cancelled', coveredBody, 'View My TST', buildingName, opts);
+  }
+}
+
+/** Phase 2 fills this in once calendar events exist to remove. */
+function assignmentCalendarRemovedLine_(a) {
+  return '';
+}
+
+// ===== Assignment endpoints =====
+
+/**
+ * Admin action: assign coverage. Writes the assignment row, then queues the
+ * notification emails.
+ *
+ * payload: { teacherEmail, teacherName, subbedFor, coveredForEmail, date, period,
+ *            amount, amountType, building, note, noteToSub, noteToCovered, force }
+ *
+ * Exact duplicates (same person, date and period) are always a mis-click and are
+ * refused. A different period on the same date is legitimate, so it comes back as
+ * { conflict: true, existing: [...] } — the same block-with-override shape
+ * finalizeSchoolYear uses — and the client re-sends with force: true to confirm.
+ */
+function assignCoverage(payload) {
+  const ctx = getUserContext();
+  const p = payload || {};
+
+  const subEmail = (p.teacherEmail || '').toString().trim();
+  const coveredForEmail = (p.coveredForEmail || '').toString().trim();
+  const coveredForName = (p.subbedFor || '').toString().trim();
+
+  // Admin, and only for staff they manage — the person covering, plus the person
+  // being covered when a real staff member was picked rather than free text.
+  const managed = [subEmail];
+  if (coveredForEmail) managed.push(coveredForEmail);
+  assertCanManageStaffEmails_(ctx, managed);
+
+  const building = allowedBuildingFor_(ctx, p.building);
+  if (!building) throw new Error('You can only assign coverage for your own building(s).');
+
+  const date = normDateKey_(p.date);
+  if (!parseYmd_(date)) throw new Error('A valid coverage date is required.');
+  const period = (p.period || '').toString().trim();
+  if (!period) throw new Error('A period is required.');
+  if (!coveredForName) throw new Error('Please say who needs coverage.');
+
+  const hours = Number(p.amount);
+  if (!isFinite(hours) || hours <= 0) throw new Error('Coverage duration must be greater than zero.');
+
+  if (coveredForEmail && coveredForEmail.toLowerCase() === subEmail.toLowerCase()) {
+    throw new Error('A staff member cannot be assigned to cover for themselves.');
+  }
+
+  const sameDay = assignmentRows_(a =>
+    a.status !== ASSIGNMENT_STATUS_.cancelled &&
+    a.subEmail.toLowerCase() === subEmail.toLowerCase() &&
+    a.date === date);
+
+  const subName = (p.teacherName || subEmail).toString();
+  if (sameDay.some(a => a.period === period)) {
+    throw new Error(subName + ' is already assigned to ' + period + ' on ' + shortDate_(date) + '.');
+  }
+  if (sameDay.length > 0 && !p.force) {
+    return {
+      conflict: true,
+      name: subName,
+      date: shortDate_(date),
+      existing: sameDay.map(a => ({ period: a.period, coveredFor: a.coveredFor }))
+    };
+  }
+
+  const sheet = assignmentsSheet_();
+  const row = new Array(ASSIGNMENT_HEADER_.length).fill('');
+  row[A_.id] = Utilities.getUuid();
+  row[A_.created] = new Date();
+  row[A_.building] = building;
+  row[A_.byEmail] = ctx.email;
+  row[A_.byName] = ctx.name || ctx.email;
+  row[A_.subEmail] = subEmail;
+  row[A_.subName] = subName;
+  row[A_.coveredFor] = coveredForName;
+  row[A_.coveredForEmail] = coveredForEmail;
+  row[A_.date] = date;
+  row[A_.period] = period;
+  row[A_.timeType] = (p.amountType || '').toString();
+  row[A_.hours] = hours;
+  row[A_.note] = (p.note || '').toString().trim();
+  row[A_.noteToSub] = !!p.noteToSub && !!row[A_.note];
+  row[A_.noteToCovered] = !!p.noteToCovered && !!row[A_.note] && !!coveredForEmail;
+  row[A_.status] = ASSIGNMENT_STATUS_.assigned;
+  sheet.appendRow(row);
+
+  const assignment = assignmentFromRow_(row, sheet.getLastRow());
+  sendAssignmentEmails_(assignment);
+  return { assigned: true, id: assignment.id };
+}
+
+/** The admin Assignments queue, scoped the same way every other queue is. */
+function getAssignments(buildingFilter) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  const building = allowedBuildingFor_(ctx, buildingFilter) || ctx.building;
+  return assignmentsFor_(building);
+}
+
+function assignmentsFor_(building) {
+  return assignmentRows_(a => a.building === building)
+    .map(a => Object.assign({}, a, {
+      dateDisplay: longDate_(a.date),
+      durationLabel: durationLabel_(a),
+      outstanding: isAssignmentOutstanding_(a),
+      upcoming: daysSinceDate_(a.date) <= 0
+    }))
+    .sort((x, y) => (y.date || '').localeCompare(x.date || ''));
+}
+
+/**
+ * A teacher's own assignments — both the ones they are covering and the coverage
+ * arranged for their classes. Same self-or-manager rule as getTeacherHistory, so
+ * it works under View As.
+ */
+function getMyAssignments(targetEmail) {
+  const email = (targetEmail || Session.getActiveUser().getEmail() || '').toString().trim();
+  assertSelfOrManagerOf_(email);
+  const lower = email.toLowerCase();
+
+  return assignmentRows_(a =>
+    a.status !== ASSIGNMENT_STATUS_.cancelled &&
+    (a.subEmail.toLowerCase() === lower || a.coveredForEmail.toLowerCase() === lower))
+    .map(a => {
+      const covering = a.subEmail.toLowerCase() === lower;
+      return {
+        id: a.id,
+        building: a.building,
+        date: a.date,
+        dateDisplay: longDate_(a.date),
+        period: a.period,
+        amountType: a.amountType,
+        hours: a.hours,
+        durationLabel: durationLabel_(a),
+        subName: a.subName,
+        coveredFor: a.coveredFor,
+        status: a.status,
+        role: covering ? 'covering' : 'covered',
+        note: (covering ? a.noteToSub : a.noteToCovered) ? a.note : ''
+      };
+    })
+    .sort((x, y) => (x.date || '').localeCompare(y.date || ''));
+}
+
+/**
+ * Files the earned request for an assignment. Used by the teacher's dashboard
+ * button, by an admin recording on someone's behalf, and by the emailed link.
+ *
+ * The row is claimed before the earned request is written — the same way the email
+ * queue claims a row — so a double-click or a re-opened link cannot submit twice.
+ */
+function recordAssignment_(id, by) {
+  const sheet = assignmentsSheet_();
+  const a = findAssignment_(id);
+  if (!a) throw new Error('Assignment not found.');
+  if (a.status === ASSIGNMENT_STATUS_.cancelled) throw new Error('This assignment was cancelled.');
+  if (a.status === ASSIGNMENT_STATUS_.recorded) return a;
+
+  setAssignmentCells_(sheet, a.rowIndex, {
+    [A_.status]: ASSIGNMENT_STATUS_.recorded,
+    [A_.recordedTs]: new Date(),
+    [A_.recordedBy]: by
+  });
+  SpreadsheetApp.flush();
+
+  try {
+    submitEarned_({
+      email: a.subEmail,
+      subbedForType: a.coveredForEmail ? 'Staff' : 'Other',
+      subbedForName: a.coveredFor,
+      date: a.date,
+      period: a.period,
+      amountType: a.amountType,
+      amountDecimal: a.hours,
+      building: a.building
+    });
+  } catch (err) {
+    setAssignmentCells_(sheet, a.rowIndex, {
+      [A_.status]: ASSIGNMENT_STATUS_.assigned,
+      [A_.recordedTs]: '',
+      [A_.recordedBy]: ''
+    });
+    throw err;
+  }
+
+  return findAssignment_(id) || a;
+}
+
+/**
+ * Records an assignment from inside the app. The teacher may record their own; an
+ * admin may record on behalf of someone they manage, which is the recourse once the
+ * emailed link has expired. Unlike that link, this has no 14-day limit: the link is
+ * a bearer token in an inbox, this is an authenticated action on a known row.
+ */
+function recordAssignment(id, targetEmail) {
+  const a = findAssignment_(id);
+  if (!a) throw new Error('Assignment not found.');
+
+  const target = (targetEmail || a.subEmail).toString().trim();
+  assertSelfOrManagerOf_(target);
+  if (target.toLowerCase() !== a.subEmail.toLowerCase()) {
+    throw new Error('That assignment belongs to another staff member.');
+  }
+
+  const session = (Session.getActiveUser().getEmail() || '').toString().trim().toLowerCase();
+  const by = session === a.subEmail.toLowerCase() ? 'teacher' : 'admin:' + session;
+  recordAssignment_(id, by);
+  return true;
+}
+
+/**
+ * Cancels an assignment: removes the pending earned request if the teacher already
+ * recorded it, marks the row cancelled, and emails both staff. Hours that have
+ * already been approved are never clawed back silently — the caller is sent to the
+ * existing Revert flow instead.
+ */
+function cancelAssignment(id) {
+  const ctx = getUserContext();
+  const a = findAssignment_(id);
+  if (!a) throw new Error('Assignment not found.');
+  assertCanManageAssignment_(ctx, a);
+  if (a.status === ASSIGNMENT_STATUS_.cancelled) return { cancelled: true, already: true };
+
+  if (a.status === ASSIGNMENT_STATUS_.recorded) {
+    const earned = findEarnedRowForAssignment_(a);
+    if (earned && earned.approved) {
+      throw new Error(a.subName + "'s hours for this coverage are already approved. " +
+        'Revert that request first, then cancel the assignment.');
+    }
+    if (earned) deleteEarnedRow_(earned.rowIndex);
+  }
+
+  setAssignmentCells_(assignmentsSheet_(), a.rowIndex, { [A_.status]: ASSIGNMENT_STATUS_.cancelled });
+  sendAssignmentCancelledEmails_(a);
+  return { cancelled: true };
+}
+
+/** The earned request an assignment produced, matched the way submissions are deduped. */
+function findEarnedRowForAssignment_(a) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('TST Approvals (New)');
+  if (!sheet) return null;
+  const data = sheet.getDataRange().getValues();
+  const email = a.subEmail.toLowerCase();
+  const period = a.period.trim();
+
+  for (let i = 1; i < data.length; i++) {
+    const r = data[i];
+    if (!r[0]) continue;
+    if (r[0].toString().trim().toLowerCase() !== email) continue;
+    if (normDateKey_(r[4]) !== a.date) continue;
+    if ((r[5] || '').toString().trim() !== period) continue;
+    if (r[10] === true || r[10] === 'TRUE') continue; // denied rows are not this one
+    return { rowIndex: i + 1, approved: r[8] === true || r[8] === 'TRUE' };
+  }
+  return null;
+}
+
+/** Admin action: re-send the Record email for an assignment nobody has acted on. */
+function remindAssignment(id) {
+  const ctx = getUserContext();
+  const a = findAssignment_(id);
+  if (!a) throw new Error('Assignment not found.');
+  assertCanManageAssignment_(ctx, a);
+  if (a.status !== ASSIGNMENT_STATUS_.assigned) {
+    throw new Error('This assignment is already ' + a.status.toLowerCase() + '.');
+  }
+  sendAssignmentReminder_(a);
+  setAssignmentCells_(assignmentsSheet_(), a.rowIndex, { [A_.nudgedTs]: new Date() });
+  return true;
+}
+
+/**
+ * The one automatic nudge, run by the daily trigger setupEmailService installs.
+ *
+ * Has to stay public for that trigger, which also makes it reachable from
+ * google.script.run — so a client call must be an admin. It only queues mail;
+ * each reminder is tagged with its own building, so the building's admin trigger
+ * is still what sends it.
+ */
+function nudgeOutstandingAssignments(e) {
+  if (!isTriggerEvent_(e)) assertAdmin_(getUserContext());
+  return nudgeOutstandingAssignments_();
+}
+
+function nudgeOutstandingAssignments_() {
+  const sheet = assignmentsSheet_();
+  const due = assignmentRows_(a => {
+    if (a.status !== ASSIGNMENT_STATUS_.assigned || a.nudgedTs) return false;
+    const age = daysSinceDate_(a.date);
+    return age >= 1 && age <= ASSIGNMENT_LINK_DAYS_;
+  });
+
+  due.forEach(a => {
+    sendAssignmentReminder_(a);
+    setAssignmentCells_(sheet, a.rowIndex, { [A_.nudgedTs]: new Date() });
+  });
+  return due.length;
+}
+
+/** Year-end: assignment rows move to the archive with the rest of the year. */
+function archiveAssignmentsForBuilding_(building, yearName) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const src = ss.getSheetByName(ASSIGNMENTS_SHEET_);
+  if (!src) return;
+  const data = src.getDataRange().getValues();
+  if (data.length < 2) return;
+
+  let arch = ss.getSheetByName(ASSIGNMENTS_ARCHIVE_SHEET_);
+  if (!arch) {
+    arch = ss.insertSheet(ASSIGNMENTS_ARCHIVE_SHEET_);
+    arch.appendRow(data[0].concat(['School Year']));
+    arch.setFrozenRows(1);
+  }
+
+  const toArchive = [];
+  const rowsToDelete = [];
+  for (let i = 1; i < data.length; i++) {
+    const r = data[i];
+    if (!r[A_.id]) continue;
+    if (((r[A_.building] || DEFAULT_BUILDING).toString()) !== building) continue;
+    toArchive.push(r.concat([yearName]));
+    rowsToDelete.push(i + 1);
+  }
+
+  if (toArchive.length) {
+    arch.getRange(arch.getLastRow() + 1, 1, toArchive.length, toArchive[0].length).setValues(toArchive);
+    rowsToDelete.sort((a, b) => b - a).forEach(rn => src.deleteRow(rn));
+  }
+}
+
+// Reached only through doGet after verifyAssignmentLink_ (private: not callable
+// via google.script.run).
+function handleAssignmentRecord_(p) {
+  const sessionEmail = (Session.getActiveUser().getEmail() || '').toString().trim().toLowerCase();
+  const invited = (p.tEmail || '').toString().trim().toLowerCase();
+  if (!sessionEmail || sessionEmail !== invited) {
+    return assignmentMessagePage_('Wrong account',
+      'This assignment was sent to ' + (p.tEmail || 'another staff member') +
+      '. Open the link while signed in to that account.');
+  }
+
+  const a = findAssignment_(p.id);
+  if (!a) {
+    return assignmentMessagePage_('Assignment not found',
+      'This assignment is no longer on file. Ask your administrator to re-send it.');
+  }
+  if (a.subEmail.toLowerCase() !== invited) {
+    return assignmentMessagePage_('Wrong account', 'This assignment belongs to another staff member.');
+  }
+  if (a.status === ASSIGNMENT_STATUS_.cancelled) {
+    return assignmentMessagePage_('Assignment cancelled',
+      'This coverage assignment was cancelled. You do not need to cover this class.');
+  }
+  if (a.status === ASSIGNMENT_STATUS_.recorded) {
+    return assignmentConfirmedPage_(a, true);
+  }
+  if (daysSinceDate_(a.date) > ASSIGNMENT_LINK_DAYS_) {
+    return assignmentMessagePage_('This link has expired',
+      'Coverage links stop working ' + ASSIGNMENT_LINK_DAYS_ + ' days after the coverage date. ' +
+      'Sign in to TST Manager to record it, or contact ' + (a.assignedByName || a.assignedBy) + '.');
+  }
+
+  recordAssignment_(a.id, 'teacher');
+  return assignmentConfirmedPage_(a, false);
+}
+
+function assignmentConfirmedPage_(a, already) {
   const e = escapeHtml_;
-
-  // Notify Admin of Acceptance
-  if (p.adm) {
-    const emailBody = `
-      <p><strong>${e(p.tName)}</strong> has accepted the request to cover for <strong>${e(p.sub)}</strong>.</p>
-      <div style="background-color: #f8fafc; border-left: 4px solid #2d3f89; padding: 15px; margin: 15px 0;">
-        <p style="margin: 0; color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;">Coverage Details</p>
-        <p style="margin: 5px 0 0 0; color: #1e293b; font-weight: bold;">Date: ${e(p.date)}</p>
-        <p style="margin: 0; color: #334155;">Period: ${e(p.pd)} &bull; Duration: ${e(p.type)}</p>
-      </div>
-      <p>A pending earned request has been automatically created.</p>
-    `;
-    
-    sendStyledEmail_(p.adm, `TST Coverage Accepted: ${p.tName}`, "Coverage Confirmed", emailBody, "View Dashboard", buildingName);
-  }
-  
-  let appUrl = ScriptApp.getService().getUrl();
-  // Sanitize: Remove query params if present
-  if (appUrl && appUrl.includes('?')) {
-    appUrl = appUrl.split('?')[0];
-  }
-  // Fallback: If appUrl is empty (e.g. unpublished), use "?" to reload page without params
-  const dashboardLink = appUrl ? appUrl : "?";
-
-  const dateDisplay = new Date(p.date.split('-').join('/')).toLocaleDateString();
+  const buildingName = buildingNameFor_(a.building);
+  const dashboardLink = scriptUrl_() || '?';
+  const subtitle = already
+    ? 'Your TST time for this coverage was already recorded.'
+    : 'Thank you, ' + a.subName + '. Your TST time has been submitted for approval.';
 
   const html = `
     <!DOCTYPE html>
@@ -3392,7 +4010,7 @@ function handleCoverageAccept_(p) {
     <head>
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Coverage Confirmed</title>
+      <title>TST Time Recorded</title>
       <link href="https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700&display=swap" rel="stylesheet">
       <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
       <style>
@@ -3407,71 +4025,36 @@ function handleCoverageAccept_(p) {
         .detail-row { margin-bottom: 8px; font-size: 14px; color: #374151; }
         .detail-row:last-child { margin-bottom: 0; }
         .label { font-weight: 600; color: #2d3f89; margin-right: 8px; }
-        .btn { display: inline-block; background-color: #2d3f89; color: white; padding: 12px 32px; border-radius: 6px; text-decoration: none; font-weight: 600; transition: background-color 0.2s; }
+        .btn { display: inline-block; background-color: #2d3f89; color: white; padding: 12px 32px; border-radius: 6px; text-decoration: none; font-weight: 600; }
         .btn:hover { background-color: #1e3a8a; }
       </style>
     </head>
     <body>
       <div class="card">
         <div class="header">
-          <div class="icon-circle">
-            <i class="fas fa-check"></i>
-          </div>
+          <div class="icon-circle"><i class="fas fa-check"></i></div>
           <h1 style="margin:0; font-size:20px; font-weight:600;">${e(buildingName)}</h1>
           <p style="margin:4px 0 0 0; opacity:0.8; font-size:12px; text-transform:uppercase; letter-spacing:1px;">TST Manager</p>
         </div>
         <div class="content">
-          <h2 class="title">Coverage Confirmed!</h2>
-          <p class="subtitle">Thank you, <strong>${e(p.tName)}</strong>. Your request has been successfully processed.</p>
-
+          <h2 class="title">TST Time Recorded</h2>
+          <p class="subtitle">${e(subtitle)}</p>
           <div class="details-box">
-            <div class="detail-row"><span class="label">Date:</span> ${e(dateDisplay)}</div>
-            <div class="detail-row"><span class="label">Period:</span> ${e(p.pd)}</div>
-            <div class="detail-row"><span class="label">Subbing For:</span> ${e(p.sub)}</div>
-            <div class="detail-row"><span class="label">Duration:</span> ${e(p.type)}</div>
+            <div class="detail-row"><span class="label">Date:</span> ${e(longDate_(a.date))}</div>
+            <div class="detail-row"><span class="label">Period:</span> ${e(a.period)}</div>
+            <div class="detail-row"><span class="label">Covering For:</span> ${e(a.coveredFor)}</div>
+            <div class="detail-row"><span class="label">Duration:</span> ${e(durationLabel_(a))}</div>
           </div>
-
           <a href="${e(dashboardLink)}" class="btn">Go to Dashboard</a>
         </div>
       </div>
     </body>
     </html>
   `;
-  
+
   return HtmlService.createHtmlOutput(html)
-      .setTitle('Coverage Confirmed')
+      .setTitle('TST Time Recorded')
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
-}
-
-// Reached only through doGet after verifyCoverageLink_ (private: not callable via google.script.run).
-function handleCoverageReject_(p) {
-  const mismatch = coverageLinkUserMismatch_(p);
-  if (mismatch) return mismatch;
-
-  const building = p.bld || DEFAULT_BUILDING;
-  const config = getConfig();
-  const buildingName = (config[building] && config[building].name) ? config[building].name : (building === 'OMS' ? 'Orono Middle School' : 'Orono Schools');
-
-  // Notify Admin (p.* values come from the URL — escape them)
-  const emailBody = `
-    <p>Teacher <strong>${escapeHtml_(p.tName)}</strong> has <span style="color: #ad2122; font-weight: bold;">declined</span> the coverage request for <strong>${escapeHtml_(p.sub)}</strong>.</p>
-
-    <div style="background-color: #fef2f2; border-left: 4px solid #ef4444; padding: 15px; margin: 15px 0;">
-       <p style="margin: 0; color: #991b1b; font-weight: bold;">Declined Request</p>
-       <p style="margin: 5px 0 0 0; color: #7f1d1d;">Period: ${escapeHtml_(p.pd || 'Not specified')}</p>
-    </div>
-
-    <p>Please select another teacher from the schedule.</p>
-  `;
-
-  sendStyledEmail_(p.adm, `TST Request Declined: ${p.tName}`, "Coverage Declined", emailBody, "Find Replacement", buildingName);
-  
-  return HtmlService.createHtmlOutput(`
-    <div style="font-family: sans-serif; text-align: center; padding: 50px;">
-      <h1 style="color: #ef4444;">Request Declined</h1>
-      <p>The admin has been notified.</p>
-    </div>
-  `);
 }
 
 /**
