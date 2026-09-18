@@ -140,6 +140,10 @@ function createEnv(options) {
   const sentEmails = [];
   const properties = Object.assign({}, opts.properties);
   const installedTriggers = [];
+  // { id, calendarId, title, start, end, options } for every event still on a
+  // calendar, so a test can assert on what was created as well as on what was said.
+  const calendarEvents = [];
+  const calendars = Object.assign({}, opts.calendars); // id -> { name } (absent = no access)
   const logs = [];
   const menus = [];
   const alerts = [];
@@ -202,10 +206,20 @@ function createEnv(options) {
 
     Utilities: {
       computeHmacSha256Signature: (value, key) => {
-        // Deterministic stand-in: the tests only need "same input, same bytes".
-        const bytes = [];
+        // Deterministic stand-in — not cryptographic, but every byte of the key AND
+        // the value has to reach every byte of the digest. An earlier version read
+        // only the first 32 characters of key + '|' + value; the secret alone is
+        // longer than that, so the signed payload never changed the signature and a
+        // tampered link verified happily.
         const s = String(key) + '|' + String(value);
-        for (let i = 0; i < 32; i++) bytes.push((s.charCodeAt(i % s.length) + i) % 256);
+        const bytes = [];
+        for (let i = 0; i < 32; i++) {
+          let h = (0x811c9dc5 ^ Math.imul(i + 1, 0x9e3779b1)) >>> 0; // FNV-1a, salted per byte
+          for (let j = 0; j < s.length; j++) {
+            h = Math.imul((h ^ s.charCodeAt(j)) >>> 0, 16777619) >>> 0;
+          }
+          bytes.push(h & 0xff);
+        }
         return bytes;
       },
       base64EncodeWebSafe: bytes => Buffer.from(bytes).toString('base64url'),
@@ -221,6 +235,52 @@ function createEnv(options) {
 
     MailApp: { sendEmail: msg => sentEmails.push(msg) },
 
+    // CalendarApp stand-in. getCalendarById returns null for an id this account
+    // cannot open, which is exactly how a wrong id or a missing share behaves.
+    CalendarApp: {
+      getCalendarById: id => {
+        const meta = calendars[id];
+        if (!meta) return null;
+        const calendar = {
+          getName: () => meta.name || id,
+          getId: () => id,
+          createEvent: (title, start, end, options) => {
+            if (meta.readOnly) throw new Error('You do not have permission to add events to this calendar.');
+            const event = {
+              id: 'event-' + (calendarEvents.length + 1),
+              calendarId: id,
+              title: title,
+              start: start,
+              end: end,
+              options: options || {}
+            };
+            calendarEvents.push(event);
+            return {
+              getId: () => event.id,
+              getTitle: () => event.title,
+              deleteEvent: () => {
+                const i = calendarEvents.indexOf(event);
+                if (i > -1) calendarEvents.splice(i, 1);
+              }
+            };
+          },
+          getEventById: eventId => {
+            const event = calendarEvents.find(ev => ev.id === eventId && ev.calendarId === id);
+            if (!event) return null;
+            return {
+              getId: () => event.id,
+              getTitle: () => event.title,
+              deleteEvent: () => {
+                const i = calendarEvents.indexOf(event);
+                if (i > -1) calendarEvents.splice(i, 1);
+              }
+            };
+          }
+        };
+        return calendar;
+      }
+    },
+
     ScriptApp: {
       AuthMode: AuthMode,
       getUserTriggers: () => installedTriggers.slice(),
@@ -234,6 +294,8 @@ function createEnv(options) {
           timeBased: () => builder,
           onChange: () => builder,
           everyMinutes: () => builder,
+          everyDays: () => builder,
+          atHour: () => builder,
           create: () => {
             const t = { getHandlerFunction: () => handler };
             installedTriggers.push(t);
@@ -247,13 +309,24 @@ function createEnv(options) {
 
     HtmlService: {
       XFrameOptionsMode: { ALLOWALL: 'ALLOWALL' },
-      createHtmlOutputFromFile: name => ({
-        setTitle: () => ({ setXFrameOptionsMode: () => ({ file: name }) })
-      }),
-      createHtmlOutput: html => ({
-        setTitle: () => ({ setXFrameOptionsMode: () => ({ html }) }),
-        getContent: () => html
-      })
+      createHtmlOutputFromFile: name => {
+        const out = {
+          file: name,
+          getContent: () => '',
+          setTitle: () => out,
+          setXFrameOptionsMode: () => out
+        };
+        return out;
+      },
+      createHtmlOutput: html => {
+        const out = {
+          html: html,
+          getContent: () => html,
+          setTitle: () => out,
+          setXFrameOptionsMode: () => out
+        };
+        return out;
+      }
     }
   };
   sandbox.globalThis = sandbox;
@@ -274,6 +347,8 @@ function createEnv(options) {
     sentEmails,
     properties,
     installedTriggers,
+    calendarEvents,
+    calendars,
     logs,
     menus,
     alerts,

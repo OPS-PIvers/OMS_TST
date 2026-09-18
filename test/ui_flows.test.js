@@ -8,6 +8,7 @@
  * fails here rather than in production.
  */
 
+const fs = require('fs');
 const path = require('path');
 const { createEnv } = require('./apps_script_env');
 const { USERS, sheets } = require('./fixtures');
@@ -157,5 +158,48 @@ exports.run = function ({ test, assert }) {
     assert.deepEqual(flows['admin-view-as-teacher'].observations.kpis,
       ['My TST Summary', '3.00', '2.50', '1.00', '1.00', '3.50']);
     assert.ok(/Viewing as Tina Teacher/.test(flows['admin-view-as-teacher'].observations.banner));
+  });
+
+  // ---- Calls the recording does not cover ------------------------------------
+  //
+  // ui_calls.json only holds the flows the browser script walked through, so an
+  // endpoint used on a screen nobody recorded is unguarded until production. The
+  // obvious fix — parse every google.script.run chain out of Index.html — needs a
+  // real JavaScript parser: the page nests template literals and contains regex
+  // literals with quotes in them, and anything less drifts and reports phantom
+  // failures. These three checks stay within what can be asserted soundly.
+
+  test('Index.html never calls a private server function', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'Index.html'), 'utf8');
+    const env = createEnv({ activeUser: USERS.omsAdmin, sheets: sheets() });
+
+    const underscored = new Set(
+      [...html.matchAll(/\.([A-Za-z_$][\w$]*_)\s*\(/g)].map(m => m[1])
+    );
+    underscored.forEach(name => {
+      assert.ok(typeof env.context[name] !== 'function',
+        `Index.html calls ${name}(), which Apps Script never exposes to a client — ` +
+        'it would fail silently in the browser');
+    });
+  });
+
+  test('the endpoints the page dispatches by computed name all exist', () => {
+    const env = createEnv({ activeUser: USERS.omsAdmin, sheets: sheets() });
+    // batch${Action}${Type} in the multiselect toolbar, and the revert pair in the
+    // staff detail modal. A rename on the server would be silent otherwise.
+    ['batchApproveEarned', 'batchDenyEarned', 'batchApproveUsed', 'batchDeleteUsed',
+     'revertEarnedToPending', 'revertUsedToPending'].forEach(fn => {
+      assert.equal(typeof env.context[fn], 'function', `Code.js no longer defines ${fn}()`);
+    });
+  });
+
+  test('the assignment endpoints the page needs are among them', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'Index.html'), 'utf8');
+    ['assignCoverage', 'getAssignments', 'getMyAssignments', 'recordAssignment',
+     'cancelAssignment', 'remindAssignment',
+     'sendTestCalendarEvent', 'getCalendarTestResult',
+     'getEmailServiceStatus', 'setAuthorizeUrl'].forEach(fn => {
+      assert.ok(html.includes('.' + fn + '('), `Index.html should call ${fn}()`);
+    });
   });
 };
