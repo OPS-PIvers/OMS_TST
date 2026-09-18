@@ -106,10 +106,32 @@ exports.run = function ({ test, assert }) {
     assert.equal(t.source, 'label');
   });
 
-  test('OHS has no times until someone configures them', () => {
+  test('OHS reads its bell schedule from config', () => {
     const env = envFor(USERS.ohsAdmin);
-    assert.equal(env.callInternal('periodTimesFor_', 'OHS', 'Period 1', nextWeekday(1)), null,
-      'a missing time is reported, never invented');
+    const monday = env.callInternal('periodTimesFor_', 'OHS', 'Period 1', nextWeekday(1));
+    assert.equal(monday.start, '08:00');
+    assert.equal(monday.end, '08:48', 'Mon/Wed/Fri is the default');
+
+    const tuesday = env.callInternal('periodTimesFor_', 'OHS', 'Period 1', nextWeekday(2));
+    assert.equal(tuesday.end, '08:41', 'Tue/Thu is shorter, to make room for Spartan Hour');
+    assert.equal(tuesday.source, 'TTh');
+  });
+
+  test('a period that only runs some days has no time on the others', () => {
+    const env = envFor(USERS.ohsAdmin);
+    // Spartan Hour is Tue/Thu only, so it has no Mon/Wed/Fri default. This is the
+    // case that must report rather than guess: inventing one would put a teacher
+    // on a calendar at a time that does not exist.
+    assert.equal(env.callInternal('periodTimesFor_', 'OHS', 'Spartan Hour', nextWeekday(1)), null);
+
+    const thursday = env.callInternal('periodTimesFor_', 'OHS', 'Spartan Hour', nextWeekday(4));
+    assert.equal(thursday.start, '08:45');
+    assert.equal(thursday.end, '09:25');
+  });
+
+  test('an unknown period is reported, never invented', () => {
+    const env = envFor(USERS.ohsAdmin);
+    assert.equal(env.callInternal('periodTimesFor_', 'OHS', 'Period 9', nextWeekday(1)), null);
   });
 
   test('configured default times are used once set', () => {
@@ -184,9 +206,76 @@ exports.run = function ({ test, assert }) {
     assert.equal(t.start, '08:15', 'the label is the fallback, not the authority');
   });
 
+  // ---- How a period reads to a person ---------------------------------------
+
+  test('times are shown in 12-hour form, never 24-hour', () => {
+    const env = envFor(USERS.ohsAdmin);
+    assert.equal(env.callInternal('formatTime12_', '13:52'), '1:52 PM');
+    assert.equal(env.callInternal('formatTime12_', '08:00'), '8:00 AM');
+    assert.equal(env.callInternal('formatTime12_', '12:05'), '12:05 PM', 'noon is 12 PM, not 0');
+    assert.equal(env.callInternal('formatTime12_', '00:30'), '12:30 AM', 'and midnight is 12 AM');
+  });
+
+  test('a bare OHS period gains the time it runs that day', () => {
+    const env = envFor(USERS.ohsAdmin);
+    assert.equal(env.callInternal('periodDisplay_', 'OHS', 'Period 3', nextWeekday(1)),
+      'Period 3 (9:54 AM – 10:42 AM)');
+    assert.equal(env.callInternal('periodDisplay_', 'OHS', 'Period 3', nextWeekday(2)),
+      'Period 3 (10:24 AM – 11:04 AM)', 'the date decides, because OHS runs two schedules');
+  });
+
+  test('an OMS label is not made to repeat its own times', () => {
+    const env = envFor(USERS.omsAdmin);
+    assert.equal(env.callInternal('periodDisplay_', 'OMS', 'Period 8 - 12:37 - 1:08', nextWeekday(1)),
+      'Period 8 (12:37 PM – 1:08 PM)');
+  });
+
+  test('a time-range period is shown once, in 12-hour form', () => {
+    const env = envFor(USERS.omsAdmin);
+    assert.equal(env.callInternal('periodDisplay_', 'OIS', '08:30 - 09:15', nextWeekday(1)),
+      '8:30 AM – 9:15 AM');
+  });
+
+  test('a period with no known time still reads as itself', () => {
+    const env = envFor(USERS.ohsAdmin);
+    assert.equal(env.callInternal('periodDisplay_', 'OHS', 'Spartan Hour', nextWeekday(1)),
+      'Spartan Hour');
+  });
+
+  // ---- installBellSchedule ---------------------------------------------------
+
+  test('installBellSchedule copies config.js into a live App Config sheet', () => {
+    const env = envFor(USERS.superAdmin);
+    // Simulate a district already running with the old four bare periods.
+    env.run('saveBuildingConfig', 'OHS', {
+      name: 'Orono High School', scheduleType: 'periods', carryOverMax: 12,
+      periods: ['Period 1', 'Period 2', 'Period 3', 'Period 4'],
+      calendarId: 'ohs@group.calendar.google.com'
+    });
+
+    env.run('installBellSchedule', 'OHS');
+
+    const ohs = env.run('getConfig').OHS;
+    assert.equal(ohs.periods.length, 10);
+    assert.ok(ohs.periods.indexOf('Spartan Hour') > -1);
+    assert.equal(ohs.periods.indexOf('Break'), -1,
+      'the bell chart has a 10-minute Break; it is not something anyone covers');
+    assert.equal(ohs.dayGroups.length, 1);
+    assert.equal(ohs.periodTimes['Period 7'].end, '14:40');
+    assert.equal(ohs.calendarId, 'ohs@group.calendar.google.com',
+      'what the building set for itself must survive');
+  });
+
+  test('installBellSchedule is scoped like every other config write', () => {
+    const env = envFor(USERS.omsAdmin);
+    assert.rejected(env.attempt('installBellSchedule', 'OHS'), /your own building/i);
+    assert.rejected(envFor(USERS.omsTeacher).attempt('installBellSchedule', 'OMS'),
+      /admin access required/i);
+  });
+
   // ---- Private helpers stay off the client surface ---------------------------
 
-  ['parseTimeRange_', 'periodTimesFor_'].forEach(fn => {
+  ['parseTimeRange_', 'periodTimesFor_', 'formatTime12_', 'periodDisplay_'].forEach(fn => {
     test(`${fn} is not reachable from google.script.run`, () => {
       const env = envFor(USERS.omsTeacher);
       assert.rejected(env.attempt(fn), /private/i);
