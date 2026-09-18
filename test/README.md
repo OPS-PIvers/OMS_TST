@@ -15,6 +15,8 @@ node test/run.js       # no dependencies, no network
 | `apps_script_env.js` | The sandbox. `createEnv({ activeUser, sheets, files })` returns `run` / `attempt` helpers; `run` refuses names ending in `_`, exactly as `google.script.run` does. |
 | `fixtures.js` | A two-building district (OMS/OHS) with admins, teachers, a multi-building teacher and an archived one. |
 | `authorization.test.js` | Who may read what: teachers, admins from the wrong building, and people missing from the directory. |
+| `config_times.test.js` | Who may edit a building's settings, and how a period's start/end time resolves (day schedule, building default, then the times baked into the label). |
+| `calendar.test.js` | The per-building calendar: the event comes before the emails, only the building's own admin creates it, a failure still lets the assignment through, and the test-event button. |
 | `assignments.test.js` | Coverage assignments end to end: who may assign, the duplicate guard, the three queued emails, recording (including that it cannot happen twice), cancellation against approved hours, the one nudge, and the signed Record link's expiry. |
 | `ui_flows.test.js` | Replays the `google.script.run` calls `Index.html` actually makes (recorded in `ui_calls.json`) and checks each flow still gets what the page renders. |
 | `legacy_globals.test.js` | `Code_legacy.js` stays out of the deployed file set, and what its duplicate globals used to shadow. |

@@ -196,7 +196,8 @@ exports.run = function ({ test, assert }) {
   test('the assignment endpoints the page needs are among them', () => {
     const html = fs.readFileSync(path.join(__dirname, '..', 'Index.html'), 'utf8');
     ['assignCoverage', 'getAssignments', 'getMyAssignments', 'recordAssignment',
-     'cancelAssignment', 'remindAssignment'].forEach(fn => {
+     'cancelAssignment', 'remindAssignment',
+     'sendTestCalendarEvent', 'getCalendarTestResult'].forEach(fn => {
       assert.ok(html.includes('.' + fn + '('), `Index.html should call ${fn}()`);
     });
   });

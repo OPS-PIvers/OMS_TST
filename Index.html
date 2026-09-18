@@ -972,6 +972,38 @@
                    </button>
                 </div>
 
+                <!-- TST Calendar -->
+                <div class="mb-8">
+                   <div class="flex items-center gap-2 border-b border-gray-200 pb-2 mb-4">
+                      <h4 class="text-sm font-bold text-ops-blue-dark">TST Calendar</h4>
+                      <i class="fas fa-info-circle text-ops-blue-light cursor-help text-xs"
+                         onmouseenter="showTooltip(event, 'Leave the ID blank and this building simply has no calendar: no events, and no mention of one in any email.')"
+                         onmousemove="moveTooltip(event)"
+                         onmouseleave="hideTooltip()"></i>
+                   </div>
+
+                   <div class="grid grid-cols-1 gap-4">
+                      <div>
+                         <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Calendar ID</label>
+                         <input type="text" name="calendarId" value="${escapeHtml(config.calendarId || '')}" placeholder="something@group.calendar.google.com" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue font-mono text-sm">
+                         <p class="text-xs text-gray-500 mt-1">In Google Calendar: Settings &rarr; the calendar &rarr; Integrate calendar &rarr; Calendar ID. Leave blank to turn the calendar off for this building.</p>
+                      </div>
+                      <div>
+                         <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Calendar Name (shown in emails)</label>
+                         <input type="text" name="calendarName" value="${escapeHtml(config.calendarName || '')}" placeholder="e.g. OMS TST Calendar" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue">
+                         <p class="text-xs text-gray-500 mt-1">Emails say &ldquo;added to the &lt;this&gt;&rdquo;, so use the name staff will see in their own calendar list.</p>
+                      </div>
+                   </div>
+
+                   <div class="mt-4 flex items-center gap-3">
+                      <button type="button" onclick="startCalendarTest()" class="text-xs font-bold text-ops-blue hover:text-ops-blue-dark uppercase tracking-wide flex items-center">
+                         <i class="fas fa-vial mr-1"></i> Send Test Event
+                      </button>
+                      <span id="calendar-test-status" class="text-xs text-ops-gray"></span>
+                   </div>
+                   <p class="text-xs text-gray-500 mt-2">The test is run by this building&rsquo;s own email trigger, exactly as a real assignment would be &mdash; so it checks the calendar ID, your edit rights on that calendar, and that the trigger is alive, all at once. It creates one event and removes it.</p>
+                </div>
+
               </form>
               ${archivedSection}
             </div>
@@ -1139,6 +1171,66 @@
     }
 
     /**
+     * Runs the calendar check end to end. The work happens on the building admin's
+     * trigger rather than here, so the result arrives a moment later and is polled
+     * for — that indirection is the point: it is the only thing that proves their
+     * trigger and their calendar rights, not the deployer's.
+     */
+    function startCalendarTest() {
+       const buildingCode = document.getElementById('settings-building-select').value;
+       const form = document.getElementById('settings-form');
+       const entered = form.calendarId.value.trim();
+       const saved = (STATE.config[buildingCode] || {}).calendarId || '';
+
+       if (!entered) {
+          setCalendarTestStatus('Enter a calendar ID first.', 'error');
+          return;
+       }
+       if (entered !== saved) {
+          setCalendarTestStatus('Save your changes first, then test.', 'error');
+          return;
+       }
+
+       setCalendarTestStatus('Queued — waiting for the building\u2019s email trigger…', 'pending');
+       google.script.run.withSuccessHandler(() => {
+          pollCalendarTest(buildingCode, 0);
+       }).withFailureHandler(err => {
+          setCalendarTestStatus(String(err), 'error');
+       }).sendTestCalendarEvent(buildingCode);
+    }
+
+    function pollCalendarTest(buildingCode, attempt) {
+       // The queue trigger runs about once a minute, so give it a little over two.
+       if (attempt > 26) {
+          setCalendarTestStatus('No response yet. The email trigger for this building may not be installed — run TST Admin \u2192 Authorize Email Service.', 'error');
+          return;
+       }
+
+       google.script.run.withSuccessHandler(result => {
+          if (!result || result.state === 'pending') {
+             setTimeout(() => pollCalendarTest(buildingCode, attempt + 1), 5000);
+             return;
+          }
+          if (result.state === 'ok') {
+             const name = result.calendarName ? ' (' + result.calendarName + ')' : '';
+             setCalendarTestStatus('Working — event created and removed on ' + buildingCode + name + '.', 'ok');
+          } else {
+             setCalendarTestStatus(result.error || 'The test failed.', 'error');
+          }
+       }).withFailureHandler(err => {
+          setCalendarTestStatus(String(err), 'error');
+       }).getCalendarTestResult(buildingCode);
+    }
+
+    function setCalendarTestStatus(message, kind) {
+       const el = document.getElementById('calendar-test-status');
+       if (!el) return;
+       const colour = kind === 'ok' ? 'text-green-600' : (kind === 'error' ? 'text-ops-red' : 'text-ops-gray');
+       el.className = 'text-xs font-medium ' + colour;
+       el.textContent = message; // plain text: the message can carry a server error
+    }
+
+    /**
      * Reads the day-specific schedules out of the Settings form. A group only
      * counts when it names at least one day and overrides at least one period —
      * an empty row is someone who opened it and changed their mind.
@@ -1237,6 +1329,11 @@
                 value: val
              });
           }
+       }
+
+       if (form.calendarId) {
+          config.calendarId = form.calendarId.value.trim();
+          config.calendarName = form.calendarName.value.trim();
        }
 
        // Carry Over cap is Super-Admin-owned. Supers save the edited value;

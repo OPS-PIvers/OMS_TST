@@ -104,10 +104,11 @@ The application relies on four key sheets within the bound Google Spreadsheet:
    - Synced to TST Approvals (New) via `onFormSubmit()` trigger
 
 5. **TST Assignments** - Coverage the admin has assigned (auto-created)
-   - Columns: ID (A), Created (B), Building (C), Assigned By (D), Assigned By Name (E), Sub Email (F), Sub Name (G), Covered For (H), Covered For Email (I), Date (J), Period (K), Time Type (L), Hours (M), Note (N), Note To Sub (O), Note To Covered (P), Status (Q), Recorded TS (R), Recorded By (S), Nudged TS (T), Calendar Event ID (U), Calendar Status (V)
+   - Columns: ID (A), Created (B), Building (C), Assigned By (D), Assigned By Name (E), Sub Email (F), Sub Name (G), Covered For (H), Covered For Email (I), Date (J), Period (K), Time Type (L), Hours (M), Note (N), Note To Sub (O), Note To Covered (P), Status (Q), Recorded TS (R), Recorded By (S), Nudged TS (T), Calendar Event ID (U), Calendar Status (V), Notified TS (W)
    - Column indexes live in `A_` and the status values in `ASSIGNMENT_STATUS_` (`Assigned` → `Recorded` | `Cancelled`); use those rather than literals.
    - The row is written **when the admin assigns**, not when the teacher acts. That is what makes the app the record: the Assignments queue, Cancel/Reassign/Remind, Record-on-behalf, the nudge and the duplicate guard all read it, and it is why an un-acted-on assignment is still visible.
    - Covered For Email is blank for free-text entries ("Activity Bus"), which is the only reason the covered-for notification is ever skipped.
+   - Calendar Status drives the calendar state machine (`CAL_`): blank (no calendar) → `Pending` → `Created` | `Failed: <reason>`, and `Pending Delete` → `Deleted`. Notified TS records when the assignment emails actually went out — a cancellation checks it, because emailing someone that a coverage is off when they were never told about it is worse than saying nothing.
    - Rows archive to **TST Assignments Archive** at year-end, by building (`archiveAssignmentsForBuilding_`).
 
 ### Key Server Functions
@@ -125,6 +126,7 @@ The application relies on four key sheets within the bound Google Spreadsheet:
 - **getAssignments(building) / getMyAssignments(email)** - The admin queue, and a teacher's own (both the coverage they are providing and the coverage arranged for their classes)
 - **recordAssignment(id, email) / cancelAssignment(id) / remindAssignment(id)** - Record, cancel, re-send
 - **nudgeOutstandingAssignments()** - The one automatic 7am reminder, installed by `setupEmailService`
+- **sendTestCalendarEvent(building) / getCalendarTestResult(building)** - Queue and then read the end-to-end calendar check behind Settings' "Send Test Event"
 
 #### Server-side authorization (every public function is callable via `google.script.run`)
 
@@ -168,6 +170,22 @@ Coverage is **assigned**, not requested — there is no accept/decline handshake
 - **Reminders:** one automatic nudge at ~7am the day after the coverage date (`nudgeOutstandingAssignments`, marked via Nudged TS so it fires once), plus a manual Remind button. A manual reminder counts as the one nudge.
 - **Badges:** the admin Assignments badge and the teacher's Submit badge both count only **past-date, not-yet-recorded** coverage. Upcoming assignments are not actionable, so counting them would leave a permanent number on the tab. The admin count comes from `assignmentsFor_`, the same helper as the list, so badge and list cannot disagree.
 - **Emails all go through the queue** (`addToEmailQueue_`), which is what makes the **building's own admin** the sender. Nothing about an assignment may call `MailApp.sendEmail` directly — that was the bug in the old `sendCoverageRequest`, which sent as the deployer.
+
+#### The TST Calendar (per building)
+
+Each building has its own calendar, and **a blank `calendarId` means that building has no calendar** — no event, no calendar sentence in any email, no failure alerts. There is no separate on/off switch, so the two can never disagree. `calendarName` is typed by the admin and is what the emails say ("added to the OMS TST Calendar"); `calendarNameFor_` falls back to "<Building> TST Calendar".
+
+**The building's own admin creates the event, through their trigger** — not the web app. The app runs as the deployer (`executeAs: USER_DEPLOYING`), so anything it created would be owned by the deployer rather than by the admin whose calendar it is. `processEmailQueue` therefore runs `processPendingAssignments_()` before draining the mail queue, scoped to the trigger owner's buildings.
+
+That ordering is deliberate and load-bearing:
+
+- `assignCoverage` writes the row with `Calendar Status = Pending` and **sends nothing**. The admin's next trigger run creates the event, then sends the three emails — so the "added to the ... TST Calendar" line only ever appears when there is really something to look at. A building with no calendar skips all of this and emails immediately.
+- A failure never blocks the assignment. The emails still go (minus the calendar sentence), the row records `Failed: <reason>`, and `alertCalendarFailure_` emails the admin. A missing period time is reported as such rather than guessed at — see `periodTimesFor_`.
+- **Cancelling** marks `Pending Delete`; the trigger removes the event and *then* sends the cancellation emails, so they never claim a removal that has not happened.
+- Guests are added with **`sendInvites: false`**. Google's own invite carries a Yes/No/Maybe prompt, which would put a decline button back into a flow that deliberately has none. Do not turn it on.
+- **Settings → Send Test Event** (`sendTestCalendarEvent`) queues a job the building admin's trigger picks up, creating and removing a throwaway event. That is the only check that proves the calendar ID, the admin's edit rights *and* their trigger together; validating the ID from Settings would run as the deployer and prove none of it. The result comes back through Script Properties (`CAL_TEST_<building>`) and the client polls `getCalendarTestResult`.
+
+**Setup each building admin needs:** "Make changes to events" on their building's calendar, plus the trigger from **TST Admin → Authorize Email Service**. A building whose admin has no trigger will leave assignments sitting at `Pending` and send nothing — the stalled-queue banner is what surfaces that.
 
 #### Year-End Finalize (primary-aware)
 
@@ -276,7 +294,7 @@ A Super Admin's trigger **does not** process other buildings' queue rows (`proce
 node test/run.js     # no dependencies, no network
 ```
 
-[test/](test/) loads the real `Code.js` + `config.js` into a Node `vm` context with mocked Apps Script services (SpreadsheetApp, Session, LockService, PropertiesService, Utilities, MailApp, ScriptApp, HtmlService) and sheets as plain arrays. It covers the authorization rules above, the coverage-assignment flow, the `google.script.run` calls [Index.html](Index.html) actually makes (recorded from a real browser into `test/ui_calls.json` by `test/record_ui_calls.js`, replayed without one), and the deployed file set. Run it before pushing; CI runs it on PRs and again before every deploy. See [test/README.md](test/README.md).
+[test/](test/) loads the real `Code.js` + `config.js` into a Node `vm` context with mocked Apps Script services (SpreadsheetApp, Session, LockService, PropertiesService, Utilities, MailApp, ScriptApp, HtmlService) and sheets as plain arrays. It covers the authorization rules above, the coverage-assignment flow, the calendar (via a `CalendarApp` stand-in, where an id the account cannot open simply returns null — exactly how a wrong id or a missing share behaves), the `google.script.run` calls [Index.html](Index.html) actually makes (recorded from a real browser into `test/ui_calls.json` by `test/record_ui_calls.js`, replayed without one), and the deployed file set. Run it before pushing; CI runs it on PRs and again before every deploy. See [test/README.md](test/README.md).
 
 `ui_calls.json` is **stale for the assignment screens** — re-recording needs Playwright (`npm i playwright`), which is not installed here. The new endpoints are covered directly by `test/assignments.test.js` with the arguments the client sends, and `ui_flows.test.js` additionally checks statically that Index.html never calls a private (`_`) server function and that the endpoints it dispatches by computed name still exist.
 
@@ -295,6 +313,10 @@ Defined in [appsscript.json](appsscript.json):
 - `https://www.googleapis.com/auth/spreadsheets` - Read/write spreadsheet data
 - `https://www.googleapis.com/auth/script.send_mail` - Send emails via MailApp
 - `https://www.googleapis.com/auth/userinfo.email` - Get active user email
+- `https://www.googleapis.com/auth/script.scriptapp` - Install the email/nudge triggers
+- `https://www.googleapis.com/auth/calendar` - Create and remove TST coverage events
+
+**Adding the calendar scope means every admin re-authorizes once** — the deployment prompts on next use, and each building admin must re-run "Authorize Email Service" so their triggers carry the new scope.
 
 ## Deployment Notes
 

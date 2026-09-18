@@ -2809,7 +2809,14 @@ function setupEmailService() {
  * never blocked, even if the trigger owner has since left the directory.
  */
 function processEmailQueue(e) {
+  // Calendar work first: it queues the assignment emails, and doing it here means
+  // the same run sends them. It must never stop the queue draining.
   if (!isTriggerEvent_(e)) assertAdmin_(getUserContext());
+  try {
+    processPendingAssignments_();
+  } catch (err) {
+    console.error('Assignment calendar work failed', err);
+  }
   return processEmailQueue_();
 }
 
@@ -3315,7 +3322,7 @@ const ASSIGNMENT_HEADER_ = [
   'Date', 'Period', 'Time Type', 'Hours',
   'Note', 'Note To Sub', 'Note To Covered',
   'Status', 'Recorded TS', 'Recorded By', 'Nudged TS',
-  'Calendar Event ID', 'Calendar Status'
+  'Calendar Event ID', 'Calendar Status', 'Notified TS'
 ];
 
 // 0-based indexes into a row shaped like ASSIGNMENT_HEADER_.
@@ -3325,7 +3332,7 @@ const A_ = {
   date: 9, period: 10, timeType: 11, hours: 12,
   note: 13, noteToSub: 14, noteToCovered: 15,
   status: 16, recordedTs: 17, recordedBy: 18, nudgedTs: 19,
-  calendarEventId: 20, calendarStatus: 21
+  calendarEventId: 20, calendarStatus: 21, notifiedTs: 22
 };
 
 const ASSIGNMENT_STATUS_ = { assigned: 'Assigned', recorded: 'Recorded', cancelled: 'Cancelled' };
@@ -3385,6 +3392,14 @@ function assignmentsSheet_() {
     sheet = ss.insertSheet(ASSIGNMENTS_SHEET_);
     sheet.appendRow(ASSIGNMENT_HEADER_.slice());
     sheet.setFrozenRows(1);
+    return sheet;
+  }
+
+  // A sheet created by an earlier version is short a column or two. Fill the
+  // header out rather than making someone migrate it by hand; the columns are
+  // positional and owned here, so rewriting the header row is safe.
+  if (sheet.getLastColumn() < ASSIGNMENT_HEADER_.length) {
+    sheet.getRange(1, 1, 1, ASSIGNMENT_HEADER_.length).setValues([ASSIGNMENT_HEADER_.slice()]);
   }
   return sheet;
 }
@@ -3415,7 +3430,8 @@ function assignmentFromRow_(row, rowIndex) {
     recordedBy: str(A_.recordedBy),
     nudgedTs: row[A_.nudgedTs] || '',
     calendarEventId: str(A_.calendarEventId),
-    calendarStatus: str(A_.calendarStatus)
+    calendarStatus: str(A_.calendarStatus),
+    notifiedTs: row[A_.notifiedTs] || ''
   };
 }
 
@@ -3627,12 +3643,14 @@ function sendAssignmentEmails_(a) {
 }
 
 /**
- * The "added to the X TST Calendar" sentence. Phase 2 fills this in once a building
- * has a calendar configured and the event has actually been created; until then an
- * assignment never claims a calendar entry that does not exist.
+ * The "added to the X TST Calendar" sentence — only once the event really exists.
+ * A building with no calendar, or one whose event failed, never claims an entry
+ * that is not there.
  */
 function assignmentCalendarLine_(a) {
-  return '';
+  if (!a || a.calendarStatus !== CAL_.created) return '';
+  return '<p style="font-size: 13px; color: #6b7280;">This has been added to the ' +
+    escapeHtml_(calendarNameFor_(a.building)) + '.</p>';
 }
 
 function sendAssignmentReminder_(a) {
@@ -3693,9 +3711,310 @@ function sendAssignmentCancelledEmails_(a) {
   }
 }
 
-/** Phase 2 fills this in once calendar events exist to remove. */
 function assignmentCalendarRemovedLine_(a) {
-  return '';
+  if (!a || a.calendarStatus !== CAL_.deleted) return '';
+  return '<p style="font-size: 13px; color: #6b7280;">It has been removed from the ' +
+    escapeHtml_(calendarNameFor_(a.building)) + '.</p>';
+}
+
+// ===== Assignment calendar =====
+// Each building has its own TST calendar, and the event is created by that
+// building's own admin through their trigger — so they own the event, matching
+// the address the emails go out from. A blank calendar ID means the building has
+// no calendar and the whole path is skipped: no event, no calendar sentence in any
+// email, no failure alerts.
+//
+// Order matters. The event is created first and the emails go out afterwards, so
+// the "added to the ... TST Calendar" line only ever appears when there really is
+// something to look at. A failure never blocks the assignment — the emails still
+// go, minus that sentence, and the admin is told.
+
+const CAL_ = {
+  none: '',
+  pending: 'Pending',
+  created: 'Created',
+  failed: 'Failed',
+  pendingDelete: 'Pending Delete',
+  deleted: 'Deleted'
+};
+
+const CAL_TEST_PREFIX_ = 'CAL_TEST_';
+
+function calendarIdFor_(building) {
+  const cfg = (getConfig() || {})[building] || {};
+  return (cfg.calendarId || '').toString().trim();
+}
+
+/** The name staff will see in their own calendar list, as the admin typed it. */
+function calendarNameFor_(building) {
+  const cfg = (getConfig() || {})[building] || {};
+  const typed = (cfg.calendarName || '').toString().trim();
+  return typed || (buildingNameFor_(building) + ' TST Calendar');
+}
+
+function isCalendarFailure_(status) {
+  return (status || '').toString().indexOf(CAL_.failed) === 0;
+}
+
+/** "Period 3 - 9:52 - 10:39" reads as "Period 3" in a calendar title. */
+function shortPeriodLabel_(period) {
+  const p = (period == null ? '' : period).toString().trim();
+  const stripped = p
+    .replace(/\s*[-–—]?\s*\d{1,2}:\d{2}\s*(?:[-–—]|to)\s*\d{1,2}:\d{2}\s*$/, '')
+    .trim();
+  return stripped || p;
+}
+
+/** The real start/end Dates for an assignment, or null when times are unknown. */
+function assignmentEventWindow_(a) {
+  const times = periodTimesFor_(a.building, a.period, a.date);
+  const day = parseYmd_(a.date);
+  if (!times || !day) return null;
+
+  const at = hhmm => {
+    const parts = hhmm.split(':');
+    return new Date(day.getFullYear(), day.getMonth(), day.getDate(), Number(parts[0]), Number(parts[1]), 0);
+  };
+  const start = at(times.start);
+  const end = at(times.end);
+  if (!(end.getTime() > start.getTime())) return null;
+  return { start: start, end: end };
+}
+
+function assignmentEventTitle_(a) {
+  const period = shortPeriodLabel_(a.period);
+  return 'TST: ' + a.subName + ' covering ' + a.coveredFor + (period ? ' — ' + period : '');
+}
+
+function assignmentEventDescription_(a) {
+  const lines = [
+    a.subName + ' is covering ' + a.period + ' for ' + a.coveredFor + '.',
+    '',
+    'Date: ' + longDate_(a.date),
+    'Duration: ' + durationLabel_(a),
+    'Assigned by: ' + (a.assignedByName || a.assignedBy)
+  ];
+  if (a.note) lines.push('', 'Note: ' + a.note);
+  const url = scriptUrl_();
+  if (url) lines.push('', 'TST Manager: ' + url);
+  return lines.join('\n');
+}
+
+/**
+ * Creates the event for one assignment, then sends its emails.
+ *
+ * Guests are added without a Google invite: our own email is the notification,
+ * and Google's carries a Yes/No/Maybe prompt, which would put a decline button
+ * back in a flow that deliberately has none.
+ */
+function finishAssignmentCreation_(sheet, a) {
+  const calendarId = calendarIdFor_(a.building);
+  let status = CAL_.none;
+  let eventId = '';
+  let failure = '';
+
+  if (calendarId) {
+    const when = assignmentEventWindow_(a);
+    if (!when) {
+      failure = 'No start and end time is set for "' + a.period + '" on that day. ' +
+        'Add it under Settings → Periods.';
+    } else {
+      try {
+        const calendar = CalendarApp.getCalendarById(calendarId);
+        if (!calendar) {
+          failure = 'Calendar not found, or this account cannot edit it (' + calendarId + ').';
+        } else {
+          const guests = [a.subEmail, a.coveredForEmail].filter(Boolean).join(',');
+          const event = calendar.createEvent(assignmentEventTitle_(a), when.start, when.end, {
+            description: assignmentEventDescription_(a),
+            guests: guests,
+            sendInvites: false
+          });
+          eventId = event.getId();
+          status = CAL_.created;
+        }
+      } catch (err) {
+        failure = (err && err.message) ? err.message : String(err);
+      }
+    }
+  }
+
+  if (failure) status = CAL_.failed + ': ' + failure;
+
+  const updates = {};
+  updates[A_.calendarEventId] = eventId;
+  updates[A_.calendarStatus] = status;
+  updates[A_.notifiedTs] = new Date();
+  setAssignmentCells_(sheet, a.rowIndex, updates);
+
+  const updated = Object.assign({}, a, { calendarEventId: eventId, calendarStatus: status });
+  sendAssignmentEmails_(updated);
+  if (failure) alertCalendarFailure_(updated, failure);
+  return updated;
+}
+
+/** Removes a cancelled assignment's event, then sends the cancellation emails. */
+function finishAssignmentCancellation_(sheet, a) {
+  const calendarId = calendarIdFor_(a.building);
+  let status = CAL_.deleted;
+  let failure = '';
+
+  if (calendarId && a.calendarEventId) {
+    try {
+      const calendar = CalendarApp.getCalendarById(calendarId);
+      const event = calendar && calendar.getEventById(a.calendarEventId);
+      if (event) event.deleteEvent();
+    } catch (err) {
+      failure = (err && err.message) ? err.message : String(err);
+      status = CAL_.failed + ': ' + failure;
+    }
+  }
+
+  const updates = {};
+  updates[A_.calendarStatus] = status;
+  updates[A_.calendarEventId] = '';
+  setAssignmentCells_(sheet, a.rowIndex, updates);
+
+  const updated = Object.assign({}, a, { calendarStatus: status, calendarEventId: '' });
+  // Nobody was told about this assignment yet, so there is nothing to cancel on
+  // their side — a cancellation email would be the first they ever heard of it.
+  if (a.notifiedTs) sendAssignmentCancelledEmails_(updated);
+  if (failure) alertCalendarFailure_(updated, 'The calendar event could not be removed: ' + failure);
+  return updated;
+}
+
+function alertCalendarFailure_(a, reason) {
+  const body =
+    '<p>The coverage assignment for <strong>' + escapeHtml_(a.subName) + '</strong> on <strong>' +
+    escapeHtml_(longDate_(a.date)) + '</strong> went out, but its calendar entry did not.</p>' +
+    detailsBox_([
+      ['Reason', reason],
+      ['Calendar', calendarIdFor_(a.building) || '(none set)'],
+      ['Period', a.period]
+    ]) +
+    '<p>Everyone was still emailed — only the calendar entry is missing. Check the calendar ID ' +
+    'in Settings, and that you can edit that calendar.</p>';
+
+  sendStyledEmail_(
+    a.assignedBy,
+    'TST calendar entry failed: ' + shortDate_(a.date) + ' — ' + a.subName,
+    'Calendar Entry Failed',
+    body,
+    'Open TST Manager',
+    buildingNameFor_(a.building),
+    { buildingCode: a.building }
+  );
+}
+
+/**
+ * The calendar work the building admin's trigger does, for their buildings only.
+ *
+ * Has to be driven by a trigger rather than the web app: the app runs as whoever
+ * deployed it, so an event it created would be owned by the deployer rather than
+ * by the building admin whose calendar it is.
+ */
+function processPendingAssignments_() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return 0; // another admin's trigger is already on it
+
+  try {
+    const ctx = getUserContext();
+    const mine = ctx.buildings || [DEFAULT_BUILDING];
+    const sheet = assignmentsSheet_();
+
+    const due = assignmentRows_(a =>
+      (a.calendarStatus === CAL_.pending || a.calendarStatus === CAL_.pendingDelete) &&
+      mine.indexOf(a.building) > -1);
+
+    due.forEach(a => {
+      try {
+        if (a.calendarStatus === CAL_.pendingDelete) finishAssignmentCancellation_(sheet, a);
+        else finishAssignmentCreation_(sheet, a);
+      } catch (err) {
+        console.error('Assignment calendar job failed', a.id, err);
+      }
+    });
+
+    runCalendarTests_(ctx);
+    return due.length;
+  } finally {
+    try { lock.releaseLock(); } catch (e) {}
+  }
+}
+
+/**
+ * Settings' "Send test event" runs the real path end to end — queued here, picked
+ * up by the building admin's trigger, creating and removing a throwaway event.
+ * That is the only check that proves the calendar ID, the admin's edit rights and
+ * their trigger all at once; validating the ID from Settings would run as the
+ * deployer and prove none of it.
+ */
+function runCalendarTests_(ctx) {
+  const props = PropertiesService.getScriptProperties();
+
+  (ctx.buildings || []).forEach(building => {
+    const raw = props.getProperty(CAL_TEST_PREFIX_ + building);
+    if (!raw) return;
+
+    let job = null;
+    try { job = JSON.parse(raw); } catch (e) { return; }
+    if (!job || job.state !== 'pending') return;
+
+    let result;
+    try {
+      const calendarId = calendarIdFor_(building);
+      if (!calendarId) throw new Error('No calendar ID is set for ' + building + '.');
+
+      const calendar = CalendarApp.getCalendarById(calendarId);
+      if (!calendar) throw new Error('Calendar not found, or this account cannot edit it.');
+
+      const start = new Date(new Date().getTime() + 24 * 60 * 60 * 1000);
+      const event = calendar.createEvent(
+        'TST Manager test event',
+        start,
+        new Date(start.getTime() + 15 * 60 * 1000),
+        { description: 'Created by TST Manager to check the calendar connection. It removes itself.' }
+      );
+      const actualName = calendar.getName ? calendar.getName() : '';
+      event.deleteEvent();
+
+      result = { state: 'ok', building: building, calendarName: actualName, by: ctx.email };
+    } catch (err) {
+      result = {
+        state: 'failed',
+        building: building,
+        error: (err && err.message) ? err.message : String(err),
+        by: ctx.email
+      };
+    }
+
+    props.setProperty(CAL_TEST_PREFIX_ + building, JSON.stringify(result));
+  });
+}
+
+/** Admin action: queue the end-to-end calendar check for a building. */
+function sendTestCalendarEvent(building) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  const b = allowedBuildingFor_(ctx, building);
+  if (!b) throw new Error('You can only test your own building(s).');
+  if (!calendarIdFor_(b)) throw new Error('No calendar ID is set for ' + b + '. Add one and save first.');
+
+  PropertiesService.getScriptProperties()
+    .setProperty(CAL_TEST_PREFIX_ + b, JSON.stringify({ state: 'pending', building: b }));
+  return true;
+}
+
+/** Polled by Settings while a test is in flight. */
+function getCalendarTestResult(building) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  const b = allowedBuildingFor_(ctx, building);
+  if (!b) throw new Error('You can only test your own building(s).');
+
+  const raw = PropertiesService.getScriptProperties().getProperty(CAL_TEST_PREFIX_ + b);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch (e) { return null; }
 }
 
 // ===== Assignment endpoints =====
@@ -3779,11 +4098,21 @@ function assignCoverage(payload) {
   row[A_.noteToSub] = !!p.noteToSub && !!row[A_.note];
   row[A_.noteToCovered] = !!p.noteToCovered && !!row[A_.note] && !!coveredForEmail;
   row[A_.status] = ASSIGNMENT_STATUS_.assigned;
+
+  // With a calendar, the event is built first and the emails follow, so the
+  // "added to the calendar" line is only ever written when it is true. That work
+  // belongs to the building admin's trigger, because the web app runs as the
+  // deployer and would own the event itself. Without a calendar there is nothing
+  // to wait for, so the emails go now.
+  const usesCalendar = !!calendarIdFor_(building);
+  row[A_.calendarStatus] = usesCalendar ? CAL_.pending : CAL_.none;
+  if (!usesCalendar) row[A_.notifiedTs] = new Date();
+
   sheet.appendRow(row);
 
   const assignment = assignmentFromRow_(row, sheet.getLastRow());
-  sendAssignmentEmails_(assignment);
-  return { assigned: true, id: assignment.id };
+  if (!usesCalendar) sendAssignmentEmails_(assignment);
+  return { assigned: true, id: assignment.id, pendingCalendar: usesCalendar };
 }
 
 /** The admin Assignments queue, scoped the same way every other queue is. */
@@ -3927,8 +4256,21 @@ function cancelAssignment(id) {
     if (earned) deleteEarnedRow_(earned.rowIndex);
   }
 
-  setAssignmentCells_(assignmentsSheet_(), a.rowIndex, { [A_.status]: ASSIGNMENT_STATUS_.cancelled });
-  sendAssignmentCancelledEmails_(a);
+  // An event can only be removed by the admin who owns it, so hand that to their
+  // trigger and let it send the cancellation emails once the removal is done —
+  // otherwise the email claims a removal that has not happened yet.
+  const hasCalendarWork = !!a.calendarEventId || a.calendarStatus === CAL_.pending;
+
+  const updates = {};
+  updates[A_.status] = ASSIGNMENT_STATUS_.cancelled;
+  if (hasCalendarWork) updates[A_.calendarStatus] = CAL_.pendingDelete;
+  setAssignmentCells_(assignmentsSheet_(), a.rowIndex, updates);
+
+  if (hasCalendarWork) return { cancelled: true, pendingCalendar: true };
+
+  // Nobody was told about this one yet, so a cancellation would be the first they
+  // ever heard of it.
+  if (a.notifiedTs) sendAssignmentCancelledEmails_(a);
   return { cancelled: true };
 }
 

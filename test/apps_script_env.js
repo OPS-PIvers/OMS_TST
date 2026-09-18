@@ -140,6 +140,10 @@ function createEnv(options) {
   const sentEmails = [];
   const properties = Object.assign({}, opts.properties);
   const installedTriggers = [];
+  // { id, calendarId, title, start, end, options } for every event still on a
+  // calendar, so a test can assert on what was created as well as on what was said.
+  const calendarEvents = [];
+  const calendars = Object.assign({}, opts.calendars); // id -> { name } (absent = no access)
   const logs = [];
   const menus = [];
   const alerts = [];
@@ -231,6 +235,52 @@ function createEnv(options) {
 
     MailApp: { sendEmail: msg => sentEmails.push(msg) },
 
+    // CalendarApp stand-in. getCalendarById returns null for an id this account
+    // cannot open, which is exactly how a wrong id or a missing share behaves.
+    CalendarApp: {
+      getCalendarById: id => {
+        const meta = calendars[id];
+        if (!meta) return null;
+        const calendar = {
+          getName: () => meta.name || id,
+          getId: () => id,
+          createEvent: (title, start, end, options) => {
+            if (meta.readOnly) throw new Error('You do not have permission to add events to this calendar.');
+            const event = {
+              id: 'event-' + (calendarEvents.length + 1),
+              calendarId: id,
+              title: title,
+              start: start,
+              end: end,
+              options: options || {}
+            };
+            calendarEvents.push(event);
+            return {
+              getId: () => event.id,
+              getTitle: () => event.title,
+              deleteEvent: () => {
+                const i = calendarEvents.indexOf(event);
+                if (i > -1) calendarEvents.splice(i, 1);
+              }
+            };
+          },
+          getEventById: eventId => {
+            const event = calendarEvents.find(ev => ev.id === eventId && ev.calendarId === id);
+            if (!event) return null;
+            return {
+              getId: () => event.id,
+              getTitle: () => event.title,
+              deleteEvent: () => {
+                const i = calendarEvents.indexOf(event);
+                if (i > -1) calendarEvents.splice(i, 1);
+              }
+            };
+          }
+        };
+        return calendar;
+      }
+    },
+
     ScriptApp: {
       AuthMode: AuthMode,
       getUserTriggers: () => installedTriggers.slice(),
@@ -297,6 +347,8 @@ function createEnv(options) {
     sentEmails,
     properties,
     installedTriggers,
+    calendarEvents,
+    calendars,
     logs,
     menus,
     alerts,
