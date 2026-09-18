@@ -333,6 +333,40 @@ function periodTimesFor_(building, periodLabel, dateStr) {
   return null;
 }
 
+/** "13:52" -> "1:52 PM". Times are stored 24-hour; nobody should ever read them that way. */
+function formatTime12_(hhmm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec((hhmm == null ? '' : hhmm).toString().trim());
+  if (!m) return (hhmm == null ? '' : hhmm).toString();
+  let hour = Number(m[1]);
+  const suffix = hour >= 12 ? 'PM' : 'AM';
+  hour = hour % 12;
+  if (hour === 0) hour = 12;
+  return hour + ':' + m[2] + ' ' + suffix;
+}
+
+/**
+ * How a period should read to a person: "Period 3 (10:24 AM - 11:04 AM)".
+ *
+ * The stored label is not enough on its own. OHS periods are bare ("Period 3"),
+ * so without this a teacher is told to cover a period with no hint of when it is
+ * — and OHS runs different times on Tue/Thu, so only the date can say. OMS labels
+ * do carry times, but in a 24-hour-ish form nobody writes by hand.
+ *
+ * Time-range buildings store the span itself as the period, so those just get the
+ * span back in 12-hour form rather than repeating it.
+ */
+function periodDisplay_(building, period, dateStr) {
+  const raw = (period == null ? '' : period).toString().trim();
+  const label = shortPeriodLabel_(raw);
+  const times = periodTimesFor_(building, raw, dateStr);
+  if (!times) return label || raw;
+
+  const when = formatTime12_(times.start) + ' \u2013 ' + formatTime12_(times.end);
+  // The label is nothing but a time range (OIS/SE), so do not say it twice.
+  if (label === raw && /^\d{1,2}:\d{2}/.test(label)) return when;
+  return label + ' (' + when + ')';
+}
+
 /**
  * Reads the per-building Carry Over cap — the maximum hours that roll into the
  * next year when finalizing. Defaults to 12 when unset or invalid so config
@@ -3736,6 +3770,7 @@ function sendAssignmentEmails_(a) {
   const opts = { buildingCode: a.building };
   const adminName = a.assignedByName || a.assignedBy;
   const dateLong = longDate_(a.date);
+  const periodText = periodDisplay_(a.building, a.period, a.date);
 
   const recordUrl = buildAssignmentLink_(scriptUrl_(), {
     action: 'record', id: a.id, tEmail: a.subEmail
@@ -3744,10 +3779,10 @@ function sendAssignmentEmails_(a) {
   const subBody =
     `<p>Hello <strong>${escapeHtml_(a.subName)}</strong>,</p>` +
     `<p>You have been assigned for TST Coverage for <strong>${escapeHtml_(a.coveredFor)}</strong> on ` +
-    `<strong>${escapeHtml_(dateLong)}</strong>, <strong>${escapeHtml_(a.period)}</strong>.</p>` +
+    `<strong>${escapeHtml_(dateLong)}</strong>, <strong>${escapeHtml_(periodText)}</strong>.</p>` +
     detailsBox_([
       ['Date', dateLong],
-      ['Period', a.period],
+      ['Period', periodText],
       ['Covering For', a.coveredFor],
       ['Duration', durationLabel_(a)]
     ]) +
@@ -3770,10 +3805,10 @@ function sendAssignmentEmails_(a) {
     const coveredBody =
       `<p>Hello <strong>${escapeHtml_(a.coveredFor)}</strong>,</p>` +
       `<p><strong>${escapeHtml_(a.subName)}</strong> has been assigned to cover your ` +
-      `<strong>${escapeHtml_(a.period)}</strong> class on <strong>${escapeHtml_(dateLong)}</strong>.</p>` +
+      `<strong>${escapeHtml_(periodText)}</strong> class on <strong>${escapeHtml_(dateLong)}</strong>.</p>` +
       detailsBox_([
         ['Date', dateLong],
-        ['Period', a.period],
+        ['Period', periodText],
         ['Covered By', a.subName]
       ]) +
       (a.noteToCovered ? noteBlock_(a.note) : '') +
@@ -3795,7 +3830,7 @@ function sendAssignmentEmails_(a) {
     `<p>You assigned <strong>${escapeHtml_(a.subName)}</strong> to cover for <strong>${escapeHtml_(a.coveredFor)}</strong>.</p>` +
     detailsBox_([
       ['Date', dateLong],
-      ['Period', a.period],
+      ['Period', periodText],
       ['Duration', durationLabel_(a)]
     ]) +
     (a.note ? noteBlock_(a.note) : '') +
@@ -3836,7 +3871,7 @@ function sendAssignmentReminder_(a) {
 
   const body =
     `<p>Hello <strong>${escapeHtml_(a.subName)}</strong>,</p>` +
-    `<p>You were assigned to cover <strong>${escapeHtml_(a.period)}</strong> for ` +
+    `<p>You were assigned to cover <strong>${escapeHtml_(periodDisplay_(a.building, a.period, a.date))}</strong> for ` +
     `<strong>${escapeHtml_(a.coveredFor)}</strong> on <strong>${escapeHtml_(longDate_(a.date))}</strong>, ` +
     `but your TST time has not been recorded yet.</p>` +
     (expiryText
@@ -3864,7 +3899,7 @@ function sendAssignmentCancelledEmails_(a) {
   const subBody =
     `<p>Hello <strong>${escapeHtml_(a.subName)}</strong>,</p>` +
     `<p>The TST Coverage assignment for <strong>${escapeHtml_(a.coveredFor)}</strong> on ` +
-    `<strong>${escapeHtml_(dateLong)}</strong>, <strong>${escapeHtml_(a.period)}</strong> has been cancelled. ` +
+    `<strong>${escapeHtml_(dateLong)}</strong>, <strong>${escapeHtml_(periodDisplay_(a.building, a.period, a.date))}</strong> has been cancelled. ` +
     `You do not need to cover this class.</p>` +
     assignmentCalendarRemovedLine_(a);
 
@@ -3873,7 +3908,7 @@ function sendAssignmentCancelledEmails_(a) {
   if (a.coveredForEmail) {
     const coveredBody =
       `<p>Hello <strong>${escapeHtml_(a.coveredFor)}</strong>,</p>` +
-      `<p>The coverage arranged for your <strong>${escapeHtml_(a.period)}</strong> class on ` +
+      `<p>The coverage arranged for your <strong>${escapeHtml_(periodDisplay_(a.building, a.period, a.date))}</strong> class on ` +
       `<strong>${escapeHtml_(dateLong)}</strong> has been cancelled. ` +
       `<strong>${escapeHtml_(a.subName)}</strong> is no longer assigned.</p>` +
       assignmentCalendarRemovedLine_(a);
@@ -3886,6 +3921,43 @@ function assignmentCalendarRemovedLine_(a) {
   if (!a || a.calendarStatus !== CAL_.deleted) return '';
   return '<p style="font-size: 13px; color: #6b7280;">It has been removed from the ' +
     escapeHtml_(calendarNameFor_(a.building)) + '.</p>';
+}
+
+/**
+ * Copies a building's bell schedule out of config.js into the live App Config
+ * sheet. Admin only, and scoped like every other config write.
+ *
+ * getConfig() seeds App Config from BUILDING_CONFIG only when the sheet does not
+ * exist yet, so editing config.js does nothing to a district that is already
+ * running. Rather than have someone retype twenty-odd start and end times into
+ * Settings, this merges just the schedule keys across and leaves everything the
+ * building has set for itself — calendar, carry-over cap, name — untouched.
+ *
+ * Run it once from the Apps Script editor after deploying a schedule change.
+ */
+function installBellSchedule(building) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  const target = allowedBuildingFor_(ctx, building);
+  if (!target) throw new Error('You can only install a bell schedule for your own building(s).');
+
+  const source = (typeof BUILDING_CONFIG !== 'undefined' && BUILDING_CONFIG[target]) || null;
+  if (!source || !Array.isArray(source.periods)) {
+    throw new Error('config.js has no period list for ' + target + '.');
+  }
+
+  const live = Object.assign({}, (getConfig() || {})[target] || {});
+  live.periods = source.periods.slice();
+  live.periodTimes = Object.assign({}, source.periodTimes || {});
+  live.dayGroups = JSON.parse(JSON.stringify(source.dayGroups || []));
+
+  saveBuildingConfig(target, live);
+
+  const summary = target + ': ' + live.periods.length + ' periods, ' +
+    Object.keys(live.periodTimes).length + ' with default times, ' +
+    live.dayGroups.length + ' day schedule(s).';
+  Logger.log(summary);
+  return summary;
 }
 
 // ===== Assignment calendar =====
@@ -3959,7 +4031,7 @@ function assignmentEventTitle_(a) {
 
 function assignmentEventDescription_(a) {
   const lines = [
-    a.subName + ' is covering ' + a.period + ' for ' + a.coveredFor + '.',
+    a.subName + ' is covering ' + periodDisplay_(a.building, a.period, a.date) + ' for ' + a.coveredFor + '.',
     '',
     'Date: ' + longDate_(a.date),
     'Duration: ' + durationLabel_(a),
@@ -4298,6 +4370,7 @@ function assignmentsFor_(building) {
   return assignmentRows_(a => a.building === building)
     .map(a => Object.assign({}, a, {
       dateDisplay: longDate_(a.date),
+      periodDisplay: periodDisplay_(a.building, a.period, a.date),
       durationLabel: durationLabel_(a),
       outstanding: isAssignmentOutstanding_(a),
       upcoming: daysSinceDate_(a.date) <= 0
@@ -4326,6 +4399,7 @@ function getMyAssignments(targetEmail) {
         date: a.date,
         dateDisplay: longDate_(a.date),
         period: a.period,
+        periodDisplay: periodDisplay_(a.building, a.period, a.date),
         amountType: a.amountType,
         hours: a.hours,
         durationLabel: durationLabel_(a),

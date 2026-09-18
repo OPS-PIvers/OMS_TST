@@ -32,12 +32,54 @@ const BUILDING_CONFIG = {
     name: 'Orono High School',
     carryOverMax: 12,
     scheduleType: 'periods',
+    // Listed in Mon/Wed/Fri order, which is three days out of five. Spartan Hour
+    // only runs Tue/Thu, so it has no default time — assigning it on a Monday is
+    // reported as "no time set for that day" rather than quietly guessing one.
     periods: [
       "Period 1",
+      "Spartan Hour",
       "Period 2",
+      "Break",
       "Period 3",
-      "Period 4"
-      // Add more as known or generic
+      "Period 4",
+      "Period 5A",
+      "Period 5B",
+      "Period 5C",
+      "Period 6",
+      "Period 7"
+    ],
+    // Mon/Wed/Fri — the default schedule.
+    periodTimes: {
+      "Period 1":  { start: "08:00", end: "08:48" },
+      "Period 2":  { start: "08:52", end: "09:40" },
+      "Break":     { start: "09:40", end: "09:50" },
+      "Period 3":  { start: "09:54", end: "10:42" },
+      "Period 4":  { start: "10:46", end: "11:34" },
+      "Period 5A": { start: "11:38", end: "12:02" },
+      "Period 5B": { start: "12:05", end: "12:29" },
+      "Period 5C": { start: "12:32", end: "12:56" },
+      "Period 6":  { start: "13:00", end: "13:48" },
+      "Period 7":  { start: "13:52", end: "14:40" }
+    },
+    // Tue/Thu runs shorter periods to make room for Spartan Hour.
+    dayGroups: [
+      {
+        name: "TTh",
+        days: ["Tue", "Thu"],
+        times: {
+          "Period 1":     { start: "08:00", end: "08:41" },
+          "Spartan Hour": { start: "08:45", end: "09:25" },
+          "Break":        { start: "09:25", end: "09:35" },
+          "Period 2":     { start: "09:40", end: "10:20" },
+          "Period 3":     { start: "10:24", end: "11:04" },
+          "Period 4":     { start: "11:08", end: "11:48" },
+          "Period 5A":    { start: "11:52", end: "12:16" },
+          "Period 5B":    { start: "12:20", end: "12:44" },
+          "Period 5C":    { start: "12:48", end: "13:12" },
+          "Period 6":     { start: "13:16", end: "13:56" },
+          "Period 7":     { start: "14:00", end: "14:40" }
+        }
+      }
     ],
     coverageTypes: [
       { label: 'Full Period', value: 1 }
