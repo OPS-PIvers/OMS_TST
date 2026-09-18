@@ -3422,6 +3422,15 @@ function getPendingEarnedMap_(building) {
   return map;
 }
 
+/**
+ * Approved TST hours per person per month, for the current school year.
+ * Keyed "email_MonthName" with the email lowercased.
+ *
+ * This is what the Master Schedule shows under each teacher's name, and what it
+ * sorts them by, so the admin can spread coverage toward whoever has picked up
+ * least this month. It is a per-month count and not a balance — a month that has
+ * not happened yet is legitimately 0 for everyone.
+ */
 function calculateMonthlyHours_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Approvals (New)');
@@ -3443,11 +3452,19 @@ function calculateMonthlyHours_() {
   const schoolYearStart = new Date(startYear, 7, 1); // Aug 1
   const schoolYearEnd = new Date(endYear, 6, 30); // July 30
 
+  // Col H(7)=Hours, I(8)=Approved, K(10)=Denied
   data.forEach(row => {
     const email = (row[0] || '').toString().trim().toLowerCase();
     const date = new Date(row[4]);
-    const hours = Number(row[7]);
-    
+    const hours = Number(row[7]) || 0;
+    const isApproved = row[8] === true || row[8] === 'TRUE';
+
+    // Approved only, the same as every other earned total (see
+    // calculateDynamicBalances_). Pending coverage is already shown in the same
+    // cell by its own hourglass, and counting a denied request here would steer
+    // coverage AWAY from the person whose request you turned down.
+    if (!isApproved) return;
+
     // Check if within current school year
     if (date >= schoolYearStart && date <= schoolYearEnd) {
       const mName = monthNames[date.getMonth()];

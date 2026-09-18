@@ -97,4 +97,5 @@ function sheets(overrides) {
   return out;
 }
 
-module.exports = { USERS, STAFF_HEADER, STAFF_ROWS, APPROVALS_HEADER, USAGE_HEADER, sheets };
+module.exports = { USERS, STAFF_HEADER, STAFF_ROWS, APPROVALS_HEADER, USAGE_HEADER,
+  AVAILABILITY_HEADER, AVAILABILITY_ROWS, sheets };
