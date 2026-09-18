@@ -127,6 +127,8 @@ The application relies on four key sheets within the bound Google Spreadsheet:
 - **recordAssignment(id, email) / cancelAssignment(id) / remindAssignment(id)** - Record, cancel, re-send
 - **nudgeOutstandingAssignments()** - The one automatic 7am reminder, installed by `setupEmailService`
 - **sendTestCalendarEvent(building) / getCalendarTestResult(building)** - Queue and then read the end-to-end calendar check behind Settings' "Send Test Event"
+- **getEmailServiceStatus(building)** - Whether that building's mail is actually going out; drives the warning banner
+- **setAuthorizeUrl(url)** - **Super Admin only.** The address of the second (user-accessing) deployment
 
 #### Server-side authorization (every public function is callable via `google.script.run`)
 
@@ -287,6 +289,16 @@ The `onFormSubmit(e)` function must be set up as an **installable trigger** in t
 Because triggers are per-user, a building admin needs **standing access to the TST spreadsheet** — `processEmailQueue_` reads and writes the Email Queue sheet as the trigger owner. Without it, that building's mail queues and never sends.
 
 A Super Admin's trigger **does not** process other buildings' queue rows (`processEmailQueue_`). It used to, which raced the building admin every minute and made the From name a coin flip. The trade-off is deliberate: a building with nobody authorized queues mail rather than sending it under the wrong name.
+
+### Email service health and the second deployment
+
+Queued mail is sent by each building admin's **own** trigger — that is what makes them the sender. Triggers are per-user, so:
+
+- **Nobody can install one on anyone else's behalf.** The main web app runs as the deployer (`executeAs: USER_DEPLOYING`), so a button in it would only ever create the deployer's triggers again. That is why there is a **second deployment of the same project, configured "Execute as: user accessing the web app"**, reached at `?action=authorizeEmail` (`authorizeEmailServicePage_`). It is admin-gated and renders its own errors, because an Apps Script exception page tells a school secretary nothing.
+  - Both deployments serve the same `Code.js`, so **redeploy them together**. The Super Admin stores the second URL via `setAuthorizeUrl`; blank is fine, and the banner then points at the spreadsheet menu instead.
+  - It requires the admin to have access to the TST spreadsheet (the trigger binds to it, and the page reads the Staff Directory). That is the same access `processEmailQueue_` needs anyway.
+- **The app cannot see whether a trigger exists.** `ScriptApp.getUserTriggers()` only ever returns the *effective* user's, so running as the deployer it cannot enumerate anyone else's. Health is therefore judged from the symptom: `oldestPendingMinutes_` finds mail sitting `Pending` beyond `QUEUE_STALL_MINUTES_` (15). That catches a trigger that was never installed **and** one Apps Script has since disabled — whose failure notice goes to its owner, not to whoever notices the silence. An authorization record (`EMAIL_AUTH_<building>`, written by `installEmailTriggers_`) separates "never set up" from "it broke", because those need different responses.
+- `setupEmailService` (menu) and the authorization page share `installEmailTriggers_`, so both install the same three triggers and both are safe to re-run — re-running is the documented fix for a disabled trigger.
 
 ## Testing & Debugging
 

@@ -196,6 +196,8 @@
 
     <!-- Main Content Area -->
     <main class="flex-grow max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
+      <!-- Shown when a building's queued mail is not going out -->
+      <div id="email-service-banner" class="hidden mb-6"></div>
       <div id="view-container">
         <!-- Views injected here -->
       </div>
@@ -480,6 +482,7 @@
       renderViewAsBanner();
       STATE.user = data;
       STATE.config = data.config;
+      STATE.authorizeUrl = data.authorizeUrl || '';
       STATE.defaultBuilding = data.defaultBuilding || 'OMS';
       STATE.building = data.building || STATE.defaultBuilding;
 
@@ -495,6 +498,7 @@
         document.getElementById('admin-add-btn').classList.remove('hidden');
         switchTab('admin-earned');
         updateBadges(); // Fetch initial counts
+        checkEmailService();
       } else if (data.role === 'Teacher') {
         switchTab('teacher-totals');
         updateBadges(); // surfaces coverage they have not recorded yet
@@ -628,6 +632,7 @@
        STATE.building = newCode;
        updateUserInfo(); // Re-renders dropdown with new active state and updates title
        updateBadges();
+       checkEmailService(); // each building has its own trigger, so its own health
        // Reload current view
        switchTab(STATE.currentTab);
     }
@@ -972,6 +977,27 @@
                    </button>
                 </div>
 
+                ${STATE.user.isSuperAdmin ? `
+                <!-- Email authorization link (district-wide, Super Admin only) -->
+                <div class="mb-8">
+                   <div class="flex items-center gap-2 border-b border-gray-200 pb-2 mb-4">
+                      <h4 class="text-sm font-bold text-ops-blue-dark">Email Authorization Link</h4>
+                      <i class="fas fa-info-circle text-ops-blue-light cursor-help text-xs"
+                         onmouseenter="showTooltip(event, 'The URL of the second web app deployment, the one set to run as the user accessing it. A trigger belongs to whoever runs the code, so the main app cannot install one for anyone else.')"
+                         onmousemove="moveTooltip(event)"
+                         onmouseleave="hideTooltip()"></i>
+                   </div>
+                   <input type="text" id="authorize-url" value="${escapeHtml(STATE.authorizeUrl || '')}" placeholder="https://script.google.com/a/macros/.../exec" class="block w-full rounded border-gray-300 p-2 border focus:ring-ops-blue focus:border-ops-blue font-mono text-sm">
+                   <div class="flex items-center gap-3 mt-2">
+                      <button type="button" onclick="saveAuthorizeUrl()" class="text-xs font-bold text-ops-blue hover:text-ops-blue-dark uppercase tracking-wide flex items-center">
+                         <i class="fas fa-save mr-1"></i> Save Link
+                      </button>
+                      <span id="authorize-url-status" class="text-xs text-ops-gray"></span>
+                   </div>
+                   <p class="text-xs text-gray-500 mt-2">This is district-wide, not per building. Leave it blank and the warning banner tells admins to use the spreadsheet menu instead.</p>
+                </div>
+                ` : ''}
+
                 <!-- TST Calendar -->
                 <div class="mb-8">
                    <div class="flex items-center gap-2 border-b border-gray-200 pb-2 mb-4">
@@ -1220,6 +1246,19 @@
        }).withFailureHandler(err => {
           setCalendarTestStatus(String(err), 'error');
        }).getCalendarTestResult(buildingCode);
+    }
+
+    function saveAuthorizeUrl() {
+       const input = document.getElementById('authorize-url');
+       const status = document.getElementById('authorize-url-status');
+       google.script.run.withSuccessHandler(() => {
+          STATE.authorizeUrl = input.value.trim();
+          status.className = 'text-xs font-medium text-green-600';
+          status.textContent = 'Saved.';
+       }).withFailureHandler(err => {
+          status.className = 'text-xs font-medium text-ops-red';
+          status.textContent = String(err);
+       }).setAuthorizeUrl(input.value.trim());
     }
 
     function setCalendarTestStatus(message, kind) {
@@ -2265,6 +2304,71 @@
       renderNav();
       updateBadges();
       switchTab('admin-totals');
+    }
+
+    /**
+     * Warns an admin when their building's queued mail is not going out.
+     *
+     * Triggers belong to whoever installed them, so the app cannot see another
+     * admin's — what it can see is the symptom: mail sitting Pending for longer
+     * than a working trigger would ever leave it. That catches a trigger that was
+     * never installed and one Apps Script has since disabled, whose failure notice
+     * goes to its owner rather than to whoever notices the silence.
+     */
+    function checkEmailService() {
+      const banner = document.getElementById('email-service-banner');
+      if (!banner) return;
+
+      const isAdmin = STATE.user.role === 'Admin' || STATE.user.role === 'Super Admin' || STATE.user.isSuperAdmin;
+      if (!isAdmin || STATE.viewAs) {
+        banner.classList.add('hidden');
+        return;
+      }
+
+      google.script.run.withSuccessHandler(status => {
+        if (!status || status.healthy || STATE.dismissedEmailBanner === status.building) {
+          banner.classList.add('hidden');
+          return;
+        }
+        renderEmailServiceBanner(status);
+      }).withFailureHandler(() => {
+        banner.classList.add('hidden');
+      }).getEmailServiceStatus(STATE.building);
+    }
+
+    function renderEmailServiceBanner(status) {
+      const banner = document.getElementById('email-service-banner');
+      const building = escapeHtml(status.building);
+
+      const explanation = status.reason === 'never'
+        ? `Nobody has turned on TST email sending for <strong>${building}</strong> yet, so its messages and calendar entries are queuing up instead of going out.`
+        : `TST email for <strong>${building}</strong> has been waiting ${escapeHtml(status.stalledMinutes)} minutes to send. Its email service has probably stopped &mdash; Google switches a trigger off after repeated failures and tells its owner, not you.`;
+
+      const action = status.authorizeUrl
+        ? `<a href="${escapeHtml(status.authorizeUrl)}?action=authorizeEmail" target="_blank" rel="noopener"
+              class="inline-flex items-center bg-ops-blue hover:bg-ops-blue-dark text-white text-xs font-bold px-3 py-2 rounded shadow-sm whitespace-nowrap">
+              <i class="fas fa-bolt mr-1"></i> Turn It Back On
+           </a>`
+        : `<span class="text-xs text-ops-gray-dark">Open the TST spreadsheet and choose <strong>TST Admin &rarr; Authorize Email Service</strong>.</span>`;
+
+      banner.innerHTML = `
+        <div class="bg-ops-red-lighter border-l-4 border-ops-red rounded p-4 flex items-start gap-4">
+          <i class="fas fa-envelope-open-text text-ops-red text-xl mt-0.5"></i>
+          <div class="flex-grow min-w-0">
+            <p class="font-bold text-ops-red-dark text-sm">Email is not being sent for ${building}</p>
+            <p class="text-sm text-ops-gray-dark mt-1">${explanation}</p>
+          </div>
+          <div class="flex items-center gap-3 shrink-0">
+            ${action}
+            <button onclick="dismissEmailBanner()" title="Hide until next sign-in" class="text-ops-gray hover:text-ops-gray-dark p-1"><i class="fas fa-times"></i></button>
+          </div>
+        </div>`;
+      banner.classList.remove('hidden');
+    }
+
+    function dismissEmailBanner() {
+      STATE.dismissedEmailBanner = STATE.building;
+      document.getElementById('email-service-banner').classList.add('hidden');
     }
 
     function renderViewAsBanner() {

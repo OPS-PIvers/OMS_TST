@@ -4,6 +4,12 @@
 function doGet(e) {
   if (e && e.parameter && e.parameter.action) {
     const action = e.parameter.action;
+    // Served by the second deployment, the one that runs as the user opening it:
+    // a trigger belongs to whoever executes the code, so this is the only way an
+    // admin installs their own without going near the spreadsheet.
+    if (action === 'authorizeEmail') {
+      return authorizeEmailServicePage_();
+    }
     if (action === 'record') {
       // Record links are HMAC-signed by sendAssignmentEmails_; refuse altered or forged ones.
       if (!verifyAssignmentLink_(e.parameter)) {
@@ -103,6 +109,7 @@ function getInitialData() {
     isSuperAdmin: ctx.isSuperAdmin,
     config: config,
     defaultBuilding: DEFAULT_BUILDING,
+    authorizeUrl: authorizeUrl_(),
     // Same rule as getStaffDirectoryData: admins get the building's balances, a
     // teacher gets their own row plus a name/email roster, and anyone who isn't in
     // the directory gets nothing (the client shows them Access Denied).
@@ -2759,43 +2766,207 @@ function setupEmailService() {
   const ui = SpreadsheetApp.getUi();
   const ctx = getUserContext();
   assertAdmin_(ctx);
-  const userEmail = ctx.email;
 
-  // 1. Delete ALL existing triggers for this function to prevent duplicates
-  const triggers = ScriptApp.getUserTriggers(SpreadsheetApp.getActiveSpreadsheet());
-  triggers.forEach(t => {
+  const buildings = installEmailTriggers_(ctx);
+
+  ui.alert(
+    'Email Service Authorized',
+    `Success! TST email for ${buildings.join(', ')} will be sent from ${ctx.email}, and coverage assignments will appear on that building's calendar.\n\n(Triggers installed: OnChange + 1-Minute Timer + 7am Assignment Reminders)`,
+    ui.ButtonSet.OK
+  );
+}
+
+// ===== Email service health =====
+// Queued mail is sent by each building admin's own trigger, which is what makes
+// them the sender. Triggers are per-user, so nobody can install one on anyone
+// else's behalf — and Apps Script disables a trigger after repeated failures,
+// sending the notice to its owner rather than to whoever notices the silence.
+//
+// So the app watches for the symptom instead: mail for a building sitting Pending
+// for longer than any working trigger would leave it. That catches a trigger that
+// was never installed and one that has since broken, which the authorization
+// record alone cannot.
+
+const EMAIL_AUTH_PREFIX_ = 'EMAIL_AUTH_';
+const AUTHORIZE_URL_KEY_ = 'EMAIL_AUTHORIZE_URL';
+
+/** Older than this and a building's queue is not being drained. */
+const QUEUE_STALL_MINUTES_ = 15;
+
+/**
+ * Installs this user's triggers. Shared by the spreadsheet menu and the
+ * authorization page, because the only thing that differs is how it is reached —
+ * the trigger always belongs to whoever is executing.
+ */
+function installEmailTriggers_(ctx) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  ScriptApp.getUserTriggers(ss).forEach(t => {
     const fn = t.getHandlerFunction();
     if (fn === 'processEmailQueue' || fn === 'nudgeOutstandingAssignments') {
       ScriptApp.deleteTrigger(t);
     }
   });
-  
-  // 2. Create 'OnChange' Trigger (Attempts immediate sending)
-  ScriptApp.newTrigger('processEmailQueue')
-    .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
-    .onChange()
-    .create();
 
-  // 3. Create 'Every 1 Minute' Trigger (Guarantees sending if OnChange misses)
-  ScriptApp.newTrigger('processEmailQueue')
-    .timeBased()
-    .everyMinutes(1)
-    .create();
+  // Immediate attempt when the sheet changes.
+  ScriptApp.newTrigger('processEmailQueue').forSpreadsheet(ss).onChange().create();
+  // Backstop, in case an onChange is missed.
+  ScriptApp.newTrigger('processEmailQueue').timeBased().everyMinutes(1).create();
+  // One reminder per assignment whose coverage date has passed unrecorded.
+  ScriptApp.newTrigger('nudgeOutstandingAssignments').timeBased().atHour(7).everyDays(1).create();
 
-  // 4. Daily nudge: one reminder per assignment whose coverage date has passed
-  //    with no TST recorded. It only queues mail, tagged with the assignment's own
-  //    building, so the building's admin trigger is still what sends it.
-  ScriptApp.newTrigger('nudgeOutstandingAssignments')
-    .timeBased()
-    .atHour(7)
-    .everyDays(1)
-    .create();
-    
-  ui.alert(
-    'Email Service Authorized',
-    `Success! The script will now check for new emails every minute and send them from: ${userEmail}.\n\n(Triggers installed: OnChange + 1-Minute Timer + 7am Assignment Reminders)`,
-    ui.ButtonSet.OK
-  );
+  recordEmailAuthorization_(ctx);
+  return ctx.buildings || [DEFAULT_BUILDING];
+}
+
+function recordEmailAuthorization_(ctx) {
+  const props = PropertiesService.getScriptProperties();
+  const record = JSON.stringify({ email: ctx.email, name: ctx.name || ctx.email, at: new Date().toISOString() });
+  (ctx.buildings || [DEFAULT_BUILDING]).forEach(b => props.setProperty(EMAIL_AUTH_PREFIX_ + b, record));
+}
+
+function emailAuthorizationFor_(building) {
+  const raw = PropertiesService.getScriptProperties().getProperty(EMAIL_AUTH_PREFIX_ + building);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch (e) { return null; }
+}
+
+/** How long the oldest Pending row for a building has been waiting, in minutes. */
+function oldestPendingMinutes_(building) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Email Queue');
+  if (!sheet) return 0;
+
+  const data = sheet.getDataRange().getValues();
+  if (data.length < 2) return 0;
+
+  const headers = data[0];
+  const statusIdx = headers.indexOf('Status');
+  const buildingIdx = headers.indexOf('Building');
+  const tsIdx = headers.indexOf('Timestamp');
+  if (statusIdx === -1 || buildingIdx === -1 || tsIdx === -1) return 0;
+
+  const now = new Date().getTime();
+  let oldest = 0;
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][statusIdx] !== 'Pending') continue;
+    if ((data[i][buildingIdx] || DEFAULT_BUILDING).toString() !== building) continue;
+    const queuedAt = new Date(data[i][tsIdx]).getTime();
+    if (!isFinite(queuedAt)) continue;
+    oldest = Math.max(oldest, Math.round((now - queuedAt) / 60000));
+  }
+  return oldest;
+}
+
+/**
+ * Whether a building's mail is actually going out. Admin only, and scoped the
+ * same way every other read is.
+ *
+ * `healthy` is false when nobody has ever authorized the building, or when its
+ * queue has stalled. The reason is separated out so the banner can say which,
+ * because "never set up" and "it broke last Tuesday" need different responses.
+ */
+function getEmailServiceStatus(buildingFilter) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  const building = allowedBuildingFor_(ctx, buildingFilter) || ctx.building;
+
+  const authorization = emailAuthorizationFor_(building);
+  const stalledMinutes = oldestPendingMinutes_(building);
+  const stalled = stalledMinutes >= QUEUE_STALL_MINUTES_;
+
+  return {
+    building: building,
+    authorized: !!authorization,
+    authorizedBy: authorization ? (authorization.name || authorization.email) : '',
+    authorizedAt: authorization ? authorization.at : '',
+    stalledMinutes: stalledMinutes,
+    healthy: !!authorization && !stalled,
+    reason: !authorization ? 'never' : (stalled ? 'stalled' : ''),
+    authorizeUrl: authorizeUrl_()
+  };
+}
+
+function authorizeUrl_() {
+  return (PropertiesService.getScriptProperties().getProperty(AUTHORIZE_URL_KEY_) || '').toString().trim();
+}
+
+/**
+ * The address of the second web-app deployment — the one configured to run as the
+ * user accessing it. That is the whole point of having two: a trigger belongs to
+ * whoever executes the code, and the main deployment runs as the deployer, so a
+ * button there would only ever install the deployer's triggers again.
+ */
+function setAuthorizeUrl(url) {
+  const ctx = getUserContext();
+  if (!ctx.isSuperAdmin) throw new Error('Only a Super Admin can set the authorization URL.');
+
+  const clean = (url || '').toString().trim();
+  if (clean && !/^https:\/\/script\.google\.com\//.test(clean)) {
+    throw new Error('That does not look like an Apps Script web app URL.');
+  }
+  PropertiesService.getScriptProperties().setProperty(AUTHORIZE_URL_KEY_, clean);
+  return true;
+}
+
+/**
+ * The page behind the banner's button, served by the second deployment.
+ *
+ * Reached through doGet, so it runs as whoever opened it — which is exactly why
+ * it exists. Renders its own errors rather than throwing, because an Apps Script
+ * exception page tells a school secretary nothing.
+ */
+function authorizeEmailServicePage_() {
+  let ctx;
+  try {
+    ctx = getUserContext();
+  } catch (err) {
+    return emailAuthPage_(false, 'We could not read the staff directory',
+      'This usually means your account does not have access to the TST spreadsheet yet. Ask your TST administrator to share it with you, then open this link again.');
+  }
+
+  if (!isAdmin_(ctx)) {
+    return emailAuthPage_(false, 'Administrators only',
+      'This page sets up TST email sending for a building, which only an administrator can do.');
+  }
+
+  let buildings;
+  try {
+    buildings = installEmailTriggers_(ctx);
+  } catch (err) {
+    return emailAuthPage_(false, 'Setup could not finish',
+      (err && err.message) ? err.message : String(err));
+  }
+
+  return emailAuthPage_(true, 'Email service is on',
+    'TST email for ' + buildings.join(', ') + ' will now be sent from ' + ctx.email +
+    ', and coverage assignments will appear on that building’s calendar. You can close this tab.');
+}
+
+function emailAuthPage_(ok, title, message) {
+  const accent = ok ? '#2d3f89' : '#ad2122';
+  const icon = ok ? 'check' : 'exclamation';
+  const html = '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0">' +
+    '<title>' + escapeHtml_(title) + '</title>' +
+    '<link href="https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;600;700&display=swap" rel="stylesheet">' +
+    '<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">' +
+    '<style>' +
+    "body { font-family: 'Lexend', sans-serif; background:#f9fafb; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; }" +
+    '.card { background:#fff; border-radius:12px; box-shadow:0 10px 15px -3px rgba(0,0,0,.1); max-width:480px; width:100%; border:1px solid #e5e7eb; overflow:hidden; }' +
+    '.header { background:' + accent + '; padding:24px; text-align:center; color:#fff; }' +
+    '.icon { background:#fff; width:64px; height:64px; border-radius:50%; display:flex; align-items:center; justify-content:center; margin:0 auto 12px; color:' + accent + '; font-size:28px; }' +
+    '.content { padding:32px 24px; text-align:center; }' +
+    '.title { font-size:22px; font-weight:700; color:#1f2937; margin:0 0 10px; }' +
+    '.msg { color:#4b5563; font-size:14px; line-height:1.6; margin:0; }' +
+    '</style></head><body><div class="card">' +
+    '<div class="header"><div class="icon"><i class="fas fa-' + icon + '"></i></div>' +
+    '<h1 style="margin:0;font-size:18px;font-weight:600;">Orono TST Manager</h1></div>' +
+    '<div class="content"><h2 class="title">' + escapeHtml_(title) + '</h2>' +
+    '<p class="msg">' + escapeHtml_(message) + '</p></div></div></body></html>';
+
+  return HtmlService.createHtmlOutput(html)
+    .setTitle(title)
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
 /**

@@ -197,7 +197,8 @@ exports.run = function ({ test, assert }) {
     const html = fs.readFileSync(path.join(__dirname, '..', 'Index.html'), 'utf8');
     ['assignCoverage', 'getAssignments', 'getMyAssignments', 'recordAssignment',
      'cancelAssignment', 'remindAssignment',
-     'sendTestCalendarEvent', 'getCalendarTestResult'].forEach(fn => {
+     'sendTestCalendarEvent', 'getCalendarTestResult',
+     'getEmailServiceStatus', 'setAuthorizeUrl'].forEach(fn => {
       assert.ok(html.includes('.' + fn + '('), `Index.html should call ${fn}()`);
     });
   });
