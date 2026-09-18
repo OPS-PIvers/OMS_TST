@@ -16,7 +16,7 @@ node test/run.js       # no dependencies, no network
 | `fixtures.js` | A two-building district (OMS/OHS) with admins, teachers, a multi-building teacher and an archived one. |
 | `authorization.test.js` | Who may read what: teachers, admins from the wrong building, and people missing from the directory. |
 | `config_times.test.js` | Who may edit a building's settings, and how a period's start/end time resolves (day schedule, building default, then the times baked into the label). |
-| `schedule_hours.test.js` | The hours under each name in the Master Schedule: approved only, bucketed per month, and combined across buildings. |
+| `schedule_hours.test.js` | The hours under each name in the Master Schedule: approved only, earned rather than available, year-to-date, combined across buildings, and equal to the Directory's Earned column. |
 | `calendar.test.js` | The per-building calendar: the event comes before the emails, only the building's own admin creates it, a failure still lets the assignment through, and the test-event button. |
 | `email_service.test.js` | Whether a building's mail is actually going out (authorized, and the queue draining), and the second-deployment page that installs an admin's own triggers. |
 | `assignments.test.js` | Coverage assignments end to end: who may assign, the duplicate guard, the three queued emails, recording (including that it cannot happen twice), cancellation against approved hours, the one nudge, and the signed Record link's expiry. |

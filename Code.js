@@ -3370,14 +3370,18 @@ function scheduleData_(effectiveFilter, onlyEmail) {
   //    from the directory) are left out.
   const memberEmails = scheduleMembers_(effectiveFilter);
 
-  // 1. Calculate Hours per Teacher per Month
-  const hoursMap = calculateMonthlyHours_(); // Returns { "email_Month": hours }, email lowercased
+  // 1. Approved hours earned this school year, combined across buildings — the
+  //    exact number the Directory's Earned column shows, so the two cannot
+  //    disagree. Keyed by lowercased email.
+  const balances = calculateDynamicBalances_(null);
 
   // 2. Get Pending Requests Map (same building as the schedule)
   const pendingMap = getPendingEarnedMap_(effectiveFilter);
 
   // 3. Process Schedule Data
   // We return a structured object: { "September": [ { name, email, days, period, hours, pendingRequests }, ... ], ... }
+  // `hours` is a year-to-date total, so it is the same in every month a person
+  // appears in — the months organise availability, not the hours.
   const schedule = {};
   MONTH_ORDER.forEach(m => schedule[m] = []);
 
@@ -3390,7 +3394,7 @@ function scheduleData_(effectiveFilter, onlyEmail) {
     if (onlyEmailKey && emailKey !== onlyEmailKey) return;
 
     if (schedule[month]) {
-      const hours = hoursMap[`${emailKey}_${month}`] || 0;
+      const hours = (balances[emailKey] || {}).earned || 0;
       schedule[month].push({
         month, days, period, name, email, hours,
         pendingRequests: pendingMap[emailKey] || []
@@ -3420,60 +3424,6 @@ function getPendingEarnedMap_(building) {
   });
   
   return map;
-}
-
-/**
- * Approved TST hours per person per month, for the current school year.
- * Keyed "email_MonthName" with the email lowercased.
- *
- * This is what the Master Schedule shows under each teacher's name, and what it
- * sorts them by, so the admin can spread coverage toward whoever has picked up
- * least this month. It is a per-month count and not a balance — a month that has
- * not happened yet is legitimately 0 for everyone.
- */
-function calculateMonthlyHours_() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName('TST Approvals (New)');
-  const data = sheet.getDataRange().getValues();
-  data.shift();
-
-  const sums = {}; // "email_MonthName" -> total (email lowercased)
-  const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-
-  // Determine current school year context
-  const today = new Date();
-  const currentMonth = today.getMonth(); // 0-11
-  const currentYear = today.getFullYear();
-  
-  // School Year Start Year: If Month >= 7 (Aug), Start = Year. Else Start = Year - 1.
-  const startYear = currentMonth >= 7 ? currentYear : currentYear - 1;
-  const endYear = startYear + 1;
-  
-  const schoolYearStart = new Date(startYear, 7, 1); // Aug 1
-  const schoolYearEnd = new Date(endYear, 6, 30); // July 30
-
-  // Col H(7)=Hours, I(8)=Approved, K(10)=Denied
-  data.forEach(row => {
-    const email = (row[0] || '').toString().trim().toLowerCase();
-    const date = new Date(row[4]);
-    const hours = Number(row[7]) || 0;
-    const isApproved = row[8] === true || row[8] === 'TRUE';
-
-    // Approved only, the same as every other earned total (see
-    // calculateDynamicBalances_). Pending coverage is already shown in the same
-    // cell by its own hourglass, and counting a denied request here would steer
-    // coverage AWAY from the person whose request you turned down.
-    if (!isApproved) return;
-
-    // Check if within current school year
-    if (date >= schoolYearStart && date <= schoolYearEnd) {
-      const mName = monthNames[date.getMonth()];
-      const key = `${email}_${mName}`;
-      sums[key] = (sums[key] || 0) + hours;
-    }
-  });
-
-  return sums;
 }
 
 function saveAvailability(month, availabilityList, targetEmail, periodsShown) {

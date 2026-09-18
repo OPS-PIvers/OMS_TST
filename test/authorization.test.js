@@ -390,7 +390,7 @@ exports.run = function ({ test, assert }) {
 
   // ---- Private helpers are off the client surface ----------------------------
 
-  ['staffDirectoryData_', 'calculateDynamicBalances_', 'calculateMonthlyHours_',
+  ['staffDirectoryData_', 'calculateDynamicBalances_',
    'getPendingEarnedMap_', 'pendingEarnedFor_', 'pendingUsedFor_', 'scheduleData_',
    'processEmailQueue_'].forEach(fn => {
     test(`${fn} is not reachable from google.script.run`, () => {
