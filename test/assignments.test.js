@@ -222,6 +222,92 @@ exports.run = function ({ test, assert }) {
     assert.ok(/&lt;img/.test(body));
   });
 
+  // ---- Re-assigning something that was cancelled -----------------------------
+  //
+  // Cancelling frees the person up, so the row stops blocking anything. But putting
+  // the same person straight back on the period they were just let off is usually a
+  // slip, and the one case where it is deliberate — undoing a cancellation made by
+  // mistake — is exactly why it cannot simply be refused. So: warn, and let them
+  // through on confirm.
+
+  test('cancelling records who did it and when', () => {
+    const env = envFor(USERS.omsAdmin);
+    const id = assign(env);
+    env.run('cancelAssignment', id);
+
+    const a = env.run('getAssignments', 'OMS')[0];
+    assert.equal(a.status, 'Cancelled');
+    assert.equal(a.cancelledBy, 'Amy Admin');
+    assert.ok(a.cancelledTs, 'and when, so the warning can say it');
+  });
+
+  test('re-assigning a cancelled date and period warns instead of going through', () => {
+    const env = envFor(USERS.omsAdmin);
+    env.run('cancelAssignment', assign(env));
+
+    const res = env.run('assignCoverage', payload());
+    assert.ok(res.conflict, 'it must not be written silently');
+    assert.equal(res.cancelled.length, 1);
+    assert.equal(res.cancelled[0].cancelledBy, 'Amy Admin');
+    assert.equal(res.cancelled[0].coveredFor, 'Ted Teacher');
+    assert.equal(assignmentSheetRows(env).length, 1, 'still just the cancelled row');
+  });
+
+  test('confirming puts it back, as a fresh assignment', () => {
+    const env = envFor(USERS.omsAdmin);
+    env.run('cancelAssignment', assign(env));
+
+    const res = env.run('assignCoverage', payload({ force: true }));
+    assert.ok(res.assigned);
+
+    const rows = env.run('getAssignments', 'OMS');
+    assert.equal(rows.length, 2, 'the cancellation stays on the record');
+    assert.equal(rows.filter(a => a.status === 'Assigned').length, 1);
+  });
+
+  test('a live assignment to that period is still refused outright', () => {
+    const env = envFor(USERS.omsAdmin);
+    assign(env);
+    // Not a question — confirming cannot make two of the same coverage correct.
+    assert.rejected(env.attempt('assignCoverage', payload({ force: true })),
+      /already assigned/i);
+  });
+
+  test('a cancellation for a different period does not warn', () => {
+    const env = envFor(USERS.omsAdmin);
+    env.run('cancelAssignment', assign(env, { period: OMS_PERIOD_2 }));
+
+    const res = env.run('assignCoverage', payload());
+    assert.ok(res.assigned, 'a different period was never the coverage they called off');
+  });
+
+  test('a cancellation on a different date does not warn', () => {
+    const env = envFor(USERS.omsAdmin);
+    env.run('cancelAssignment', assign(env, { date: ymd(10) }));
+
+    assert.ok(env.run('assignCoverage', payload()).assigned);
+  });
+
+  test('the different-period question still works, and says so separately', () => {
+    const env = envFor(USERS.omsAdmin);
+    assign(env);
+
+    const res = env.run('assignCoverage', payload({ period: OMS_PERIOD_2 }));
+    assert.ok(res.conflict);
+    assert.equal(res.existing.length, 1, 'the live one that day');
+    assert.equal(res.cancelled.length, 0, 'nothing was cancelled');
+  });
+
+  test('a cancelled period and a live one elsewhere that day are both reported', () => {
+    const env = envFor(USERS.omsAdmin);
+    env.run('cancelAssignment', assign(env));
+    assign(env, { period: OMS_PERIOD_2 });
+
+    const res = env.run('assignCoverage', payload());
+    assert.equal(res.cancelled.length, 1, 'the period they were let off');
+    assert.equal(res.existing.length, 1, 'and the one they are still down for');
+  });
+
   // ---- getAssignments --------------------------------------------------------
 
   test('a teacher cannot read the assignments queue', () => {

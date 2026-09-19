@@ -3561,7 +3561,8 @@ const ASSIGNMENT_HEADER_ = [
   'Date', 'Period', 'Time Type', 'Hours',
   'Note', 'Note To Sub', 'Note To Covered',
   'Status', 'Recorded TS', 'Recorded By', 'Nudged TS',
-  'Calendar Event ID', 'Calendar Status', 'Notified TS'
+  'Calendar Event ID', 'Calendar Status', 'Notified TS',
+  'Cancelled TS', 'Cancelled By'
 ];
 
 // 0-based indexes into a row shaped like ASSIGNMENT_HEADER_.
@@ -3571,7 +3572,8 @@ const A_ = {
   date: 9, period: 10, timeType: 11, hours: 12,
   note: 13, noteToSub: 14, noteToCovered: 15,
   status: 16, recordedTs: 17, recordedBy: 18, nudgedTs: 19,
-  calendarEventId: 20, calendarStatus: 21, notifiedTs: 22
+  calendarEventId: 20, calendarStatus: 21, notifiedTs: 22,
+  cancelledTs: 23, cancelledBy: 24
 };
 
 const ASSIGNMENT_STATUS_ = { assigned: 'Assigned', recorded: 'Recorded', cancelled: 'Cancelled' };
@@ -3670,7 +3672,9 @@ function assignmentFromRow_(row, rowIndex) {
     nudgedTs: row[A_.nudgedTs] || '',
     calendarEventId: str(A_.calendarEventId),
     calendarStatus: str(A_.calendarStatus),
-    notifiedTs: row[A_.notifiedTs] || ''
+    notifiedTs: row[A_.notifiedTs] || '',
+    cancelledTs: row[A_.cancelledTs] || '',
+    cancelledBy: str(A_.cancelledBy)
   };
 }
 
@@ -4348,21 +4352,43 @@ function assignCoverage(payload) {
     throw new Error('A staff member cannot be assigned to cover for themselves.');
   }
 
-  const sameDay = assignmentRows_(a =>
-    a.status !== ASSIGNMENT_STATUS_.cancelled &&
-    a.subEmail.toLowerCase() === subEmail.toLowerCase() &&
-    a.date === date);
+  // Everything already on the books for this person on this date, live and cancelled
+  // alike. Both matter here, for different reasons.
+  const sameDayRows = assignmentRows_(a =>
+    a.subEmail.toLowerCase() === subEmail.toLowerCase() && a.date === date);
+  const live = sameDayRows.filter(a => a.status !== ASSIGNMENT_STATUS_.cancelled);
 
   const subName = (p.teacherName || subEmail).toString();
-  if (sameDay.some(a => a.period === period)) {
+
+  // A live assignment to this very period is a straight duplicate, and no amount of
+  // confirming makes two of them correct.
+  if (live.some(a => a.period === period)) {
     throw new Error(subName + ' is already assigned to ' + period + ' on ' + shortDate_(date) + '.');
   }
-  if (sameDay.length > 0 && !p.force) {
+
+  // A *cancelled* one is different. Re-assigning the same person to the same period
+  // they were just let off is usually a mistake — but it is also exactly what an
+  // admin does after cancelling by accident, so this warns and lets them through
+  // rather than blocking. Most recent first: that is the cancellation they mean.
+  const cancelled = sameDayRows
+    .filter(a => a.status === ASSIGNMENT_STATUS_.cancelled && a.period === period)
+    .sort((x, y) => new Date(y.cancelledTs || 0) - new Date(x.cancelledTs || 0));
+
+  // Covering twice in one day is legitimate, so a different period is a question
+  // rather than a refusal. Both questions ride the same confirm-and-resend path.
+  if ((live.length > 0 || cancelled.length > 0) && !p.force) {
     return {
       conflict: true,
       name: subName,
       date: shortDate_(date),
-      existing: sameDay.map(a => ({ period: a.period, coveredFor: a.coveredFor }))
+      period: periodDisplay_(building, period, date),
+      existing: live.map(a => ({ period: a.period, coveredFor: a.coveredFor })),
+      cancelled: cancelled.map(a => ({
+        period: a.period,
+        coveredFor: a.coveredFor,
+        cancelledBy: a.cancelledBy,
+        cancelledOn: a.cancelledTs ? shortDate_(normDateKey_(a.cancelledTs)) : ''
+      }))
     };
   }
 
@@ -4552,6 +4578,8 @@ function cancelAssignment(id) {
 
   const updates = {};
   updates[A_.status] = ASSIGNMENT_STATUS_.cancelled;
+  updates[A_.cancelledTs] = new Date();
+  updates[A_.cancelledBy] = ctx.name || ctx.email;
   if (hasCalendarWork) updates[A_.calendarStatus] = CAL_.pendingDelete;
   setAssignmentCells_(assignmentsSheet_(), a.rowIndex, updates);
 

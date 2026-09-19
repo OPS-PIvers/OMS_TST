@@ -5601,19 +5601,45 @@
       google.script.run.withSuccessHandler(res => {
         showLoading(false);
 
-        // Covering twice in one day is legitimate, so the server asks rather than
-        // refusing. Confirm and re-send with force.
+        // Two things the server asks about rather than refusing: covering twice in
+        // one day (legitimate), and re-assigning a period that was cancelled (usually
+        // a mistake, but it is also how an admin undoes an accidental cancellation).
+        // Both confirm and re-send with force.
         if (res && res.conflict) {
-          const list = res.existing
-            .map(x => `<li>${escapeHtml(x.period)} &mdash; covering for ${escapeHtml(x.coveredFor)}</li>`)
-            .join('');
+          const wasCancelled = res.cancelled || [];
+          const alsoAssigned = res.existing || [];
+          let body = '';
+
+          if (wasCancelled.length > 0) {
+            const c = wasCancelled[0];
+            const who = c.cancelledBy ? escapeHtml(c.cancelledBy) : 'Someone';
+            const when = c.cancelledOn ? ` on ${escapeHtml(c.cancelledOn)}` : '';
+            const forWhom = c.coveredFor ? `, covering for ${escapeHtml(c.coveredFor)}` : '';
+            body += `
+              <p class="text-ops-red font-bold"><i class="fas fa-undo mr-1"></i>This exact coverage was cancelled.</p>
+              <p class="text-sm text-ops-gray-dark mt-2 text-left">
+                <strong>${escapeHtml(res.name)}</strong> was assigned
+                ${escapeHtml(res.period || '')} on ${escapeHtml(res.date)}${forWhom},
+                and ${who} cancelled it${when}.
+              </p>`;
+          }
+
+          if (alsoAssigned.length > 0) {
+            const list = alsoAssigned
+              .map(x => `<li>${escapeHtml(x.period)} &mdash; covering for ${escapeHtml(x.coveredFor)}</li>`)
+              .join('');
+            body += `
+              <p class="text-sm text-ops-gray-dark text-left ${wasCancelled.length ? 'mt-3' : ''}">
+                <strong>${escapeHtml(res.name)}</strong> is ${wasCancelled.length ? 'also ' : ''}already assigned on ${escapeHtml(res.date)}:</p>
+              <ul class="text-sm text-left list-disc list-inside mt-1 text-ops-gray-dark">${list}</ul>`;
+          }
+
           openConfirmModal(
-            "Already covering that day",
-            `<p><strong>${escapeHtml(res.name)}</strong> is already assigned on ${escapeHtml(res.date)}:</p>
-             <ul class="text-sm text-left list-disc list-inside mt-2 text-ops-gray-dark">${list}</ul>
-             <p class="text-sm text-gray-500 mt-3">Assign this period as well?</p>`,
+            wasCancelled.length > 0 ? "This was cancelled earlier" : "Already covering that day",
+            body + `<p class="text-sm text-gray-500 mt-3">${
+              wasCancelled.length > 0 ? 'Assign it again?' : 'Assign this period as well?'}</p>`,
             () => sendAssignment(Object.assign({}, payload, { force: true })),
-            "Assign Anyway"
+            wasCancelled.length > 0 ? "Assign Again" : "Assign Anyway"
           );
           return;
         }
