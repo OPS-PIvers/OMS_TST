@@ -52,7 +52,7 @@ const assert = {
   }
 };
 
-const suites = ['./authorization.test.js', './config_times.test.js', './schedule_hours.test.js', './assignments.test.js', './calendar.test.js', './email_service.test.js', './ui_flows.test.js', './legacy_globals.test.js'];
+const suites = ['./authorization.test.js', './config_times.test.js', './schedule_hours.test.js', './schedule_assignments.test.js', './assignments.test.js', './calendar.test.js', './email_service.test.js', './ui_flows.test.js', './legacy_globals.test.js'];
 
 suites.forEach(file => {
   const suite = require(file);

@@ -4876,6 +4876,18 @@
       }
     }
 
+    /**
+     * Whether a grid row names a real period. A time_range building (OIS, SE) stores
+     * an assignment's period as the time span that was picked, while its grid row is
+     * a placeholder ("Time Range"), so the two can never be compared — there the day
+     * is the whole of the cell.
+     */
+    function schedulePeriodsAreComparable() {
+      const bConfig = (STATE.config || {})[STATE.building] ||
+                      (STATE.config || {})[STATE.defaultBuilding] || {};
+      return bConfig.scheduleType !== 'time_range';
+    }
+
     function loadTeacherSchedule() {
        google.script.run.withSuccessHandler(data => {
          renderTeacherSchedule(data);
@@ -4995,6 +5007,7 @@
 
        if (!STATE.expandedMonths) STATE.expandedMonths = new Set();
        const periods = getPeriods();
+       const comparePeriods = schedulePeriodsAreComparable();
 
        const html = `
          <div class="space-y-4">
@@ -5168,6 +5181,58 @@
                                                   </i>`;
                                              }
 
+                                             // Coverage already assigned to this person in this very cell —
+                                             // same month, same weekday, same period. That is exactly the
+                                             // booking picking them here again would collide with, so the
+                                             // dates sit on the card rather than behind a hover.
+                                             const booked = (t.assignments || []).filter(a =>
+                                               a.month === month && a.weekday === d &&
+                                               (!comparePeriods || a.period === p));
+                                             let assignedIndicator = '';
+
+                                             if (booked.length > 0) {
+                                                const bookedItems = booked.map(b => {
+                                                  const coveredFor = b.coveredFor
+                                                    ? `<div class="text-indigo-200 truncate text-[11px]"><span class="opacity-75">Covering:</span> ${escapeHtml(b.coveredFor)}</div>`
+                                                    : '';
+                                                  const calendarLine = b.calendar
+                                                    ? `<div class="text-indigo-300/80 text-[10px] mt-0.5"><i class="fas fa-calendar-day mr-1"></i>${escapeHtml(b.calendar)}</div>`
+                                                    : '';
+                                                  return `
+                                                    <div class="border-b border-indigo-900/50 pb-2 mb-2 last:border-0 last:pb-0 last:mb-0">
+                                                      <div class="flex justify-between items-center gap-3 mb-0.5">
+                                                        <span class="font-bold text-white">${escapeHtml(b.dateDisplay)}</span>
+                                                        <span class="bg-indigo-900 text-indigo-100 px-1.5 py-0.5 rounded text-[10px] font-medium">${b.recorded ? 'Recorded' : (b.upcoming ? 'Upcoming' : 'Not recorded')}</span>
+                                                      </div>
+                                                      <div class="text-indigo-200 truncate text-[11px]">${escapeHtml(b.periodDisplay || b.period)}</div>
+                                                      ${coveredFor}
+                                                      ${calendarLine}
+                                                    </div>`;
+                                                }).join('');
+                                                const bookedTooltip = `
+                                                  <div class="font-bold text-indigo-100 border-b border-indigo-500/30 pb-2 mb-2 uppercase tracking-wide text-[10px] flex items-center gap-2">
+                                                    <i class="fas fa-calendar-check"></i> Already Assigned (${booked.length})
+                                                  </div>
+                                                  <div>${bookedItems}</div>
+                                                `;
+
+                                                const chips = booked.map(b =>
+                                                  `<span class="bg-indigo-100 text-indigo-800 px-1.5 rounded font-bold">${escapeHtml(b.dateShort)}</span>`).join('');
+
+                                                // Same data-attribute round trip as the pending tooltip above:
+                                                // escaped once here, decoded once by the browser.
+                                                assignedIndicator = `
+                                                  <div class="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-indigo-700 cursor-help"
+                                                       data-tooltip="${escapeHtml(bookedTooltip)}"
+                                                       onmouseenter="showTooltip(event, this.dataset.tooltip)"
+                                                       onmousemove="moveTooltip(event)"
+                                                       onmouseleave="hideTooltip()">
+                                                    <i class="fas fa-calendar-check"></i>
+                                                    <span class="font-bold uppercase tracking-wide">Assigned</span>
+                                                    ${chips}
+                                                  </div>`;
+                                             }
+
                                              return `
                                              <div class="flex justify-between items-center bg-blue-50 hover:bg-blue-100 p-2 rounded border border-blue-100 transition group">
                                                 <div class="min-w-0">
@@ -5176,6 +5241,7 @@
                                                      ${pendingIndicator}
                                                   </div>
                                                   <div class="text-[10px] text-gray-500" title="Approved TST hours earned so far this school year, across all of their buildings">${Number(t.hours).toFixed(1)} hrs earned</div>
+                                                  ${assignedIndicator}
                                                 </div>
                                                 <button ${periodAttrs} data-email="${escapeHtml(t.email)}" data-name="${escapeHtml(t.name)}" onclick="openAssignCoverageModal(this.dataset.email, this.dataset.name, this.dataset.period, this.dataset.month)" class="text-ops-blue bg-white hover:bg-white hover:text-ops-blue-dark border border-blue-200 rounded-full h-6 w-6 flex items-center justify-center shadow-sm opacity-0 group-hover:opacity-100 transition-opacity" title="Assign Coverage">
                                                   <i class="fas fa-paper-plane text-xs"></i>
@@ -5554,6 +5620,10 @@
 
         showToast(`${payload.teacherName} has been assigned.`, "success");
         if (STATE.currentTab === 'admin-assignments') loadAdminAssignments();
+        // The grid the admin is standing in now has one more booking on it, and the
+        // whole point of the marker is not picking the same person again — so redraw
+        // rather than leave them looking at a card that says they are free.
+        else if (STATE.currentTab === 'admin-schedule') loadAdminSchedule();
         else updateBadges();
       }).withFailureHandler(err => {
         showLoading(false);

@@ -3378,6 +3378,11 @@ function scheduleData_(effectiveFilter, onlyEmail) {
   // 2. Get Pending Requests Map (same building as the schedule)
   const pendingMap = getPendingEarnedMap_(effectiveFilter);
 
+  // 2b. Coverage already assigned in this building. The hourglass only knows about
+  //     a request someone filed; this is the assignment itself, so a person who was
+  //     given coverage and never submitted the form is still visibly taken.
+  const assignedMap = assignedCoverageMap_(effectiveFilter);
+
   // 3. Process Schedule Data
   // We return a structured object: { "September": [ { name, email, days, period, hours, pendingRequests }, ... ], ... }
   // `hours` is a year-to-date total, so it is the same in every month a person
@@ -3397,12 +3402,74 @@ function scheduleData_(effectiveFilter, onlyEmail) {
       const hours = (balances[emailKey] || {}).earned || 0;
       schedule[month].push({
         month, days, period, name, email, hours,
-        pendingRequests: pendingMap[emailKey] || []
+        pendingRequests: pendingMap[emailKey] || [],
+        assignments: assignedMap[emailKey] || []
       });
     }
   });
 
   return schedule;
+}
+
+/**
+ * Coverage already assigned in one building, keyed by lowercased sub email — the
+ * material behind the Master Schedule's "already taken" marker.
+ *
+ * The source is the TST Assignments row, not the calendar event, and that is the
+ * point: the row is written when the admin assigns, so a person who was given
+ * coverage and never filed the form still reads as taken. A building with a
+ * calendar gets the event's state reported alongside it (on the calendar, still
+ * queued, or failed), because that is what the admin pictures when they look for
+ * the booking; a building without one simply has no calendar line to show.
+ *
+ * Cancelled assignments are left out — the whole reason to cancel is to free the
+ * person up. Recorded ones stay in: the coverage still happened, and the admin is
+ * looking at this to see who is committed on a given day.
+ *
+ * Each entry carries the month / weekday / period it belongs to so the client can
+ * drop it into the one grid cell that would double-book it. The date itself is
+ * what the admin asked to see, so it travels pre-formatted.
+ */
+function assignedCoverageMap_(building) {
+  const hasCalendar = !!calendarIdFor_(building);
+  const calendarName = hasCalendar ? calendarNameFor_(building) : '';
+  const map = {};
+
+  assignmentRows_(a => a.building === building &&
+                       a.status !== ASSIGNMENT_STATUS_.cancelled).forEach(a => {
+    const key = a.subEmail.toString().trim().toLowerCase();
+    const day = parseYmd_(a.date);
+    if (!key || !day) return;
+
+    let calendar = '';
+    if (hasCalendar) {
+      if (a.calendarStatus === CAL_.created) calendar = 'On the ' + calendarName;
+      else if (a.calendarStatus === CAL_.pending) calendar = 'Calendar event still queued';
+      else if (isCalendarFailure_(a.calendarStatus)) calendar = 'Calendar event failed';
+    }
+
+    if (!map[key]) map[key] = [];
+    map[key].push({
+      date: a.date,
+      // The grid cell a double-booking would land in.
+      month: MONTH_NAMES_[day.getMonth()],
+      weekday: WEEKDAY_NAMES_[day.getDay()].slice(0, 3),
+      period: a.period,
+      // What a person should read, rather than what is stored.
+      dateShort: (day.getMonth() + 1) + '/' + day.getDate(),
+      dateDisplay: shortDate_(a.date),
+      periodDisplay: periodDisplay_(building, a.period, a.date),
+      coveredFor: a.coveredFor,
+      status: a.status,
+      recorded: a.status === ASSIGNMENT_STATUS_.recorded,
+      upcoming: daysSinceDate_(a.date) <= 0,
+      calendar: calendar
+    });
+  });
+
+  Object.keys(map).forEach(k =>
+    map[k].sort((x, y) => (x.date || '').localeCompare(y.date || '')));
+  return map;
 }
 
 // Pending earned requests for one building, keyed by lowercased email.
