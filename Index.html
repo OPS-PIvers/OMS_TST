@@ -4888,6 +4888,14 @@
       return bConfig.scheduleType !== 'time_range';
     }
 
+    // The part of a period label that names the period: "Period 3 - 9:52 - 10:39"
+    // and a legacy "3" both read "period 3". A request filed before an admin
+    // edited the bell times still lands on its row, because the times aren't compared.
+    function schedulePeriodKey(label) {
+      const s = String(label == null ? '' : label).split(' - ')[0].trim().toLowerCase();
+      return /^[0-9]/.test(s) ? 'period ' + s : s;
+    }
+
     function loadTeacherSchedule() {
        google.script.run.withSuccessHandler(data => {
          renderTeacherSchedule(data);
@@ -5149,13 +5157,14 @@
                                        <div class="space-y-2">
                                          ${teachers.length === 0 ? '<span class="text-xs text-gray-300 italic">No coverage</span>' : 
                                            teachers.map(t => {
-                                             // Only the pending requests for this column's month and
-                                             // weekday: a Tuesday submission marks Tuesday, not the
-                                             // whole week. A request whose date couldn't be read has
-                                             // no month, and keeps showing everywhere rather than
-                                             // disappearing from the grid.
+                                             // Only the pending requests for this cell — month,
+                                             // weekday and period, the same cell rule as the Assigned
+                                             // chips below (a time-range building compares no period).
+                                             // A request whose date couldn't be read has no month, and
+                                             // keeps showing on its period rather than disappearing.
                                              const pendingHere = (t.pendingRequests || []).filter(r =>
-                                               !r.month || (r.month === month && r.weekday === d));
+                                               (!r.month || (r.month === month && r.weekday === d)) &&
+                                               (!comparePeriods || schedulePeriodKey(r.period) === schedulePeriodKey(p)));
                                              const pendingCount = pendingHere.length;
                                              let pendingIndicator = '';
 
