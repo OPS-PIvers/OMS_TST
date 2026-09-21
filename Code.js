@@ -3181,7 +3181,7 @@ function escapeHtml_(value) {
  * contentHtml is trusted HTML — callers must escape any data they put in it.
  */
 function sendStyledEmail_(recipient, subject, title, contentHtml, buttonText, buildingName, options) {
-  const appUrl = ScriptApp.getService().getUrl();
+  const appUrl = scriptUrl_();
   const headerName = buildingName || 'Orono Schools';
   // Assignment emails point their button at that assignment's signed Record link
   // instead of the app root; every other email keeps the plain app URL.
@@ -3269,19 +3269,26 @@ function sendStyledEmail_(recipient, subject, title, contentHtml, buttonText, bu
         }
       </style>
     </head>
-    <body>
-      <div class="container">
-        <div class="header">
-          <h1>${escapeHtml_(headerName)}</h1>
+    <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f3f4f6; margin: 0; padding: 0; color: #333333;">
+      <!-- Styles are inline as well as in <style>: Gmail (mobile, forwarded, non-Google
+           accounts) and Outlook drop the <style> block, which left the button as a
+           bare link. The button is a table cell so it keeps its shape in Outlook too. -->
+      <div class="container" style="max-width: 600px; margin: 40px auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+        <div class="header" style="background-color: #2d3f89; padding: 30px 20px; text-align: center;">
+          <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 600; letter-spacing: 0.5px;">${escapeHtml_(headerName)}</h1>
         </div>
-        <div class="content">
-          <h2>${escapeHtml_(title)}</h2>
+        <div class="content" style="padding: 40px 30px; line-height: 1.6;">
+          <h2 style="color: #2d3f89; margin-top: 0; margin-bottom: 20px; font-size: 22px; border-bottom: 2px solid #eaecf5; padding-bottom: 10px;">${escapeHtml_(title)}</h2>
           ${contentHtml}
-          <div class="button-container">
-            <a href="${escapeHtml_(buttonUrl)}" class="button">${escapeHtml_(buttonText || 'Visit the TST Portal')}</a>
-          </div>
+          <table role="presentation" border="0" cellpadding="0" cellspacing="0" align="center" style="margin: 30px auto 10px auto; border-collapse: separate;">
+            <tr>
+              <td align="center" bgcolor="#2d3f89" style="background-color: #2d3f89; border-radius: 6px;">
+                <a href="${escapeHtml_(buttonUrl)}" target="_blank" class="button" style="display: inline-block; background-color: #2d3f89; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; border: 1px solid #2d3f89;">${escapeHtml_(buttonText || 'Visit the TST Portal')}</a>
+              </td>
+            </tr>
+          </table>
         </div>
-        <div class="footer">
+        <div class="footer" style="background-color: #f9fafb; padding: 20px; text-align: center; font-size: 12px; color: #6b7280; border-top: 1px solid #e5e7eb;">
           In Partnership with Orono Public Schools<br>
           <p style="margin: 5px 0 0 0;">This is an automated message. Please do not reply.</p>
         </div>
@@ -3637,9 +3644,21 @@ function buildingNameFor_(building) {
 }
 
 /** The web app URL with any query string stripped. */
+/**
+ * The main web app (the "Execute as: me" deployment CI redeploys). Every link we
+ * email must point here.
+ *
+ * Not ScriptApp.getService().getUrl(): emails are sent from the building admin's
+ * trigger, and there it returns whichever deployment it likes — in practice the
+ * second, "run as the user accessing it" deployment. A teacher opening that runs
+ * the app as themselves, has no access to the spreadsheet, and gets Google's
+ * "Sorry, unable to open the file at this time".
+ */
+const WEB_APP_DEPLOYMENT_ID_ = 'AKfycbzPvaCCovRLEUVSe05KfRaDlXEs9k64oMCtpcXdOnYzVpP2BW16PaXV5SJVHNk3Ea3TBQ';
+const WEB_APP_URL_ = 'https://script.google.com/a/macros/orono.k12.mn.us/s/' + WEB_APP_DEPLOYMENT_ID_ + '/exec';
+
 function scriptUrl_() {
-  const url = ScriptApp.getService().getUrl();
-  return url ? url.split('?')[0] : '';
+  return WEB_APP_URL_;
 }
 
 function assignmentsSheet_() {

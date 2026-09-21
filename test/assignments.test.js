@@ -186,6 +186,21 @@ exports.run = function ({ test, assert }) {
       'Phase 1 has no calendar, so the email must not claim one');
   });
 
+  test('the Record link targets the main deployment and is a styled button, not a bare link', () => {
+    const env = envFor(USERS.omsAdmin);
+    assign(env);
+    const body = queued(env)[0].body;
+
+    // The mock's getService().getUrl() returns example.invalid — standing in for
+    // the wrong deployment a trigger actually gets back. It must not be used.
+    assert.ok(!/example\.invalid/.test(body), 'the link must not come from ScriptApp.getService()');
+    const m = body.match(/<a href="([^"]*action=record[^"]*)"[^>]*style="([^"]*)"/);
+    assert.ok(m, 'the Record link carries inline styles');
+    assert.ok(m[1].startsWith('https://script.google.com/a/macros/orono.k12.mn.us/s/AKfycbzPvaCC'),
+      'the link points at the main web app deployment');
+    assert.ok(/background-color:\s*#2d3f89/.test(m[2]), 'the button is styled inline, so Gmail cannot strip it');
+  });
+
   test('the covered-for teacher gets their own email, not a copy of the sub\'s', () => {
     const env = envFor(USERS.omsAdmin);
     assign(env);
