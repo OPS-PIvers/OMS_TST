@@ -5057,11 +5057,17 @@
                  </button>
                  
                  <div id="content-admin-month-${index}" class="${contentClass}">
-                    <table class="min-w-full divide-y divide-gray-200 border-separate" style="border-spacing: 0;">
+                    <!-- Fixed layout: the Period column gets a set width and the five days split the
+                         rest evenly, so the week fits the card. Below the min width it scrolls. -->
+                    <table class="w-full min-w-[56rem] table-fixed divide-y divide-gray-200 border-separate" style="border-spacing: 0;">
+                      <colgroup>
+                        <col class="w-44">
+                        ${DAYS.map(() => '<col>').join('')}
+                      </colgroup>
                       <thead>
                         <tr>
                           <th class="px-4 py-3 bg-gray-50 text-left text-xs font-bold text-gray-500 uppercase tracking-wider sticky left-0 z-10 border-b border-gray-200 bg-opacity-95 backdrop-blur">Period</th>
-                          ${DAYS.map(d => `<th class="px-4 py-3 bg-gray-50 text-left text-xs font-bold text-gray-500 uppercase tracking-wider border-b border-gray-200 min-w-[200px]">${d}</th>`).join('')}
+                          ${DAYS.map(d => `<th class="px-4 py-3 bg-gray-50 text-left text-xs font-bold text-gray-500 uppercase tracking-wider border-b border-gray-200">${d}</th>`).join('')}
                         </tr>
                       </thead>
                       <tbody class="bg-white divide-y divide-gray-200">
@@ -5075,7 +5081,7 @@
                              // --- EDIT MODE ROW ---
                              return `
                                <tr class="bg-blue-50/50">
-                                 <td class="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 sticky left-0 z-10 border-r border-blue-200 shadow-sm bg-blue-50 align-top">
+                                 <td class="px-4 py-3 break-words text-sm font-medium text-gray-900 sticky left-0 z-10 border-r border-blue-200 shadow-sm bg-blue-50 align-top">
                                    <div class="flex flex-col gap-2">
                                      <span>${eP}</span>
                                      <div class="flex flex-col gap-1 mt-2">
@@ -5106,7 +5112,7 @@
                                     }).join('');
 
                                     return `
-                                      <td class="px-2 py-2 align-top border-r border-blue-100 last:border-r-0 min-w-[200px]">
+                                      <td class="px-2 py-2 align-top border-r border-blue-100 last:border-r-0">
                                         <div class="flex flex-wrap gap-1.5 mb-2">
                                           ${chips}
                                         </div>
@@ -5128,7 +5134,7 @@
                              // --- VIEW MODE ROW ---
                              return `
                               <tr class="${rowBg} hover:bg-gray-100 transition-colors group/row">
-                                <td class="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 sticky left-0 z-10 border-r border-gray-200 shadow-sm ${rowBg} group-hover/row:bg-gray-100">
+                                <td class="px-4 py-3 break-words text-sm font-medium text-gray-900 sticky left-0 z-10 border-r border-gray-200 shadow-sm ${rowBg} group-hover/row:bg-gray-100">
                                   <div class="flex justify-between items-center">
                                     <span>${eP}</span>
                                     <button ${periodAttrs} onclick="toggleAdminScheduleEdit(this.dataset.month, this.dataset.period)" class="opacity-0 group-hover/row:opacity-100 text-ops-blue hover:bg-blue-100 p-1.5 rounded transition-all" title="Edit Period">
@@ -5235,15 +5241,15 @@
 
                                              return `
                                              <div class="flex justify-between items-center bg-blue-50 hover:bg-blue-100 p-2 rounded border border-blue-100 transition group">
-                                                <div class="min-w-0">
-                                                  <div class="flex items-center">
+                                                <div class="min-w-0 flex-1">
+                                                  <div class="flex items-center min-w-0">
                                                      <div class="text-xs font-bold text-ops-blue truncate" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</div>
                                                      ${pendingIndicator}
                                                   </div>
                                                   <div class="text-[10px] text-gray-500" title="Approved TST hours earned so far this school year, across all of their buildings">${Number(t.hours).toFixed(1)} hrs earned</div>
                                                   ${assignedIndicator}
                                                 </div>
-                                                <button ${periodAttrs} data-email="${escapeHtml(t.email)}" data-name="${escapeHtml(t.name)}" onclick="openAssignCoverageModal(this.dataset.email, this.dataset.name, this.dataset.period, this.dataset.month)" class="text-ops-blue bg-white hover:bg-white hover:text-ops-blue-dark border border-blue-200 rounded-full h-6 w-6 flex items-center justify-center shadow-sm opacity-0 group-hover:opacity-100 transition-opacity" title="Assign Coverage">
+                                                <button ${periodAttrs} data-email="${escapeHtml(t.email)}" data-name="${escapeHtml(t.name)}" onclick="openAssignCoverageModal(this.dataset.email, this.dataset.name, this.dataset.period, this.dataset.month)" class="text-ops-blue bg-white hover:bg-white hover:text-ops-blue-dark border border-blue-200 rounded-full h-6 w-6 flex items-center justify-center shadow-sm opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 ml-1" title="Assign Coverage">
                                                   <i class="fas fa-paper-plane text-xs"></i>
                                                 </button>
                                              </div>
