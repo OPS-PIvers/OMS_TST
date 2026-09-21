@@ -3483,9 +3483,8 @@ function getPendingEarnedMap_(building) {
       map[key] = [];
     }
     // Minimal data needed for the tooltip/indicator, plus the month / weekday the
-    // client matches against the grid column so the hourglass only shows on the
-    // day the coverage was for. Same cell rule as assignedCoverageMap_, minus the
-    // period — a pending request marks the person busy that day, not one period.
+    // client matches (with the period) against the grid cell, so the hourglass
+    // only shows where the coverage was. Same cell rule as assignedCoverageMap_.
     const day = pendingRequestDay_(item.date);
     map[key].push({
       date: item.date, // Already safeDate string

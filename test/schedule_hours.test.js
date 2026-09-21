@@ -123,6 +123,22 @@ exports.run = function ({ test, assert }) {
     assert.equal(pendingOf(grid, 'September')[0].month, '');
   });
 
+  test('the grid matches a pending request to its period row by name', () => {
+    // schedulePeriodKey lives in Index.html; pull it out and run it as-is.
+    const html = require('fs').readFileSync(require('path').join(__dirname, '..', 'Index.html'), 'utf8');
+    const src = /function schedulePeriodKey\(label\) \{[\s\S]*?\n    \}/.exec(html);
+    assert.ok(src, 'schedulePeriodKey is missing from Index.html');
+    const key = new Function(src[0] + '\nreturn schedulePeriodKey;')();
+
+    assert.equal(key('Period 3 - 9:52 - 10:39'), key('Period 3 - 10:24 - 11:04'),
+      'editing bell times must not strand a request filed before the edit');
+    assert.equal(key('3'), key('Period 3 - 9:52 - 10:39'), 'legacy short period');
+    assert.equal(key('Spartan Hour'), 'spartan hour');
+    assert.ok(key('Period 1 - 8:10 - 8:57') !== key('Period 10 - 2:03 - 2:50'));
+    assert.ok(key('Period 4/5 - 10:30 - 11:37') !== key('Period 4 - 10:43 - 11:09'));
+    assert.ok(key('Period 5A') !== key('Period 5B'));
+  });
+
   test('a checkbox read back as the string "TRUE" still counts', () => {
     const grid = gridWith([row(USERS.omsTeacher, 'Tina Teacher', '2025-09-10', 3, 'TRUE', '')]);
     assert.equal(hoursFor(grid, 'September', USERS.omsTeacher), 3);
