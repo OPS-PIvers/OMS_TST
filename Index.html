@@ -5149,11 +5149,18 @@
                                        <div class="space-y-2">
                                          ${teachers.length === 0 ? '<span class="text-xs text-gray-300 italic">No coverage</span>' : 
                                            teachers.map(t => {
-                                             const pendingCount = t.pendingRequests ? t.pendingRequests.length : 0;
+                                             // Only the pending requests for this column's month and
+                                             // weekday: a Tuesday submission marks Tuesday, not the
+                                             // whole week. A request whose date couldn't be read has
+                                             // no month, and keeps showing everywhere rather than
+                                             // disappearing from the grid.
+                                             const pendingHere = (t.pendingRequests || []).filter(r =>
+                                               !r.month || (r.month === month && r.weekday === d));
+                                             const pendingCount = pendingHere.length;
                                              let pendingIndicator = '';
-                                             
+
                                              if (pendingCount > 0) {
-                                                const listItems = t.pendingRequests.map(r => {
+                                                const listItems = pendingHere.map(r => {
                                                   let shortPd = r.period;
                                                   const match = r.period.match(/Period\s+([0-9\/]+)/);
                                                   if (match) shortPd = match[1];
