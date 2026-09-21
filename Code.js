@@ -3482,15 +3482,32 @@ function getPendingEarnedMap_(building) {
     if (!map[key]) {
       map[key] = [];
     }
-    // Minimal data needed for the tooltip/indicator
+    // Minimal data needed for the tooltip/indicator, plus the month / weekday the
+    // client matches against the grid column so the hourglass only shows on the
+    // day the coverage was for. Same cell rule as assignedCoverageMap_, minus the
+    // period — a pending request marks the person busy that day, not one period.
+    const day = pendingRequestDay_(item.date);
     map[key].push({
       date: item.date, // Already safeDate string
       subbedFor: item.subbedFor,
-      period: item.period
+      period: item.period,
+      month: day ? MONTH_NAMES_[day.getMonth()] : '',
+      weekday: day ? WEEKDAY_NAMES_[day.getDay()].slice(0, 3) : ''
     });
   });
-  
+
   return map;
+}
+
+// The calendar day of a pending request's date, which safeDate has turned into
+// either a bare 'YYYY-MM-DD' (a text cell) or a UTC ISO string (a date cell).
+// The ISO form is converted back through the script timezone; splitting it at
+// 'T' would give the UTC date, which is a day late for anything after 7pm.
+function pendingRequestDay_(value) {
+  const s = (value == null ? '' : value).toString().trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return parseYmd_(s);
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : parseYmd_(d);
 }
 
 function saveAvailability(month, availabilityList, targetEmail, periodsShown) {
