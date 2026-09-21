@@ -4455,6 +4455,13 @@ function getAssignments(buildingFilter) {
 function assignmentsFor_(building) {
   return assignmentRows_(a => a.building === building)
     .map(a => Object.assign({}, a, {
+      // google.script.run turns a whole response into null if it holds a single
+      // Date, and the client reads null as "no assignments". Send strings.
+      created: safeDate(a.created),
+      recordedTs: safeDate(a.recordedTs),
+      nudgedTs: safeDate(a.nudgedTs),
+      notifiedTs: safeDate(a.notifiedTs),
+      cancelledTs: safeDate(a.cancelledTs),
       dateDisplay: longDate_(a.date),
       periodDisplay: periodDisplay_(a.building, a.period, a.date),
       durationLabel: durationLabel_(a),

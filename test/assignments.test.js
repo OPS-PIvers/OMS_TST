@@ -332,6 +332,20 @@ exports.run = function ({ test, assert }) {
     assert.equal(env.run('getAssignments', 'OMS').length, 0);
   });
 
+  test('the queue carries no Date objects (google.script.run would return null)', () => {
+    const env = envFor(USERS.omsAdmin);
+    env.run('cancelAssignment', assign(env));
+    const list = env.run('getAssignments', 'OMS');
+    assert.equal(list.length, 1);
+    const dates = [];
+    const walk = (v, path) => {
+      if (Object.prototype.toString.call(v) === '[object Date]') dates.push(path);
+      else if (v && typeof v === 'object') Object.keys(v).forEach(k => walk(v[k], path + '.' + k));
+    };
+    walk(list, 'list');
+    assert.equal(dates.length, 0, 'Date fields: ' + dates.join(', '));
+  });
+
   // ---- The badge -------------------------------------------------------------
 
   test('the badge counts only coverage that already happened with nothing recorded', () => {
