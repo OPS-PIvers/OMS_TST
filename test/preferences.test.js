@@ -59,6 +59,19 @@ exports.run = function ({ test, assert }) {
     assert.equal(env.run('getInitialData').preferences.nameOrder, 'first');
   });
 
+  test('the name list covers every building and archived staff, and nothing but names', () => {
+    const env = envFor(USERS.omsAdmin);
+    const names = env.run('getInitialData').staffNames;
+    assert.ok(names.includes('Arnie Archived'), 'archived staff are still named in old requests');
+    assert.ok(names.some(n => /hank/i.test(n)), 'coverage can be for someone at another building');
+    assert.ok(names.every(n => typeof n === 'string' && !n.includes('@')), 'names only');
+  });
+
+  test('someone not in the directory gets no names', () => {
+    const env = envFor(USERS.stranger);
+    assert.deepEqual(env.run('getInitialData').staffNames, []);
+  });
+
   test('a damaged stored value falls back to the default', () => {
     const env = envFor(USERS.omsAdmin, { ['PREFS_' + USERS.omsAdmin]: '{not json' });
     assert.equal(env.run('getInitialData').preferences.nameOrder, 'first');

@@ -287,7 +287,7 @@ Staff names/emails, transaction fields (subbed for, period, hours, notes, denial
 
 ### Name Display ("Last, First")
 Names are stored "First Last" everywhere. Each person can choose to *see* them "Last, First" from the profile menu (**Show Names As**). It's a personal setting: `saveMyPreferences(prefs)` stores it in Script Properties under `PREFS_<email>`. It always writes the session user's own setting, and `getInitialData` returns it as `preferences`. UserProperties can't be used because the app runs as the deployer. During View As, the admin's own setting still applies.
-- In Index.html, draw names through `displayName()` (a staff member) or `displayCoveredName()` (a free-text "covered for", which is only reordered when it matches someone in the directory, so "Activity Bus" is left alone).
+- In Index.html, draw names through `displayName()` (a staff member) or `displayCoveredName()` (a free-text "covered for", which is only reordered when it matches someone in the directory, so "Activity Bus" is left alone). The match uses `staffNames` from `getInitialData`: every directory name across all buildings, archived included, names only. The building roster wasn't enough, because coverage is often for someone archived or at another building.
 - **Only change what is drawn.** `data-name`, `<option value>` and anything sent to the server keep the stored name, because requests and Form Responses are matched on it. Read a selected name from `data-name`, never from an option's visible text.
 - Emails, the header's own name, and sentence-style prompts ("Send report to …?", "… is covering your Period 3") stay "First Last".
 

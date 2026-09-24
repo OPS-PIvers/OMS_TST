@@ -111,6 +111,7 @@ function getInitialData() {
     defaultBuilding: DEFAULT_BUILDING,
     authorizeUrl: authorizeUrl_(),
     preferences: userPreferences_(ctx.email),
+    staffNames: ctx.role === 'Guest' ? [] : staffNames_(),
     // Same rule as getStaffDirectoryData: admins get the building's balances, a
     // teacher gets their own row plus a name/email roster, and anyone who isn't in
     // the directory gets nothing (the client shows them Access Denied).
@@ -195,6 +196,24 @@ function userPreferences_(email) {
     // A damaged entry just means the defaults.
   }
   return prefs;
+}
+
+/**
+ * Every name in the Staff Directory — all buildings, archived included, names only.
+ * The client uses it to tell a person typed into a free-text "covered for" field
+ * (reordered under "Last, First") from something like "Activity Bus" (left alone).
+ * The building roster isn't enough: coverage is often for someone archived or at
+ * another building.
+ */
+function staffNames_() {
+  const sheet = getStaffSheet_();
+  const idx = getStaffIndices_(sheet);
+  const seen = {};
+  sheet.getDataRange().getValues().slice(1).forEach(r => {
+    const name = (r[idx.name] || '').toString().trim().replace(/\s+/g, ' ');
+    if (name) seen[name.toLowerCase()] = name;
+  });
+  return Object.keys(seen).map(k => seen[k]);
 }
 
 /**

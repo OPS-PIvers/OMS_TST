@@ -281,9 +281,13 @@
      */
     function displayCoveredName(name) {
       if (!nameIsLastFirst()) return String(name == null ? '' : name);
-      const key = String(name == null ? '' : name).trim().toLowerCase();
-      const rosters = [STATE.user && STATE.user.staffData, STATE.viewAs && STATE.viewAs.admin && STATE.viewAs.admin.staffData];
-      const known = rosters.some(list => (list || []).some(s => String(s.name || '').trim().toLowerCase() === key));
+      const norm = (n) => String(n == null ? '' : n).trim().replace(/\s+/g, ' ').toLowerCase();
+      const key = norm(name);
+      // The whole directory (every building, archived too) from getInitialData, plus
+      // the loaded roster in case someone was added since the page opened.
+      const known = (STATE.staffNames || []).some(n => norm(n) === key) ||
+        [STATE.user && STATE.user.staffData, STATE.viewAs && STATE.viewAs.admin && STATE.viewAs.admin.staffData]
+          .some(list => (list || []).some(s => norm(s.name) === key));
       return known ? displayName(name) : String(name == null ? '' : name);
     }
 
@@ -406,6 +410,7 @@
       defaultBuilding: 'OMS', // Fallback until loaded
       sortOption: 'first_name', // Global sorting preference
       prefs: { nameOrder: 'first' }, // The signed-in person's own display preferences (kept through View As)
+      staffNames: [],      // Every directory name (names only) — tells a person from free text like "Activity Bus"
       editMode: { carryOver: false, paidOut: false },
       pendingUpdates: {},
       manageMode: false,   // Staff add/edit/archive controls
@@ -540,6 +545,7 @@
       STATE.defaultBuilding = data.defaultBuilding || 'OMS';
       STATE.building = data.building || STATE.defaultBuilding;
       STATE.prefs = Object.assign({ nameOrder: 'first' }, data.preferences || {});
+      STATE.staffNames = data.staffNames || [];
       // Lists read in the order the names are shown.
       STATE.sortOption = nameIsLastFirst() ? 'last_name' : 'first_name';
 
