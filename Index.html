@@ -239,6 +239,54 @@
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
+    // --- Name Display ---
+    // Names are stored "First Last" everywhere (the sheet, requests, emails). A person
+    // can choose to *see* them "Last, First" (STATE.prefs.nameOrder === 'last'). Only
+    // what is drawn changes: data-* attributes, <option value>s and anything sent to the
+    // server must keep the stored name, because requests and Form Responses are
+    // matched on it. Emails and sentence-style prompts stay "First Last".
+    const NAME_SUFFIXES = ['jr', 'sr', 'ii', 'iii', 'iv', 'v'];
+    const SURNAME_PARTICLES = ['van', 'von', 'der', 'den', 'de', 'del', 'della', 'da', 'di', 'du', 'la', 'le', 'st', 'st.'];
+
+    // { given, surname, suffix } — surname takes lowercase-style particles with it
+    // ("Van Der Berg"), and a trailing Jr./III is kept apart so it doesn't become the surname.
+    function splitName(name) {
+      const tokens = String(name == null ? '' : name).trim().replace(/,/g, ' ').split(/\s+/).filter(Boolean);
+      let suffix = '';
+      if (tokens.length > 2 && NAME_SUFFIXES.includes(tokens[tokens.length - 1].toLowerCase().replace(/\.$/, ''))) {
+        suffix = tokens.pop();
+      }
+      if (tokens.length < 2) return { given: '', surname: tokens.join(' '), suffix: suffix };
+      let start = tokens.length - 1;
+      while (start > 1 && SURNAME_PARTICLES.includes(tokens[start - 1].toLowerCase())) start--;
+      return { given: tokens.slice(0, start).join(' '), surname: tokens.slice(start).join(' '), suffix: suffix };
+    }
+
+    function nameIsLastFirst() {
+      return !!(STATE.prefs && STATE.prefs.nameOrder === 'last');
+    }
+
+    /** A staff member's name, in the viewer's chosen order. Returns plain text — escape it. */
+    function displayName(name) {
+      const raw = String(name == null ? '' : name).trim();
+      if (!nameIsLastFirst() || !raw || raw.includes(',')) return raw;
+      const parts = splitName(raw);
+      if (!parts.given) return raw;
+      return `${parts.surname}, ${parts.given}${parts.suffix ? ' ' + parts.suffix : ''}`;
+    }
+
+    /**
+     * For free-text "covered for" values, which may be a person or something like
+     * "Activity Bus". Only reordered when it matches someone in the directory.
+     */
+    function displayCoveredName(name) {
+      if (!nameIsLastFirst()) return String(name == null ? '' : name);
+      const key = String(name == null ? '' : name).trim().toLowerCase();
+      const rosters = [STATE.user && STATE.user.staffData, STATE.viewAs && STATE.viewAs.admin && STATE.viewAs.admin.staffData];
+      const known = rosters.some(list => (list || []).some(s => String(s.name || '').trim().toLowerCase() === key));
+      return known ? displayName(name) : String(name == null ? '' : name);
+    }
+
     // --- Toast Notification System ---
     // The message is plain text (never HTML).
     function showToast(message, type = 'info') {
@@ -357,6 +405,7 @@
       config: null,   // Loaded from server
       defaultBuilding: 'OMS', // Fallback until loaded
       sortOption: 'first_name', // Global sorting preference
+      prefs: { nameOrder: 'first' }, // The signed-in person's own display preferences (kept through View As)
       editMode: { carryOver: false, paidOut: false },
       pendingUpdates: {},
       manageMode: false,   // Staff add/edit/archive controls
@@ -395,8 +444,11 @@
     function sortStaffData(data, sortBy) {
        if (!data || data.length === 0) return data;
 
-       const getLastName = (name) => name ? name.split(' ').pop().toLowerCase() : '';
-       const getFirstName = (name) => name ? name.split(' ')[0].toLowerCase() : '';
+       const getLastName = (name) => {
+          const p = splitName(name);
+          return `${p.surname} ${p.given}`.trim().toLowerCase();
+       };
+       const getFirstName = (name) => name ? String(name).trim().toLowerCase() : '';
 
        return [...data].sort((a, b) => {
           if (sortBy === 'last_name') {
@@ -420,8 +472,10 @@
           } else if (sortBy === 'date_oldest') {
              return new Date(a.date) - new Date(b.date);
           }
-          // Default to first name
-          return getFirstName(a.name).localeCompare(getFirstName(b.name));
+          // Default: whichever name leads in the viewer's display order
+          return nameIsLastFirst()
+             ? getLastName(a.name).localeCompare(getLastName(b.name))
+             : getFirstName(a.name).localeCompare(getFirstName(b.name));
        });
     }
 
@@ -485,6 +539,9 @@
       STATE.authorizeUrl = data.authorizeUrl || '';
       STATE.defaultBuilding = data.defaultBuilding || 'OMS';
       STATE.building = data.building || STATE.defaultBuilding;
+      STATE.prefs = Object.assign({ nameOrder: 'first' }, data.preferences || {});
+      // Lists read in the order the names are shown.
+      STATE.sortOption = nameIsLastFirst() ? 'last_name' : 'first_name';
 
       document.getElementById('app-loading').classList.add('hidden');
       document.getElementById('app-container').classList.remove('hidden');
@@ -573,6 +630,19 @@
         `;
       }
 
+      // Name order — a personal display preference, saved to the signed-in person
+      // (during View As it is still the admin's own).
+      const order = nameIsLastFirst() ? 'last' : 'first';
+      menuContent += `
+         <div class="px-4 py-3 border-b border-gray-100">
+           <div class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Show Names As</div>
+           <div class="segmented-control w-full flex">
+             <div class="segmented-item ${order === 'first' ? 'active' : ''}" onclick="setNameOrder('first')">First Last</div>
+             <div class="segmented-item ${order === 'last' ? 'active' : ''}" onclick="setNameOrder('last')">Last, First</div>
+           </div>
+         </div>
+      `;
+
       // Settings Link (Admin/Super Admin)
       const isAdmin = STATE.user.role === 'Admin' || STATE.user.role === 'Super Admin' || STATE.user.isSuperAdmin;
       if (isAdmin) {
@@ -613,6 +683,29 @@
       if (subtitleEl) {
          subtitleEl.innerText = `${bName} TST Portal`;
       }
+    }
+
+    function setNameOrder(order) {
+      const previous = STATE.prefs.nameOrder;
+      if (order === previous) return;
+
+      const applyOrder = (o) => {
+        STATE.prefs.nameOrder = o;
+        // Follow the switch if the list is sorted by name; leave a numeric sort alone.
+        if (STATE.sortOption === 'first_name' || STATE.sortOption === 'last_name') {
+          STATE.sortOption = o === 'last' ? 'last_name' : 'first_name';
+        }
+        updateUserInfo();
+        if (STATE.currentTab) switchTab(STATE.currentTab);
+      };
+
+      applyOrder(order);
+      google.script.run
+        .withFailureHandler(err => {
+          applyOrder(previous);
+          showToast("Couldn't save your name display setting: " + err, "error");
+        })
+        .saveMyPreferences({ nameOrder: order });
     }
 
     function toggleProfileMenu() {
@@ -742,7 +835,7 @@
                         if (canEditOwned) {
                            return `
                         <tr>
-                           <td class="px-6 py-3 whitespace-nowrap text-sm font-medium text-gray-900">${escapeHtml(s.name)}</td>
+                           <td class="px-6 py-3 whitespace-nowrap text-sm font-medium text-gray-900">${escapeHtml(displayName(s.name))}</td>
                            <td class="px-6 py-3 whitespace-nowrap">
                               <input type="number" step="0.1" id="co-${escapeHtml(s.email)}" value="${escapeHtml(s.carryOver || 0)}" class="w-24 rounded border-gray-300 p-1 border text-sm focus:ring-ops-blue focus:border-ops-blue">
                            </td>
@@ -753,7 +846,7 @@
                         }
                         return `
                         <tr class="bg-gray-50/50">
-                           <td class="px-6 py-3 whitespace-nowrap text-sm font-medium text-gray-500">${escapeHtml(s.name)}</td>
+                           <td class="px-6 py-3 whitespace-nowrap text-sm font-medium text-gray-500">${escapeHtml(displayName(s.name))}</td>
                            <td class="px-6 py-3 whitespace-nowrap text-sm text-gray-400">${Number(s.carryOver || 0).toFixed(2)}</td>
                            <td class="px-6 py-3 whitespace-nowrap text-right text-xs text-gray-400 italic" title="Carry Over is managed by the primary building (${escapeHtml(primaryB)})">
                               <i class="fas fa-lock mr-1"></i>${escapeHtml(primaryB)} manages
@@ -1065,7 +1158,7 @@
           container.innerHTML = list.map(s => {
              return `<div class="flex items-center justify-between py-2 border-b border-gray-100">
                 <div>
-                  <div class="text-sm font-medium text-ops-gray-dark">${escapeHtml(s.name)}</div>
+                  <div class="text-sm font-medium text-ops-gray-dark">${escapeHtml(displayName(s.name))}</div>
                   <div class="text-xs text-gray-400">${escapeHtml(s.email)}${s.building ? ' &middot; ' + escapeHtml(s.building) : ''}</div>
                 </div>
                 <button data-email="${escapeHtml(s.email)}" data-name="${escapeHtml(s.name)}" onclick="permanentlyDeleteStaff(this.dataset.email, this.dataset.name)" class="text-ops-red hover:text-red-700 hover:bg-red-50 px-3 py-1 rounded text-sm font-bold transition">
@@ -1678,10 +1771,10 @@
                           </td>
                         ` : ''}
                         <td class="px-6 py-4 whitespace-nowrap">
-                          <div class="text-sm font-bold text-ops-blue-dark">${escapeHtml(row.name)}</div>
+                          <div class="text-sm font-bold text-ops-blue-dark">${escapeHtml(displayName(row.name))}</div>
                           <div class="text-xs text-ops-gray">${escapeHtml(row.email)}</div>
                         </td>
-                        <td class="px-6 py-4 text-sm text-ops-gray-dark">${escapeHtml(row.subbedFor)}</td>
+                        <td class="px-6 py-4 text-sm text-ops-gray-dark">${escapeHtml(displayCoveredName(row.subbedFor))}</td>
                         <td class="px-6 py-4 text-sm text-ops-gray">
                           <div><i class="far fa-calendar mr-1"></i> ${new Date(row.date).toLocaleDateString()}</div>
                           <div class="text-xs mt-1"><span class="bg-gray-100 px-1 rounded">${escapeHtml(row.period)}</span></div>
@@ -1795,7 +1888,7 @@
                           </td>
                         ` : ''}
                         <td class="px-6 py-4 whitespace-nowrap">
-                          <div class="text-sm font-bold text-ops-blue-dark">${escapeHtml(row.name)}</div>
+                          <div class="text-sm font-bold text-ops-blue-dark">${escapeHtml(displayName(row.name))}</div>
                           <div class="text-xs text-ops-gray">${escapeHtml(row.email)}</div>
                         </td>
                         <td class="px-6 py-4 text-sm text-ops-gray-dark">${new Date(row.date).toLocaleDateString()}</td>
@@ -2205,7 +2298,8 @@
                   ${sortedStaff.map(s => {
                     const isChecked = STATE.selectedEmails && STATE.selectedEmails.has(s.email);
                     const eEmail = escapeHtml(s.email);
-                    const eName = escapeHtml(s.name);
+                    const eName = escapeHtml(s.name);               // attributes: the stored name
+                    const eShown = escapeHtml(displayName(s.name)); // what is drawn
                     // Inline handlers read these via this.dataset — never interpolate the
                     // raw values into a JS string.
                     const rowAttrs = `data-email="${eEmail}" data-name="${eName}"`;
@@ -2231,8 +2325,8 @@
                       ` : ''}
 
                       <!-- Name -->
-                      <td class="pl-6 pr-2 py-4 whitespace-nowrap text-sm font-medium text-ops-blue-dark truncate" style="${wName}" title="${eName}">
-                         <div>${eName} ${s.archived ? '<span class="ml-1 text-[10px] font-bold uppercase tracking-wide text-gray-500 bg-gray-200 px-1.5 py-0.5 rounded">Archived</span>' : ''}${pendingChip}</div>
+                      <td class="pl-6 pr-2 py-4 whitespace-nowrap text-sm font-medium text-ops-blue-dark truncate" style="${wName}" title="${eShown}">
+                         <div>${eShown} ${s.archived ? '<span class="ml-1 text-[10px] font-bold uppercase tracking-wide text-gray-500 bg-gray-200 px-1.5 py-0.5 rounded">Archived</span>' : ''}${pendingChip}</div>
                          <div class="text-xs text-gray-400 font-normal truncate">${eEmail}</div>
                       </td>
 
@@ -2276,7 +2370,7 @@
                             </button>`
                          ) : `
                            ${(s.role || '').toString().trim() === 'Teacher' ? `
-                           <button ${rowAttrs} onclick="startViewAs(this.dataset.email)" class="text-ops-blue hover:text-ops-blue-dark hover:bg-blue-50 p-2 rounded-full transition" title="View as ${eName}">
+                           <button ${rowAttrs} onclick="startViewAs(this.dataset.email)" class="text-ops-blue hover:text-ops-blue-dark hover:bg-blue-50 p-2 rounded-full transition" title="View as ${eShown}">
                               <i class="fas fa-eye"></i>
                            </button>` : ''}
                            <button ${rowAttrs} onclick="sendSingleReport(this.dataset.email, this.dataset.name)" class="text-ops-blue hover:text-ops-blue-dark hover:bg-blue-50 p-2 rounded-full transition" title="Send Report">
@@ -2736,7 +2830,7 @@
        const bName = (STATE.config[STATE.building] && STATE.config[STATE.building].name) ? STATE.config[STATE.building].name : STATE.building;
        const rows = res.overCap.map(o => `
           <tr class="border-t border-gray-100">
-             <td class="px-3 py-2 text-sm font-medium text-ops-gray-dark">${escapeHtml(o.name)}</td>
+             <td class="px-3 py-2 text-sm font-medium text-ops-gray-dark">${escapeHtml(displayName(o.name))}</td>
              <td class="px-3 py-2 text-sm text-right text-gray-600">${Number(o.projected).toFixed(2)}</td>
              <td class="px-3 py-2 text-sm text-right font-bold text-ops-red">${Number(o.over).toFixed(2)}</td>
           </tr>`).join('');
@@ -3076,7 +3170,7 @@
 
     function renderTeacherSubmit() {
       const sortedStaff = sortStaffData(STATE.user.staffData, STATE.sortOption);
-      const staffOptions = sortedStaff.map(s => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join('');
+      const staffOptions = sortedStaff.map(s => `<option value="${escapeHtml(s.name)}">${escapeHtml(displayName(s.name))}</option>`).join('');
       const bConfig = STATE.config[STATE.building] || STATE.config[STATE.defaultBuilding];
       const isPeriods = bConfig && bConfig.scheduleType === 'periods';
 
@@ -3240,7 +3334,7 @@
         function updateAdminCreateSort(val) {
       STATE.sortOption = val;
       const staffList = sortStaffData(STATE.user.staffData, STATE.sortOption);
-      const staffOptions = staffList.map(s => `<option value="${escapeHtml(s.email)}" data-name="${escapeHtml(s.name)}" data-max="${escapeHtml(s.total)}">${escapeHtml(s.name)}</option>`).join('');
+      const staffOptions = staffList.map(s => `<option value="${escapeHtml(s.email)}" data-name="${escapeHtml(s.name)}" data-max="${escapeHtml(s.total)}">${escapeHtml(displayName(s.name))}</option>`).join('');
 
       const earnTeacher = document.getElementById('earn-teacher-select');
       const earnSubStaff = document.getElementById('earn-sub-staff-select');
@@ -3262,7 +3356,7 @@
         function updateTeacherSubmitSort(val) {
       STATE.sortOption = val;
       const sortedStaff = sortStaffData(STATE.user.staffData, STATE.sortOption);
-      const staffOptions = sortedStaff.map(s => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join('');
+      const staffOptions = sortedStaff.map(s => `<option value="${escapeHtml(s.name)}">${escapeHtml(displayName(s.name))}</option>`).join('');
 
       const dropdown = document.querySelector('select[name="subbedNameDropdown"]');
       if(dropdown) {
@@ -3334,8 +3428,8 @@
         return `
           <tr class="border-b border-gray-100 hover:bg-gray-50 ${a.status === 'Cancelled' ? 'opacity-60' : ''}">
             <td class="px-4 py-3 text-sm text-ops-gray-dark whitespace-nowrap">${escapeHtml(a.dateDisplay)}</td>
-            <td class="px-4 py-3 text-sm font-bold text-ops-blue-dark">${escapeHtml(a.subName)}</td>
-            <td class="px-4 py-3 text-sm text-ops-gray-dark">${escapeHtml(a.coveredFor)}</td>
+            <td class="px-4 py-3 text-sm font-bold text-ops-blue-dark">${escapeHtml(displayName(a.subName))}</td>
+            <td class="px-4 py-3 text-sm text-ops-gray-dark">${escapeHtml(displayCoveredName(a.coveredFor))}</td>
             <td class="px-4 py-3 text-sm text-ops-gray">${escapeHtml(a.periodDisplay || a.period)}</td>
             <td class="px-4 py-3 text-sm text-ops-gray whitespace-nowrap">${escapeHtml(a.durationLabel)}</td>
             <td class="px-4 py-3 whitespace-nowrap">${assignmentStatusChip(a)}</td>
@@ -3486,7 +3580,7 @@
         return `
           <div class="flex items-center justify-between gap-4 p-3 border-b border-blue-100 last:border-0">
             <div class="min-w-0">
-              <div class="font-bold text-ops-blue-dark text-sm">${escapeHtml(a.coveredFor)} &middot; ${escapeHtml(a.periodDisplay || a.period)}</div>
+              <div class="font-bold text-ops-blue-dark text-sm">${escapeHtml(displayCoveredName(a.coveredFor))} &middot; ${escapeHtml(a.periodDisplay || a.period)}</div>
               <div class="text-xs text-ops-gray">${escapeHtml(a.dateDisplay)} &middot; ${escapeHtml(a.durationLabel)}</div>
               ${a.note ? `<div class="text-xs text-ops-gray-dark mt-1 italic">${escapeHtml(a.note)}</div>` : ''}
             </div>
@@ -3794,7 +3888,7 @@
       STATE.requestQueue = []; // Reset Queue
       
       const staffList = sortStaffData(STATE.user.staffData, STATE.sortOption);
-      const staffOptions = staffList.map(s => `<option value="${escapeHtml(s.email)}" data-name="${escapeHtml(s.name)}" data-max="${escapeHtml(s.total)}">${escapeHtml(s.name)}</option>`).join('');
+      const staffOptions = staffList.map(s => `<option value="${escapeHtml(s.email)}" data-name="${escapeHtml(s.name)}" data-max="${escapeHtml(s.total)}">${escapeHtml(displayName(s.name))}</option>`).join('');
       
       const html = `
         <!-- Modal Tabs -->
@@ -3961,7 +4055,7 @@
       if (type === 'earn') {
         const teacherSelect = document.getElementById('earn-teacher-select');
         const email = teacherSelect.value;
-        const teacherName = teacherSelect.options[teacherSelect.selectedIndex].text;
+        const teacherName = teacherSelect.options[teacherSelect.selectedIndex].getAttribute('data-name') || '';
         
         if (!email) { showToast("Please select a teacher.", "error"); return false; }
 
@@ -3987,7 +4081,7 @@
 
         STATE.requestQueue.push({
           type: 'earned',
-          summary: `<strong class="text-ops-blue">Earned</strong>: ${escapeHtml(teacherName)} (Sub: ${escapeHtml(subName)}) - ${escapeHtml(date)}`,
+          summary: `<strong class="text-ops-blue">Earned</strong>: ${escapeHtml(displayName(teacherName))} (Sub: ${escapeHtml(displayCoveredName(subName))}) - ${escapeHtml(date)}`,
           payload: {
             email: email,
             subbedForType: subType,
@@ -4020,7 +4114,7 @@
 
         STATE.requestQueue.push({
           type: 'used',
-          summary: `<strong class="text-ops-red">Used</strong>: ${escapeHtml(name)} (${escapeHtml(amount)} hrs) - ${escapeHtml(date)}`,
+          summary: `<strong class="text-ops-red">Used</strong>: ${escapeHtml(displayName(name))} (${escapeHtml(amount)} hrs) - ${escapeHtml(date)}`,
           payload: {
             email: email,
             name: name,
@@ -4372,7 +4466,7 @@
               ${html}
             </div>`;
         } else {
-           showModal(name, html, 'max-w-7xl');
+           showModal(displayName(name), html, 'max-w-7xl');
         }
 
       })[apiCall](email);
@@ -4476,8 +4570,8 @@
     }
 
     function openEditEarnedModal(rowIndex, email, name, item) {
-      const staffOptions = STATE.user.staffData.map(s =>
-        `<option value="${escapeHtml(s.name)}" ${s.name === item.subbedFor ? 'selected' : ''}>${escapeHtml(s.name)}</option>`
+      const staffOptions = sortStaffData(STATE.user.staffData, nameIsLastFirst() ? 'last_name' : 'first_name').map(s =>
+        `<option value="${escapeHtml(s.name)}" ${s.name === item.subbedFor ? 'selected' : ''}>${escapeHtml(displayName(s.name))}</option>`
       ).join('');
 
       const dateValue = new Date(item.date).toISOString().split('T')[0];
@@ -4531,7 +4625,7 @@
         </form>
       `;
 
-      showModal(`Edit Earned Request - ${name}`, modalContent);
+      showModal(`Edit Earned Request - ${displayName(name)}`, modalContent);
     }
 
     function openEditUsedModal(rowIndex, email, name, item) {
@@ -4560,7 +4654,7 @@
         </form>
       `;
 
-      showModal(`Edit Used Request - ${name}`, modalContent);
+      showModal(`Edit Used Request - ${displayName(name)}`, modalContent);
     }
 
     function handleEditEarnedSubmit(event, rowIndex, email, name) {
@@ -4666,7 +4760,7 @@
         <form onsubmit="submitEditEarned(event, ${Number(rowIndex)})">
           <div class="mb-4">
             <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Teacher (Earner)</label>
-            <input type="text" value="${escapeHtml(row.name)}" disabled class="block w-full rounded border-gray-200 bg-gray-100 p-2 border text-gray-500">
+            <input type="text" value="${escapeHtml(displayName(row.name))}" disabled class="block w-full rounded border-gray-200 bg-gray-100 p-2 border text-gray-500">
           </div>
           <div class="mb-4">
              <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Subbed For</label>
@@ -4740,7 +4834,7 @@
         <form onsubmit="submitEditUsed(event, ${Number(rowIndex)})">
            <div class="mb-4">
             <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Teacher (User)</label>
-            <input type="text" value="${escapeHtml(row.name)}" disabled class="block w-full rounded border-gray-200 bg-gray-100 p-2 border text-gray-500">
+            <input type="text" value="${escapeHtml(displayName(row.name))}" disabled class="block w-full rounded border-gray-200 bg-gray-100 p-2 border text-gray-500">
           </div>
           <div class="mb-4">
              <label class="block text-xs font-bold text-ops-gray uppercase tracking-wider mb-2">Date of Usage</label>
@@ -5109,7 +5203,7 @@
                                     // We need to look up names from staffData
                                     const chips = currentEmails.map(email => {
                                        const staff = STATE.user.staffData.find(s => s.email === email);
-                                       const name = staff ? staff.name : email;
+                                       const name = staff ? displayName(staff.name) : email;
                                        return `
                                          <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-white border border-blue-200 text-blue-700 shadow-sm">
                                            ${escapeHtml(name)}
@@ -5215,7 +5309,7 @@
                                              if (booked.length > 0) {
                                                 const bookedItems = booked.map(b => {
                                                   const coveredFor = b.coveredFor
-                                                    ? `<div class="text-indigo-200 truncate text-[11px]"><span class="opacity-75">Covering:</span> ${escapeHtml(b.coveredFor)}</div>`
+                                                    ? `<div class="text-indigo-200 truncate text-[11px]"><span class="opacity-75">Covering:</span> ${escapeHtml(displayCoveredName(b.coveredFor))}</div>`
                                                     : '';
                                                   const calendarLine = b.calendar
                                                     ? `<div class="text-indigo-300/80 text-[10px] mt-0.5"><i class="fas fa-calendar-day mr-1"></i>${escapeHtml(b.calendar)}</div>`
@@ -5259,7 +5353,7 @@
                                              <div class="flex justify-between items-center bg-blue-50 hover:bg-blue-100 p-2 rounded border border-blue-100 transition group">
                                                 <div class="min-w-0 flex-1">
                                                   <div class="flex items-center min-w-0">
-                                                     <div class="text-xs font-bold text-ops-blue truncate" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</div>
+                                                     <div class="text-xs font-bold text-ops-blue truncate" title="${escapeHtml(displayName(t.name))}">${escapeHtml(displayName(t.name))}</div>
                                                      ${pendingIndicator}
                                                   </div>
                                                   <div class="text-[10px] text-gray-500" title="Approved TST hours earned so far this school year, across all of their buildings">${Number(t.hours).toFixed(1)} hrs earned</div>
@@ -5378,7 +5472,7 @@
       if (matches.length > 0) {
         container.innerHTML = matches.map(s => `
           <div data-day="${escapeHtml(day)}" data-email="${escapeHtml(s.email)}" onclick="selectScheduleTeacher(this.dataset.day, this.dataset.email)" class="px-3 py-2 hover:bg-blue-50 cursor-pointer border-b border-gray-100 last:border-0">
-            <div class="font-bold text-gray-800">${escapeHtml(s.name)}</div>
+            <div class="font-bold text-gray-800">${escapeHtml(displayName(s.name))}</div>
             <div class="text-xs text-gray-500">${escapeHtml(s.email)}</div>
           </div>
         `).join('');
@@ -5430,14 +5524,14 @@
            <input type="hidden" name="teacherName" value="${escapeHtml(tName)}">
            <div class="mb-4 bg-blue-50 p-4 rounded border border-blue-100">
              <label class="block text-xs font-bold text-ops-blue uppercase tracking-wider mb-1">Assigning Coverage To</label>
-             <div class="text-lg font-bold text-ops-blue-dark">${escapeHtml(tName)}</div>
+             <div class="text-lg font-bold text-ops-blue-dark">${escapeHtml(displayName(tName))}</div>
              <div class="text-sm text-ops-gray">${escapeHtml(period)}</div>
            </div>`
         : `<div class="mb-4">
              <label class="block text-sm font-bold text-ops-gray-dark mb-2">Who is covering?</label>
              <select name="teacherPick" required class="block w-full rounded border-gray-300 p-2 border bg-gray-50">
                <option value="">-- Select Staff Member --</option>
-               ${sortedStaff.map(s => `<option value="${escapeHtml(s.email)}" data-name="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join('')}
+               ${sortedStaff.map(s => `<option value="${escapeHtml(s.email)}" data-name="${escapeHtml(s.name)}">${escapeHtml(displayName(s.name))}</option>`).join('')}
              </select>
            </div>`;
 
@@ -5491,7 +5585,7 @@
 
             <div id="req-sub-staff-container" class="${pre.coveredForName && !pre.coveredForEmail ? 'hidden' : ''}">
               <select name="subbedNameDropdown" class="block w-full rounded border-gray-300 p-2 border">
-                ${sortedStaff.map(s => `<option value="${escapeHtml(s.email)}" data-name="${escapeHtml(s.name)}" ${pre.coveredForEmail === s.email ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}
+                ${sortedStaff.map(s => `<option value="${escapeHtml(s.email)}" data-name="${escapeHtml(s.name)}" ${pre.coveredForEmail === s.email ? 'selected' : ''}>${escapeHtml(displayName(s.name))}</option>`).join('')}
               </select>
             </div>
             <div id="req-sub-manual-container" class="${pre.coveredForName && !pre.coveredForEmail ? '' : 'hidden'}">
