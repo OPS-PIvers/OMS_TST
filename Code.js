@@ -110,6 +110,7 @@ function getInitialData() {
     config: config,
     defaultBuilding: DEFAULT_BUILDING,
     authorizeUrl: authorizeUrl_(),
+    preferences: userPreferences_(ctx.email),
     // Same rule as getStaffDirectoryData: admins get the building's balances, a
     // teacher gets their own row plus a name/email roster, and anyone who isn't in
     // the directory gets nothing (the client shows them Access Denied).
@@ -167,6 +168,53 @@ function getViewAsData(targetEmail, building) {
     defaultBuilding: DEFAULT_BUILDING,
     staffData: staffDirectoryData_(activeBuilding, email)
   };
+}
+
+/**
+ * Per-person display preferences (currently just name order), kept in Script
+ * Properties under PREFS_<email>. Not UserProperties: the web app runs as the
+ * deployer, so UserProperties would be one shared set belonging to them.
+ *
+ * These only change how the signed-in person's own screen draws things — never
+ * what is stored or what goes out in email.
+ */
+const USER_PREFS_PREFIX_ = 'PREFS_';
+const USER_PREF_DEFAULTS_ = { nameOrder: 'first' };
+const NAME_ORDERS_ = ['first', 'last'];
+
+function userPreferences_(email) {
+  const prefs = Object.assign({}, USER_PREF_DEFAULTS_);
+  if (!email) return prefs;
+  const raw = PropertiesService.getScriptProperties()
+    .getProperty(USER_PREFS_PREFIX_ + email.toString().trim().toLowerCase());
+  if (!raw) return prefs;
+  try {
+    const stored = JSON.parse(raw);
+    if (stored && NAME_ORDERS_.includes(stored.nameOrder)) prefs.nameOrder = stored.nameOrder;
+  } catch (e) {
+    // A damaged entry just means the defaults.
+  }
+  return prefs;
+}
+
+/**
+ * Saves the signed-in person's own preferences. Always the session user — there is
+ * no email argument, so nobody can change anyone else's view (View As included:
+ * the admin's preference follows the admin).
+ */
+function saveMyPreferences(prefs) {
+  const ctx = getUserContext();
+  if (!ctx.email || ctx.role === 'Guest') throw new Error('You are not listed in the Staff Directory.');
+
+  const current = userPreferences_(ctx.email);
+  const incoming = prefs || {};
+  if (incoming.nameOrder !== undefined) {
+    if (!NAME_ORDERS_.includes(incoming.nameOrder)) throw new Error('Unknown name order.');
+    current.nameOrder = incoming.nameOrder;
+  }
+  PropertiesService.getScriptProperties().setProperty(
+    USER_PREFS_PREFIX_ + ctx.email.toString().trim().toLowerCase(), JSON.stringify(current));
+  return current;
 }
 
 /**
