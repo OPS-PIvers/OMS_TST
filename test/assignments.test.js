@@ -484,6 +484,94 @@ exports.run = function ({ test, assert }) {
     assert.rejected(otto.attempt('recordAssignment', id, USERS.omsTeacher), /your own building/i);
   });
 
+  // ---- Hours the teacher filed without pressing Record ------------------------
+
+  /**
+   * Tina files the coverage herself. submitEarned_ is what her Submit form reaches
+   * (and processEarnedSubmission_ under it is what the Google Form trigger reaches),
+   * called here in the same env so the write lands in the sheets the admin reads.
+   */
+  function fileAsTeacher(env, extra) {
+    env.callInternal('submitEarned_', Object.assign({
+      email: USERS.omsTeacher, subbedForType: 'Staff', subbedForName: 'Ted Teacher',
+      date: ymd(-1), period: OMS_PERIOD, amountType: 'Full Period', amountDecimal: 1, building: 'OMS'
+    }, extra || {}));
+  }
+
+  test('filing through the Submit form records the assignment it answers', () => {
+    const env = envFor(USERS.omsAdmin);
+    assign(env, { date: ymd(-1) });
+    fileAsTeacher(env);
+
+    const row = assignmentSheetRows(env)[0];
+    assert.equal(row[16], 'Recorded');
+    assert.equal(row[18], 'filed', 'the trail says it was filed, not pressed');
+    const listed = env.run('getAssignments', 'OMS')[0];
+    assert.equal(listed.outstanding, false, 'and it no longer counts toward the badge');
+  });
+
+  test('a request filed before the fix is linked when the queue is read', () => {
+    // The hours were filed and approved while the assignment sat at "Not recorded".
+    const env = envFor(USERS.omsAdmin);
+    assign(env, { date: ymd(-1) });
+    env.sheet('TST Approvals (New)').values.push([USERS.omsTeacher, 'Tina Teacher', 'Ted Teacher', '',
+      ymd(-1), OMS_PERIOD, 'Full Period', 1, true, ymd(0), false, '', '', 'OMS']);
+
+    assert.equal(env.run('getDashboardCounts', 'OMS').assignments, 0);
+    assert.equal(env.run('getAssignments', 'OMS')[0].status, 'Recorded');
+    assert.rejected(env.attempt('cancelAssignment', env.run('getAssignments', 'OMS')[0].id),
+      /already approved/i, 'approved hours still cannot be cancelled out from under them');
+  });
+
+  test('edited bell times still match: the period is compared by name', () => {
+    const env = envFor(USERS.omsAdmin);
+    assign(env, { date: ymd(-1) });
+    fileAsTeacher(env, { period: 'Period 1 - 8:05 - 8:52' });
+    assert.equal(assignmentSheetRows(env)[0][16], 'Recorded');
+  });
+
+  test('a different period or date is not mistaken for the assignment', () => {
+    const env = envFor(USERS.omsAdmin);
+    assign(env, { date: ymd(-1) });
+    fileAsTeacher(env, { period: OMS_PERIOD_2 });
+    fileAsTeacher(env, { date: ymd(-2) });
+    assert.equal(assignmentSheetRows(env)[0][16], 'Assigned');
+  });
+
+  test('a denied request does not count as recording it', () => {
+    const env = envFor(USERS.omsAdmin);
+    assign(env, { date: ymd(-1) });
+    env.sheet('TST Approvals (New)').values.push([USERS.omsTeacher, 'Tina Teacher', 'Ted Teacher', '',
+      ymd(-1), OMS_PERIOD, 'Full Period', 1, false, '', true, ymd(0), 'Duplicate', 'OMS']);
+    assert.equal(env.run('getAssignments', 'OMS')[0].status, 'Assigned');
+  });
+
+  test('pressing Record after filing adds nothing to either sheet', () => {
+    const env = envFor(USERS.omsAdmin);
+    const id = assign(env, { date: ymd(-1) });
+    env.sheet('TST Approvals (New)').values.push([USERS.omsTeacher, 'Tina Teacher', 'Ted Teacher', '',
+      ymd(-1), OMS_PERIOD, 'Full Period', 1, true, ymd(0), false, '', '', 'OMS']);
+    const approvals = env.sheet('TST Approvals (New)').values.length;
+    const responses = env.sheet('Form Responses 1').values.length;
+
+    env.run('recordAssignment', id, USERS.omsTeacher);
+
+    assert.equal(assignmentSheetRows(env)[0][16], 'Recorded');
+    assert.equal(env.sheet('TST Approvals (New)').values.length, approvals);
+    assert.equal(env.sheet('Form Responses 1').values.length, responses, 'no stray form row');
+  });
+
+  test('nobody is nudged about hours they already filed', () => {
+    const env = envFor(USERS.omsAdmin);
+    assign(env, { date: ymd(-2) });
+    env.sheet('TST Approvals (New)').values.push([USERS.omsTeacher, 'Tina Teacher', 'Ted Teacher', '',
+      ymd(-2), OMS_PERIOD, 'Full Period', 1, false, '', false, '', '', 'OMS']);
+    env.sheet('Email Queue').values = env.sheet('Email Queue').values.slice(0, 1);
+
+    assert.equal(env.callInternal('nudgeOutstandingAssignments_'), 0);
+    assert.equal(queued(env).length, 0);
+  });
+
   // ---- cancelAssignment ------------------------------------------------------
 
   test('cancelling marks the row and emails both staff', () => {

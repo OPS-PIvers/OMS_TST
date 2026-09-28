@@ -2753,6 +2753,15 @@ function processEarnedSubmission_(data) {
       "",             // M: Denial Reason
       earnerBuilding  // N: Building
     ]);
+
+    // Filed through the Submit form or the Google Form rather than the Record
+    // button: the assignment it answers is recorded now, not left "Not recorded".
+    // A sheet that doesn't exist yet has nothing to link.
+    if (ss.getSheetByName(ASSIGNMENTS_SHEET_)) {
+      linkFiledAssignments_(assignmentRows_(a =>
+        a.status === ASSIGNMENT_STATUS_.assigned &&
+        a.subEmail.trim().toLowerCase() === keyEmail && a.date === keyDate));
+    }
   } finally {
     try { lock.releaseLock(); } catch (e) {}
   }
@@ -4520,7 +4529,7 @@ function getAssignments(buildingFilter) {
 }
 
 function assignmentsFor_(building) {
-  return assignmentRows_(a => a.building === building)
+  return linkFiledAssignments_(assignmentRows_(a => a.building === building))
     .map(a => Object.assign({}, a, {
       // google.script.run turns a whole response into null if it holds a single
       // Date, and the client reads null as "no assignments". Send strings.
@@ -4548,9 +4557,9 @@ function getMyAssignments(targetEmail) {
   assertSelfOrManagerOf_(email);
   const lower = email.toLowerCase();
 
-  return assignmentRows_(a =>
+  return linkFiledAssignments_(assignmentRows_(a =>
     a.status !== ASSIGNMENT_STATUS_.cancelled &&
-    (a.subEmail.toLowerCase() === lower || a.coveredForEmail.toLowerCase() === lower))
+    (a.subEmail.toLowerCase() === lower || a.coveredForEmail.toLowerCase() === lower)))
     .map(a => {
       const covering = a.subEmail.toLowerCase() === lower;
       return {
@@ -4593,6 +4602,11 @@ function recordAssignment_(id, by) {
     [A_.recordedBy]: by
   });
   SpreadsheetApp.flush();
+
+  // Filed through the Submit form already: the claim above is the whole job.
+  // Submitting again would leave a stray Form Responses row behind it, and a second
+  // pending request if the bell times were edited between the two.
+  if (findEarnedRowForAssignment_(a)) return findAssignment_(id) || a;
 
   try {
     submitEarned_({
@@ -4681,24 +4695,80 @@ function cancelAssignment(id) {
   return { cancelled: true };
 }
 
-/** The earned request an assignment produced, matched the way submissions are deduped. */
+/**
+ * The part of a period label that names the period: "Period 3 - 9:52 - 10:39" and a
+ * legacy "3" both read "period 3". Mirrors schedulePeriodKey() in Index.html, so a
+ * request filed before an admin edited the bell times still matches its assignment.
+ */
+function periodKey_(label) {
+  const s = String(label == null ? '' : label).split(' - ')[0].trim().toLowerCase();
+  return /^[0-9]/.test(s) ? 'period ' + s : s;
+}
+
+/** Same person, same date, same period: a person cannot cover one period twice. */
+function earnedKey_(email, date, period) {
+  return [String(email || '').trim().toLowerCase(), normDateKey_(date), periodKey_(period)].join('|');
+}
+
+/**
+ * The earned request an assignment produced, or the one the teacher filed for it
+ * on their own. Denied rows are not it.
+ */
 function findEarnedRowForAssignment_(a) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('TST Approvals (New)');
   if (!sheet) return null;
   const data = sheet.getDataRange().getValues();
-  const email = a.subEmail.toLowerCase();
-  const period = a.period.trim();
+  const key = earnedKey_(a.subEmail, a.date, a.period);
 
   for (let i = 1; i < data.length; i++) {
     const r = data[i];
     if (!r[0]) continue;
-    if (r[0].toString().trim().toLowerCase() !== email) continue;
-    if (normDateKey_(r[4]) !== a.date) continue;
-    if ((r[5] || '').toString().trim() !== period) continue;
-    if (r[10] === true || r[10] === 'TRUE') continue; // denied rows are not this one
+    if (r[10] === true || r[10] === 'TRUE') continue;
+    if (earnedKey_(r[0], r[4], r[5]) !== key) continue;
     return { rowIndex: i + 1, approved: r[8] === true || r[8] === 'TRUE' };
   }
   return null;
+}
+
+/**
+ * Marks assignments Recorded when the teacher already filed the hours themselves
+ * through the Submit form or the Google Form, instead of pressing Record.
+ *
+ * Without this the assignment sat at "Not recorded" while the teacher's history
+ * showed the hours approved — and the only button that looked like a way out was
+ * Cancel, which emails both staff that the coverage was called off. Recorded By is
+ * "filed" so the Assignments list can say how it was recorded. Mutates and returns
+ * the list it is given, so callers read the corrected status straight away.
+ */
+function linkFiledAssignments_(assignments) {
+  const open = (assignments || []).filter(a => a.status === ASSIGNMENT_STATUS_.assigned);
+  if (open.length === 0) return assignments;
+
+  const approvals = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('TST Approvals (New)');
+  if (!approvals) return assignments;
+
+  const filed = new Set();
+  const data = approvals.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    const r = data[i];
+    if (!r[0] || r[10] === true || r[10] === 'TRUE') continue;
+    filed.add(earnedKey_(r[0], r[4], r[5]));
+  }
+
+  const sheet = assignmentsSheet_();
+  open.forEach(a => {
+    if (!filed.has(earnedKey_(a.subEmail, a.date, a.period))) return;
+    const now = new Date();
+    setAssignmentCells_(sheet, a.rowIndex, {
+      [A_.status]: ASSIGNMENT_STATUS_.recorded,
+      [A_.recordedTs]: now,
+      [A_.recordedBy]: 'filed'
+    });
+    a.status = ASSIGNMENT_STATUS_.recorded;
+    a.recordedTs = now;
+    a.recordedBy = 'filed';
+  });
+  return assignments;
 }
 
 /** Admin action: re-send the Record email for an assignment nobody has acted on. */
@@ -4730,6 +4800,8 @@ function nudgeOutstandingAssignments(e) {
 
 function nudgeOutstandingAssignments_() {
   const sheet = assignmentsSheet_();
+  // Someone who filed the hours through the Submit form has nothing to be reminded of.
+  linkFiledAssignments_(assignmentRows_(a => a.status === ASSIGNMENT_STATUS_.assigned));
   const due = assignmentRows_(a => {
     if (a.status !== ASSIGNMENT_STATUS_.assigned || a.nudgedTs) return false;
     const age = daysSinceDate_(a.date);
@@ -4881,13 +4953,97 @@ function assignmentConfirmedPage_(a, already) {
  *   STATE.building). Availability rows aren't building-tagged and buildings can share
  *   period names (e.g. "Time Range"), so only this building's members are replaced.
  */
-function updateSchedulePeriod(month, period, dayUpdates, building) {
+// ===== Schedule notes =====
+// An admin's note on one cell of the Master Schedule — a month, period and weekday
+// in one building — for the things availability can't say: "7th grade team
+// meeting", so a teacher who put their name down there isn't picked anyway. Admin
+// only, both ways: it is the admin's planning, not something teachers are shown.
+
+const SCHEDULE_NOTES_SHEET_ = 'TST Schedule Notes';
+const SCHEDULE_NOTES_HEADER_ = ['Building', 'Month', 'Period', 'Day', 'Note', 'Updated', 'Updated By'];
+const SCHEDULE_DAYS_ = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+
+function scheduleNotesSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(SCHEDULE_NOTES_SHEET_);
+  if (!sheet) {
+    sheet = ss.insertSheet(SCHEDULE_NOTES_SHEET_);
+    sheet.appendRow(SCHEDULE_NOTES_HEADER_.slice());
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+/** { month: { period: { Mon: note, ... } } } for one building. */
+function scheduleNotesFor_(building) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SCHEDULE_NOTES_SHEET_);
+  const out = {};
+  if (!sheet) return out;
+  const data = sheet.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    const [b, month, period, day, note] = data[i];
+    if ((b || '').toString() !== building || !note) continue;
+    const m = month.toString(), p = period.toString(), d = day.toString();
+    if (!out[m]) out[m] = {};
+    if (!out[m][p]) out[m][p] = {};
+    out[m][p][d] = note.toString();
+  }
+  return out;
+}
+
+/** Admin read: the notes for the Master Schedule, same building rule as the grid. */
+function getScheduleNotes(buildingFilter) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  return scheduleNotesFor_(allowedBuildingFor_(ctx, buildingFilter) || ctx.building);
+}
+
+/**
+ * Replaces one period's notes for a month — or, with allMonths, for every month,
+ * since a standing team meeting is usually the same all year. A blank note removes
+ * that day's note. Only this building's rows are touched.
+ */
+function saveScheduleNotes_(building, month, period, dayNotes, allMonths, byEmail) {
+  const months = allMonths ? MONTH_ORDER.slice() : [month];
+  const sheet = scheduleNotesSheet_();
+  const data = sheet.getDataRange().getValues();
+
+  // Bottom-up, so the row numbers still ahead of us stay valid.
+  for (let i = data.length - 1; i >= 1; i--) {
+    const r = data[i];
+    if ((r[0] || '').toString() === building &&
+        months.includes((r[1] || '').toString()) &&
+        (r[2] || '').toString() === period) {
+      sheet.deleteRow(i + 1);
+    }
+  }
+
+  const now = new Date();
+  const rows = [];
+  months.forEach(m => {
+    SCHEDULE_DAYS_.forEach(d => {
+      const note = ((dayNotes || {})[d] || '').toString().trim().slice(0, 200);
+      if (note) rows.push([building, m, period, d, note, now, byEmail]);
+    });
+  });
+  if (rows.length > 0) {
+    sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
+  }
+}
+
+/**
+ * dayNotes (optional): { Mon: 'note', ... } — omitted, the period's notes are left
+ * as they are. notesAllMonths applies them to every month rather than just this one.
+ */
+function updateSchedulePeriod(month, period, dayUpdates, building, dayNotes, notesAllMonths) {
   const ctx = getUserContext();
   assertAdmin_(ctx);
   const effectiveBuilding = allowedBuildingFor_(ctx, building);
   if (!effectiveBuilding) {
     throw new Error('You can only edit the schedule for your own building(s).');
   }
+  const hasNotes = !!dayNotes && typeof dayNotes === 'object';
+  if (hasNotes && !MONTH_ORDER.includes(month)) throw new Error('Unknown month: ' + month);
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('TST Availability');
@@ -4942,7 +5098,11 @@ function updateSchedulePeriod(month, period, dayUpdates, building) {
   if (newRows.length > 0) {
     sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, newRows[0].length).setValues(newRows);
   }
-  
+
+  if (hasNotes) {
+    saveScheduleNotes_(effectiveBuilding, month, period, dayNotes, !!notesAllMonths, ctx.email);
+  }
+
   return true;
 }
 

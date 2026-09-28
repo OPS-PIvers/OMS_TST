@@ -3402,6 +3402,11 @@
       }
       if (a.status === 'Recorded') {
         const byAdmin = /^admin:/.test(a.recordedBy || '');
+        // 'filed': the teacher submitted the hours through the Submit form instead
+        // of pressing Record, and the server matched the request to this assignment.
+        if (a.recordedBy === 'filed') {
+          return `<span class="text-xs font-bold px-2 py-1 rounded-full bg-green-100 text-green-700" title="Filed through the Submit form rather than the Record button">Recorded (filed)</span>`;
+        }
         return `<span class="text-xs font-bold px-2 py-1 rounded-full bg-green-100 text-green-700">Recorded${byAdmin ? ' by admin' : ''}</span>`;
       }
       if (a.outstanding) {
@@ -5095,12 +5100,28 @@
     }
 
     function loadAdminSchedule() {
-       google.script.run.withSuccessHandler(data => {
+       // The grid and the admin's notes on it come back separately; draw once both are in.
+       let data = null, notes = null;
+       const done = () => {
+         if (data === null || notes === null) return;
          STATE.scheduleData = data; // Save to state for editing
+         STATE.scheduleNotes = notes;
          STATE.editingSchedule = null; // Reset edit state
          renderAdminSchedule();
          showLoading(false);
-       }).getScheduleData(STATE.building);
+       };
+       google.script.run.withSuccessHandler(d => { data = d || {}; done(); }).getScheduleData(STATE.building);
+       // Notes are an extra: if they fail to load, the grid still shows without them.
+       google.script.run
+         .withSuccessHandler(n => { notes = n || {}; done(); })
+         .withFailureHandler(() => { notes = {}; done(); })
+         .getScheduleNotes(STATE.building);
+    }
+
+    /** The admin's note on one grid cell, or ''. */
+    function scheduleNoteFor(month, period, day) {
+       const m = (STATE.scheduleNotes || {})[month] || {};
+       return (m[period] || {})[day] || '';
     }
 
     function renderAdminSchedule() {
@@ -5145,7 +5166,11 @@
                  STATE.expandedMonths.add(accordionId);
              }
              const isOpen = STATE.expandedMonths.has(accordionId);
-             const contentClass = isOpen ? "border-t border-gray-200 p-1 overflow-x-auto" : "hidden border-t border-gray-200 p-1 overflow-x-auto";
+             // The month body is its own scroll box (capped at most of the screen) so the
+             // day-of-week row stays pinned while scrolling down the periods. It can't pin
+             // to the page itself: the card clips its overflow, which stops sticky there.
+             const scrollBox = "border-t border-gray-200 p-1 overflow-auto max-h-[75vh]";
+             const contentClass = isOpen ? scrollBox : "hidden " + scrollBox;
              const iconClass = isOpen ? "fas fa-chevron-down text-gray-400 transition-transform rotate-180" : "fas fa-chevron-down text-gray-400 transition-transform";
              
              return `
@@ -5168,8 +5193,8 @@
                       </colgroup>
                       <thead>
                         <tr>
-                          <th class="px-4 py-3 bg-gray-50 text-left text-xs font-bold text-gray-500 uppercase tracking-wider sticky left-0 z-10 border-b border-gray-200 bg-opacity-95 backdrop-blur">Period</th>
-                          ${DAYS.map(d => `<th class="px-4 py-3 bg-gray-50 text-left text-xs font-bold text-gray-500 uppercase tracking-wider border-b border-gray-200">${d}</th>`).join('')}
+                          <th class="px-4 py-3 bg-gray-50 text-left text-xs font-bold text-gray-500 uppercase tracking-wider sticky top-0 left-0 z-30 border-b border-gray-200">Period</th>
+                          ${DAYS.map(d => `<th class="px-4 py-3 bg-gray-50 text-left text-xs font-bold text-gray-500 uppercase tracking-wider sticky top-0 z-20 border-b border-gray-200 shadow-sm">${d}</th>`).join('')}
                         </tr>
                       </thead>
                       <tbody class="bg-white divide-y divide-gray-200">
@@ -5193,6 +5218,10 @@
                                        <button onclick="cancelAdminScheduleEdit()" class="bg-gray-300 hover:bg-gray-400 text-gray-700 text-xs px-2 py-1.5 rounded font-bold transition">
                                          Cancel
                                        </button>
+                                       <label class="flex items-start gap-1.5 mt-1 text-[11px] font-normal text-gray-600 cursor-pointer" title="Standing meetings are usually the same all year">
+                                         <input type="checkbox" ${STATE.editingSchedule.notesAllMonths ? 'checked' : ''} onchange="STATE.editingSchedule.notesAllMonths = this.checked" class="mt-0.5 rounded border-gray-300 text-ops-blue">
+                                         Apply notes to every month
+                                       </label>
                                      </div>
                                    </div>
                                  </td>
@@ -5227,6 +5256,10 @@
                                           >
                                           <div class="hidden absolute z-50 w-full bg-white border border-gray-200 shadow-lg rounded mt-1 max-h-48 overflow-y-auto text-xs" id="ac-${month}-${p.replace(/[^a-zA-Z0-9]/g,'')}-${d}"></div>
                                         </div>
+                                        <!-- Kept in STATE as it is typed, so adding or removing a teacher (which redraws) doesn't lose it. -->
+                                        <textarea rows="2" maxlength="200" placeholder="Note (e.g. 7th grade team meeting)" data-day="${d}"
+                                          oninput="STATE.editingSchedule.notes[this.dataset.day] = this.value"
+                                          class="mt-2 w-full text-xs border border-amber-300 bg-amber-50 rounded px-2 py-1.5 focus:ring-2 focus:ring-amber-400 focus:border-amber-400">${escapeHtml(STATE.editingSchedule.notes[d] || '')}</textarea>
                                       </td>
                                     `;
                                  }).join('')}
@@ -5246,9 +5279,13 @@
                                 </td>
                                 ${DAYS.map(d => {
                                    const teachers = matrix[p][d].sort((a,b) => a.hours - b.hours);
+                                   const cellNote = scheduleNoteFor(month, p, d);
                                    return `
                                      <td class="px-2 py-2 align-top border-r border-gray-100 last:border-r-0">
                                        <div class="space-y-2">
+                                         ${cellNote ? `<div class="flex items-start gap-1.5 text-[11px] leading-snug text-amber-900 bg-amber-50 border border-amber-300 rounded px-2 py-1 break-words" title="Admin note">
+                                           <i class="fas fa-sticky-note text-amber-500 mt-0.5"></i><span>${escapeHtml(cellNote)}</span>
+                                         </div>` : ''}
                                          ${teachers.length === 0 ? '<span class="text-xs text-gray-300 italic">No coverage</span>' : 
                                            teachers.map(t => {
                                              // Only the pending requests for this cell — month,
@@ -5422,10 +5459,15 @@
          });
       });
 
+      const notes = {};
+      DAYS.forEach(d => notes[d] = scheduleNoteFor(month, period, d));
+
       STATE.editingSchedule = {
         month: month,
         period: period,
-        changes: changes
+        changes: changes,
+        notes: notes,
+        notesAllMonths: false
       };
       
       renderAdminSchedule();
@@ -5490,6 +5532,8 @@
       if (!STATE.editingSchedule) return;
       
       const dayUpdates = STATE.editingSchedule.changes; // { "Mon": [emails]... }
+      const dayNotes = STATE.editingSchedule.notes;     // { "Mon": "Team meeting", ... }
+      const allMonths = !!STATE.editingSchedule.notesAllMonths;
       
       showLoading(true);
       google.script.run.withSuccessHandler(() => {
@@ -5500,7 +5544,7 @@
       }).withFailureHandler(err => {
          showLoading(false);
          showToast("Error saving schedule: " + err, "error");
-      }).updateSchedulePeriod(month, period, dayUpdates, STATE.building);
+      }).updateSchedulePeriod(month, period, dayUpdates, STATE.building, dayNotes, allMonths);
     }
 
     /**
@@ -5569,7 +5613,7 @@
 
           <div class="mb-4">
             <label class="block text-sm font-bold text-ops-gray-dark mb-2">Date Needed</label>
-            <input type="date" name="date" value="${escapeHtml(pre.date || '')}" required class="block w-full rounded border-gray-300 p-2 border focus:border-ops-blue focus:ring-1 focus:ring-ops-blue">
+            <input type="date" name="date" value="${escapeHtml(pre.date || '')}" required oninput="refreshAssignThankYou(this.form)" class="block w-full rounded border-gray-300 p-2 border focus:border-ops-blue focus:ring-1 focus:ring-ops-blue">
             ${month ? `<p class="text-xs text-gray-400 mt-1">Month: ${escapeHtml(month)}</p>` : ''}
           </div>
 
@@ -5596,7 +5640,7 @@
 
           <div class="mb-6 border-t border-gray-200 pt-4">
             <label class="block text-sm font-bold text-ops-gray-dark mb-2">Note <span class="font-normal text-ops-gray">(optional)</span></label>
-            <textarea name="note" rows="2" placeholder="e.g. Sub plans are on the desk" class="block w-full rounded border-gray-300 p-2 border text-sm"></textarea>
+            <textarea name="note" rows="3" data-auto="1" oninput="this.dataset.auto = '0'" placeholder="e.g. Sub plans are on the desk" class="block w-full rounded border-gray-300 p-2 border text-sm">${escapeHtml(assignThankYouNote(pre.date))}</textarea>
             <div class="flex flex-wrap gap-4 mt-2">
               <label class="flex items-center text-xs text-ops-gray-dark">
                 <input type="checkbox" name="noteToSub" checked class="rounded border-gray-300 text-ops-blue mr-2"> Include for the person covering
@@ -5616,6 +5660,25 @@
         </form>`;
 
       showModal("Assign Coverage", modalContent);
+    }
+
+    /**
+     * The note the Assign modal starts with. It is only a starting point: the admin
+     * can edit it or clear it, and once they type in it, changing the date leaves
+     * their wording alone.
+     */
+    function assignThankYouNote(ymd) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd || '');
+      const when = m
+        ? ' on ' + new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+        : '';
+      return `Thank you for being available for TST coverage${when}. We appreciate your willingness to help!`;
+    }
+
+    function refreshAssignThankYou(form) {
+      if (form && form.note && form.note.dataset.auto === '1') {
+        form.note.value = assignThankYouNote(form.date.value);
+      }
     }
 
     function toggleAssignSubInput(val) {
