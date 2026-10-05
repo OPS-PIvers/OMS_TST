@@ -3415,10 +3415,34 @@
       return `<span class="text-xs font-bold px-2 py-1 rounded-full bg-ops-blue-lighter text-ops-blue-dark">Upcoming</span>`;
     }
 
+    /**
+     * Recorded and cancelled assignments are finished business, so the list opens on
+     * the ones still open (upcoming, or past and not recorded) and keeps the rest
+     * behind "Show history". Nothing is moved or deleted — the toggle only changes
+     * what is drawn, and it stays as set for the rest of the session.
+     */
+    function isAssignmentHistory(a) {
+      return a.status === 'Recorded' || a.status === 'Cancelled';
+    }
+
+    function toggleAssignmentHistory() {
+      STATE.showAssignmentHistory = !STATE.showAssignmentHistory;
+      renderAdminAssignments(STATE.assignments || []);
+    }
+
     function renderAdminAssignments(list) {
       const outstanding = list.filter(a => a.outstanding).length;
+      const historyCount = list.filter(isAssignmentHistory).length;
+      const showHistory = !!STATE.showAssignmentHistory;
+      const shown = showHistory ? list : list.filter(a => !isAssignmentHistory(a));
 
-      const rows = list.map(a => {
+      const historyToggle = historyCount > 0
+        ? `<button onclick="toggleAssignmentHistory()" class="text-sm font-bold text-ops-blue hover:text-ops-blue-dark">
+             <i class="fas ${showHistory ? 'fa-eye-slash' : 'fa-history'} mr-1"></i>${showHistory ? 'Hide' : 'Show'} recorded &amp; cancelled (${historyCount})
+           </button>`
+        : '';
+
+      const rows = shown.map(a => {
         const open = a.status === 'Assigned';
         const actions = [];
         if (open) {
@@ -3453,11 +3477,18 @@
               ? `<span class="bg-white text-ops-red font-bold text-sm px-3 py-1 rounded-full shadow-sm">${outstanding} not recorded</span>`
               : ''}
           </div>
+          ${historyToggle ? `<div class="px-6 py-2 border-b border-gray-200 bg-gray-50 flex justify-end">${historyToggle}</div>` : ''}
           ${list.length === 0
             ? `<div class="p-12 text-center text-ops-gray">
                  <i class="fas fa-calendar-plus text-4xl mb-3 text-gray-300"></i>
                  <p class="font-bold text-ops-gray-dark">No assignments yet.</p>
                  <p class="text-sm">Assign coverage from the Schedule tab.</p>
+               </div>`
+            : shown.length === 0
+            ? `<div class="p-12 text-center text-ops-gray">
+                 <i class="fas fa-check-circle text-4xl mb-3 text-gray-300"></i>
+                 <p class="font-bold text-ops-gray-dark">Nothing open.</p>
+                 <p class="text-sm">Every assignment has been recorded or cancelled.</p>
                </div>`
             : `<div class="overflow-x-auto">
                  <table class="min-w-full">
@@ -5129,8 +5160,6 @@
        if (!scheduleData) return;
 
        if (!STATE.expandedMonths) STATE.expandedMonths = new Set();
-       const periods = getPeriods();
-       const comparePeriods = schedulePeriodsAreComparable();
 
        const html = `
          <div class="space-y-4">
@@ -5142,23 +5171,6 @@
            </div>
            
            ${MONTHS.map((month, index) => {
-             // Build matrix: Period x Day -> [Teachers]
-             const matrix = {};
-             periods.forEach(p => {
-               matrix[p] = {};
-               DAYS.forEach(d => matrix[p][d] = []);
-             });
-             
-             (scheduleData[month] || []).forEach(entry => {
-               const dayList = entry.days.split(',');
-               dayList.forEach(day => {
-                 // Check if period still exists (config might have changed, or data is old)
-                 if (matrix[entry.period] && matrix[entry.period][day]) {
-                   matrix[entry.period][day].push(entry);
-                 }
-               });
-             });
-
              // State Persistence Logic
              const accordionId = `admin-month-${index}`;
              // If we are editing this month, force it open
@@ -5183,7 +5195,47 @@
                    <i id="icon-admin-month-${index}" class="${iconClass}"></i>
                  </button>
                  
-                 <div id="content-admin-month-${index}" class="${contentClass}">
+                 <div id="content-admin-month-${index}" data-month="${month}" data-rendered="${isOpen ? '1' : ''}" class="${contentClass}">
+                    ${isOpen ? adminScheduleMonthBody(month) : ''}
+                 </div>
+               </div>
+             `;
+           }).join('')}
+         </div>
+       `;
+       
+       document.getElementById('view-container').innerHTML = html;
+    }
+
+    /**
+     * One month's grid of the Master Schedule. Only the months that are open are
+     * drawn — toggleAccordion draws the rest the first time they are opened. Every
+     * month used to be built up front and then hidden, which is most of the work in
+     * opening the tab, and an admin rarely needs more than the current month.
+     */
+    function adminScheduleMonthBody(month) {
+       const scheduleData = STATE.scheduleData || {};
+       const periods = getPeriods();
+       const comparePeriods = schedulePeriodsAreComparable();
+
+       // Build matrix: Period x Day -> [Teachers]
+       const matrix = {};
+       periods.forEach(p => {
+         matrix[p] = {};
+         DAYS.forEach(d => matrix[p][d] = []);
+       });
+
+       (scheduleData[month] || []).forEach(entry => {
+         const dayList = entry.days.split(',');
+         dayList.forEach(day => {
+           // Check if period still exists (config might have changed, or data is old)
+           if (matrix[entry.period] && matrix[entry.period][day]) {
+             matrix[entry.period][day].push(entry);
+           }
+         });
+       });
+
+       return `
                     <!-- Fixed layout: the Period column gets a set width and the five days split the
                          rest evenly, so the week fits the card. Below the min width it scrolls. -->
                     <table class="w-full min-w-[56rem] table-fixed divide-y divide-gray-200 border-separate" style="border-spacing: 0;">
@@ -5413,14 +5465,7 @@
                         }).join('')}
                       </tbody>
                     </table>
-                 </div>
-               </div>
-             `;
-           }).join('')}
-         </div>
        `;
-       
-       document.getElementById('view-container').innerHTML = html;
     }
 
     function toggleAccordion(id) {
@@ -5430,6 +5475,11 @@
        if (!STATE.expandedMonths) STATE.expandedMonths = new Set();
 
        if (content.classList.contains('hidden')) {
+         // A Master Schedule month is drawn the first time it is opened.
+         if (content.dataset.month && content.dataset.rendered !== '1') {
+           content.innerHTML = adminScheduleMonthBody(content.dataset.month);
+           content.dataset.rendered = '1';
+         }
          content.classList.remove('hidden');
          icon.classList.add('rotate-180');
          STATE.expandedMonths.add(id);
