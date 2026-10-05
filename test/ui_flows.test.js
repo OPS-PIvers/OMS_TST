@@ -202,4 +202,16 @@ exports.run = function ({ test, assert }) {
       assert.ok(html.includes('.' + fn + '('), `Index.html should call ${fn}()`);
     });
   });
+
+  // The page's CSS is pre-built (npm run build:css) and inlined. CI also checks it
+  // is up to date; these hold the shape without needing node_modules.
+  test('the page carries its own Tailwind CSS and does not load the Play CDN', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'Index.html'), 'utf8');
+    assert.ok(!/cdn\.tailwindcss\.com/.test(html), 'Index.html loads the Tailwind Play CDN again');
+    const m = /BEGIN generated Tailwind CSS[^*]*\*\/([\s\S]*?)\/\* END generated Tailwind CSS/.exec(html);
+    assert.ok(m, 'the generated Tailwind CSS block is missing');
+    assert.ok(m[1].length > 10000, 'the generated Tailwind CSS block is empty — run npm run build:css');
+    assert.ok(m[1].includes('.bg-ops-blue{') || m[1].includes('.bg-ops-blue {'),
+      'the OPS theme colours are missing from the generated CSS');
+  });
 };

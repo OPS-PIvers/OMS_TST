@@ -28,3 +28,11 @@ jobs:
       # Apps Script services. See test/README.md.
       - name: Run tests
         run: node test/run.js
+
+      # Index.html carries its Tailwind CSS inline (built by scripts/build-css.js).
+      # A class added without rebuilding would have no styles, so a stale block
+      # fails here rather than reaching staff.
+      - name: Check inlined Tailwind CSS is up to date
+        run: |
+          npm ci
+          npm run check:css
