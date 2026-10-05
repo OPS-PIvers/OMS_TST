@@ -1797,10 +1797,17 @@ function getPendingEarned(buildingFilter) {
 
 // Pending (not approved, not denied) earned rows for one building. Callers are
 // responsible for authorizing the building.
-function pendingEarnedFor_(building) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName('TST Approvals (New)');
-  const data = sheet.getDataRange().getValues();
+// approvalsValues: the sheet's getValues(), header included, when the caller has
+// already read it (the Master Schedule needs it twice); left untouched.
+function pendingEarnedFor_(building, approvalsValues) {
+  let data;
+  if (approvalsValues) {
+    data = approvalsValues.slice();
+  } else {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('TST Approvals (New)');
+    data = sheet.getDataRange().getValues();
+  }
   data.shift();
 
   return data.map((r, i) => {
@@ -3519,13 +3526,20 @@ function scheduleData_(effectiveFilter, onlyEmail) {
   const balances = calculateDynamicBalances_(null);
   const memberEmails = scheduleMembers_(effectiveFilter, balances);
 
-  // 2. Get Pending Requests Map (same building as the schedule)
-  const pendingMap = getPendingEarnedMap_(effectiveFilter);
+  // 2. Get Pending Requests Map (same building as the schedule). The Approvals and
+  //    Assignments sheets are read once here and shared by everything below.
+  const approvalsSheet = ss.getSheetByName('TST Approvals (New)');
+  const approvalsValues = approvalsSheet ? approvalsSheet.getDataRange().getValues() : [[]];
+  const allAssignments = assignmentRows_();
+  const pendingMap = getPendingEarnedMap_(effectiveFilter, approvalsValues);
+
+  // 2a. Hours already committed but not yet in `hours` — see scheduledHoursMap_.
+  const scheduledMap = scheduledHoursMap_(allAssignments, approvalsValues);
 
   // 2b. Coverage already assigned in this building. The hourglass only knows about
   //     a request someone filed; this is the assignment itself, so a person who was
   //     given coverage and never submitted the form is still visibly taken.
-  const assignedMap = assignedCoverageMap_(effectiveFilter);
+  const assignedMap = assignedCoverageMap_(effectiveFilter, allAssignments);
 
   // 3. Process Schedule Data
   // We return a structured object: { "September": [ { name, email, days, period, hours, pendingRequests }, ... ], ... }
@@ -3566,9 +3580,10 @@ function scheduleData_(effectiveFilter, onlyEmail) {
 
     if (schedule[month]) {
       const hours = (balances[emailKey] || {}).earned || 0;
+      const scheduledHours = scheduledMap[emailKey] || 0;
       const items = monthItems(emailKey, month);
       schedule[month].push({
-        month, days, period, name, email, hours,
+        month, days, period, name, email, hours, scheduledHours,
         pendingRequests: items.pending,
         assignments: items.assigned
       });
@@ -3597,12 +3612,12 @@ function scheduleData_(effectiveFilter, onlyEmail) {
  * drop it into the one grid cell that would double-book it. The date itself is
  * what the admin asked to see, so it travels pre-formatted.
  */
-function assignedCoverageMap_(building) {
+function assignedCoverageMap_(building, allAssignments) {
   const hasCalendar = !!calendarIdFor_(building);
   const calendarName = hasCalendar ? calendarNameFor_(building) : '';
   const map = {};
 
-  assignmentRows_(a => a.building === building &&
+  (allAssignments || assignmentRows_()).filter(a => a.building === building &&
                        a.status !== ASSIGNMENT_STATUS_.cancelled).forEach(a => {
     const key = a.subEmail.toString().trim().toLowerCase();
     const day = parseYmd_(a.date);
@@ -3639,9 +3654,52 @@ function assignedCoverageMap_(building) {
   return map;
 }
 
+/**
+ * Coverage hours a person is already committed to but that are not in their
+ * approved `hours` yet, keyed by lowercased sub email — the "(+2 scheduled)" beside
+ * the number on the Master Schedule. The grid sorts on the two together, so the
+ * person who is booked for next week is not offered first just because the hours
+ * have not been approved; `hours` itself is unchanged and still equals the
+ * Directory's Earned column.
+ *
+ * An assignment counts until its hours are approved, at which point they are in
+ * `hours` instead — so nothing is counted twice:
+ *   - Assigned (upcoming, or past and not filed): counts, unless an approved
+ *     request already matches it.
+ *   - Recorded: counts only while its request is pending. A denied or deleted
+ *     request means those hours are not coming.
+ *   - Cancelled: never.
+ * Combined across buildings, like `hours`. Matched on email + date + period name
+ * (earnedKey_), the same rule linkFiledAssignments_ uses.
+ */
+function scheduledHoursMap_(allAssignments, approvalsValues) {
+  const approved = new Set();
+  const pending = new Set();
+  for (let i = 1; i < approvalsValues.length; i++) {
+    const r = approvalsValues[i];
+    if (!r[0]) continue;
+    const key = earnedKey_(r[0], r[4], r[5]);
+    if (r[8] === true || r[8] === 'TRUE') approved.add(key);
+    else if (!(r[10] === true || r[10] === 'TRUE')) pending.add(key);
+  }
+
+  const map = {};
+  allAssignments.forEach(a => {
+    if (a.status === ASSIGNMENT_STATUS_.cancelled) return;
+    const key = earnedKey_(a.subEmail, a.date, a.period);
+    if (approved.has(key)) return;
+    if (a.status === ASSIGNMENT_STATUS_.recorded && !pending.has(key)) return;
+    const who = a.subEmail.toString().trim().toLowerCase();
+    if (!who) return;
+    map[who] = (map[who] || 0) + (Number(a.hours) || 0);
+  });
+  Object.keys(map).forEach(k => { map[k] = Math.round(map[k] * 100) / 100; });
+  return map;
+}
+
 // Pending earned requests for one building, keyed by lowercased email.
-function getPendingEarnedMap_(building) {
-  const pendingList = pendingEarnedFor_(building);
+function getPendingEarnedMap_(building, approvalsValues) {
+  const pendingList = pendingEarnedFor_(building, approvalsValues);
   const map = {};
 
   pendingList.forEach(item => {
