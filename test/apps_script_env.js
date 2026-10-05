@@ -368,6 +368,9 @@ function createEnv(options) {
     callInternal(fnName, ...args) {
       const fn = context[fnName];
       if (typeof fn !== 'function') throw new Error('No such server function: ' + fnName);
+      // Each call is its own Apps Script execution, which starts with fresh
+      // globals — so nothing Code.js caches for one request reaches the next.
+      if (typeof context.resetExecutionCache_ === 'function') context.resetExecutionCache_();
       return fn(...args);
     },
     /** Runs fn and returns { ok, value } or { ok: false, error }. */

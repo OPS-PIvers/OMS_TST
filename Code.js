@@ -218,10 +218,30 @@ function saveMyPreferences(prefs) {
 }
 
 /**
+ * App Config rows, read once per execution. Formatting a period or naming a
+ * calendar asks for the config, and the queues do that for every assignment, so
+ * re-reading the sheet each time made the Assignments, Schedule and badge calls
+ * slower with every assignment ever made. Apps Script starts every execution
+ * (each google.script.run call, each trigger run) with fresh globals, so this
+ * never outlives one request. saveBuildingConfig clears it after writing.
+ *
+ * The raw rows are kept, not parsed objects, so every getConfig() caller still
+ * gets its own copy to change.
+ */
+let configRowsMemo_ = null;
+
+/** Drops this execution's cached reads. The tests call it between simulated requests. */
+function resetExecutionCache_() {
+  configRowsMemo_ = null;
+}
+
+/**
  * Loads configuration from 'App Config' sheet.
  * Initializes the sheet with default config if it doesn't exist.
  */
 function getConfig() {
+  if (configRowsMemo_) return parseConfigRows_(configRowsMemo_);
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName('App Config');
   
@@ -241,7 +261,11 @@ function getConfig() {
   
   const data = sheet.getDataRange().getValues();
   data.shift(); // Remove Header
-  
+  configRowsMemo_ = data;
+  return parseConfigRows_(data);
+}
+
+function parseConfigRows_(data) {
   const config = {};
   data.forEach(row => {
     const code = row[0];
@@ -319,6 +343,7 @@ function saveBuildingConfig(buildingCode, newConfigObj) {
     // Create new
     sheet.appendRow([buildingCode, jsonString]);
   }
+  configRowsMemo_ = null; // the rest of this execution must see what was just saved
 
   return true;
 }
@@ -1604,7 +1629,7 @@ function directoryFor_(ctx, building, targetEmail, includeArchived) {
  * Private: callers are responsible for authorizing the building (see
  * getStaffDirectoryData for the client-facing, role-aware version).
  */
-function staffDirectoryData_(buildingFilter, targetEmail, includeArchived) {
+function staffDirectoryData_(buildingFilter, targetEmail, includeArchived, balancesIn) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('Staff Directory');
   const data = sheet.getDataRange().getValues();
@@ -1632,7 +1657,9 @@ function staffDirectoryData_(buildingFilter, targetEmail, includeArchived) {
   //    building. The buildingFilter is used ONLY for directory membership and the
   //    per-building archived logic below — NOT for the totals. targetEmail is kept
   //    for the single-teacher optimization.
-  const balances = calculateDynamicBalances_(null, targetEmail);
+  //    balancesIn: a caller that already has calculateDynamicBalances_(null)
+  //    passes it in rather than have both sheets read a second time.
+  const balances = balancesIn || calculateDynamicBalances_(null, targetEmail);
 
   return data.map((r, i) => {
     const email = r[iEmail].toString().toLowerCase();
@@ -3386,9 +3413,9 @@ const MONTH_ORDER = ["September", "October", "November", "December", "January", 
 // Schedule membership for a building, keyed by lowercased email: staff assigned to
 // it (anywhere in a multi-building list) and not archived from it — the same set
 // the Directory shows. Values are display names.
-function scheduleMembers_(building) {
+function scheduleMembers_(building, balances) {
   const members = new Map();
-  staffDirectoryData_(building).forEach(s => {
+  staffDirectoryData_(building, undefined, undefined, balances).forEach(s => {
     members.set(s.email.toString().trim().toLowerCase(), s.name);
   });
   return members;
@@ -3432,12 +3459,13 @@ function scheduleData_(effectiveFilter, onlyEmail) {
   //    rows aren't building-tagged, so a multi-building person appears in each of
   //    their buildings; rows for anyone else (other buildings, archived, removed
   //    from the directory) are left out.
-  const memberEmails = scheduleMembers_(effectiveFilter);
-
+  //
   // 1. Approved hours earned this school year, combined across buildings — the
   //    exact number the Directory's Earned column shows, so the two cannot
-  //    disagree. Keyed by lowercased email.
+  //    disagree. Keyed by lowercased email. Worked out once and shared with the
+  //    membership lookup, which needs the same figures.
   const balances = calculateDynamicBalances_(null);
+  const memberEmails = scheduleMembers_(effectiveFilter, balances);
 
   // 2. Get Pending Requests Map (same building as the schedule)
   const pendingMap = getPendingEarnedMap_(effectiveFilter);
@@ -3454,6 +3482,28 @@ function scheduleData_(effectiveFilter, onlyEmail) {
   const schedule = {};
   MONTH_ORDER.forEach(m => schedule[m] = []);
 
+  // Each entry carries only its own month's pending requests and assignments.
+  // The client only ever draws an item in the cell whose month matches, and a
+  // person has an availability row per period per month — so sending their whole
+  // list on every row multiplied the payload by (rows x assignments), megabytes by
+  // spring. A pending request whose date couldn't be read has no month and shows
+  // in every month, so it stays on every row as before.
+  const forMonth = (list, month, keepUndated) => {
+    if (!list) return [];
+    return list.filter(x => x.month === month || (keepUndated && !x.month));
+  };
+  const monthCache = {};
+  const monthItems = (emailKey, month) => {
+    const key = emailKey + '\n' + month;
+    if (!monthCache[key]) {
+      monthCache[key] = {
+        pending: forMonth(pendingMap[emailKey], month, true),
+        assigned: forMonth(assignedMap[emailKey], month, false)
+      };
+    }
+    return monthCache[key];
+  };
+
   data.forEach(row => {
     const [month, days, period, name, email] = row;
 
@@ -3464,10 +3514,11 @@ function scheduleData_(effectiveFilter, onlyEmail) {
 
     if (schedule[month]) {
       const hours = (balances[emailKey] || {}).earned || 0;
+      const items = monthItems(emailKey, month);
       schedule[month].push({
         month, days, period, name, email, hours,
-        pendingRequests: pendingMap[emailKey] || [],
-        assignments: assignedMap[emailKey] || []
+        pendingRequests: items.pending,
+        assignments: items.assigned
       });
     }
   });
