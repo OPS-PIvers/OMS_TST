@@ -127,8 +127,11 @@ The application relies on four key sheets within the bound Google Spreadsheet:
    - Rows archive to **TST Assignments Archive** at year-end, by building (`archiveAssignmentsForBuilding_`).
 
 6. **TST Schedule Notes** - Admin notes on Master Schedule cells (auto-created)
-   - Columns: Building (A), Month (B), Period (C), Day (D), Note (E), Updated (F), Updated By (G)
+   - Columns: Building (A), Month (B), Period (C), Day (D), Note (E), Updated (F), Updated By (G), Teacher Email (H)
    - For things availability can't say ("7th grade team meeting") so the admin doesn't pick someone who listed themselves there. **Admin-only both ways** — `getScheduleNotes(building)` reads, and `updateSchedulePeriod`'s optional `dayNotes` / `notesAllMonths` args write. Omitting `dayNotes` leaves notes untouched; "every month" copies to all of `MONTH_ORDER`. Kept out of `getScheduleData` so its month-keyed shape stays as is.
+   - **A cell holds a list of notes**, one row each, read back in sheet order as `{ month: { period: { Mon: [{ text, email }] } } }` (up to `SCHEDULE_NOTES_PER_CELL_` = 10, 200 characters each; line breaks are kept and drawn). `dayNotes` takes the same `[{ text, email }]` per day; a plain string per day is still accepted as one whole-period note.
+   - **Teacher Email** blank = about the whole period (drawn at the top of the cell); set = about that person in that cell, drawn on their card. A note about someone not listed in the cell is drawn at the top with their name, so removing a teacher from a cell never hides a note. A sheet from before the column existed gains it on the next save, and its rows read as whole-period notes.
+   - A teacher note must name a member of the building (`prepareScheduleNotes_`, checked before availability is touched, like `dayUpdates`) — **or someone already noted on that period**, so a note about a teacher archived since doesn't make the period impossible to save.
 
 ### Key Server Functions
 
