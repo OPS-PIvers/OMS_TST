@@ -260,6 +260,16 @@ Switch School (multi-building) · Update Carry Over · Finalize School Year · V
 - Modal system for forms and confirmations
 - Toast notification system
 
+### Tab cache (admin tabs)
+
+`switchTab` redraws an admin tab (Earned, Used, Assignments, Schedule, Directory) from the data it last drew (`TAB_CACHE`, filled by each loader via `cacheTab`) while the loader fetches fresh data exactly as before — every visit still fetches. Rules that keep it safe:
+- The copy is drawn **locked** (`inert`, dimmed, `aria-busy`) and only unlocked by `tabLoaded()` once the fresh data has been drawn over it. Approve/Deny address rows by number, which shift, so nothing may ever be clicked on a cached copy.
+- If the fetch fails, `discardCachedView()` replaces a locked copy with an error rather than unlocking it.
+- It is keyed by building + signed-in (or View As) email + `showArchived`, so a school switch or View As never shows someone else's copy.
+- `showCachedTab` mirrors each loader's own before/after steps (selection resets, `STATE` fields); keep the two in step when changing a loader.
+
+`updateBadges` sends one `getDashboardCounts` at a time and coalesces calls made meanwhile into a single re-run, so the badge always ends on a count requested after the latest change.
+
 ### Role-Based Views
 
 **Admin Views:**
