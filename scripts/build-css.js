@@ -14,6 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const postcss = require('postcss');
 const tailwindcss = require('tailwindcss');
+const autoprefixer = require('autoprefixer');
 
 const ROOT = path.join(__dirname, '..');
 const INDEX = path.join(ROOT, 'Index.html');
@@ -33,7 +34,8 @@ async function buildCss(pageWithoutCss) {
   const config = Object.assign({}, require(path.join(ROOT, 'tailwind.config.js')), {
     content: [{ raw: pageWithoutCss, extension: 'html' }]
   });
-  const result = await postcss([tailwindcss(config)]).process(
+  // autoprefixer too: the Play CDN ran it, and the page was styled with its output.
+  const result = await postcss([tailwindcss(config), autoprefixer]).process(
     '@tailwind base;\n@tailwind components;\n@tailwind utilities;\n', { from: undefined });
   // Collapsed onto one line so the block doesn't bury the rest of the page (it
   // is ~45 KB). The CSS has no multi-line strings, so this changes nothing else.
