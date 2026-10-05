@@ -35,7 +35,10 @@ async function buildCss(pageWithoutCss) {
     content: [{ raw: pageWithoutCss, extension: 'html' }]
   });
   // autoprefixer too: the Play CDN ran it, and the page was styled with its output.
-  const result = await postcss([tailwindcss(config), autoprefixer]).process(
+  // The CDN bundles 2023 browser data, which still counted older Safari; these
+  // targets reproduce its prefixes exactly (checked rule-for-rule against it).
+  const prefixer = autoprefixer({ overrideBrowserslist: ['defaults', 'safari >= 12', 'ios_saf >= 12'] });
+  const result = await postcss([tailwindcss(config), prefixer]).process(
     '@tailwind base;\n@tailwind components;\n@tailwind utilities;\n', { from: undefined });
   // Collapsed onto one line so the block doesn't bury the rest of the page (it
   // is ~45 KB). The CSS has no multi-line strings, so this changes nothing else.
