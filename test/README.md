@@ -22,6 +22,7 @@ node test/run.js       # no dependencies, no network
 | `assignments.test.js` | Coverage assignments end to end: who may assign, the duplicate guard, the three queued emails, recording (including that it cannot happen twice), cancellation against approved hours, the one nudge, and the signed Record link's expiry. |
 | `ui_flows.test.js` | Replays the `google.script.run` calls `Index.html` actually makes (recorded in `ui_calls.json`) and checks each flow still gets what the page renders. |
 | `performance.test.js` | Read cost: App Config is read once per call however many assignments there are, the cache never serves stale or shared config, and each Master Schedule row carries only its own month's items. |
+| `queue_lock.test.js` | The every-minute email/calendar trigger: it takes the document lock (never the script lock a Submit waits on), skips the lock and the directory read when idle, still cleans up and still sends with no document lock. |
 | `legacy_globals.test.js` | `Code_legacy.js` stays out of the deployed file set, and what its duplicate globals used to shadow. |
 | `record_ui_calls.js` | Regenerates `ui_calls.json`. Needs Playwright; everything else does not. |
 
