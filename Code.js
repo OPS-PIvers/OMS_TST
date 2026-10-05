@@ -3121,10 +3121,62 @@ function isTriggerEvent_(e) {
          e.authMode === modes.CUSTOM_FUNCTION || e.authMode === modes.NONE;
 }
 
+/**
+ * The lock the email and calendar processors share among themselves.
+ *
+ * It is the document lock, not the script lock, on purpose. Every building
+ * admin's trigger runs these every minute and can hold the lock while it sends a
+ * whole batch of mail; on the script lock that made a teacher's Submit (whose
+ * duplicate guard waits on the script lock) sit behind someone else's email run.
+ * The two never write the same cells — the processors own the Email Queue rows
+ * and the calendar columns, a submission appends earned rows and marks an
+ * assignment recorded — so they need not exclude each other, only themselves.
+ * Falls back to the script lock wherever there is no document lock to be had.
+ */
+function queueLock_() {
+  try {
+    const lock = LockService.getDocumentLock();
+    if (lock) return lock;
+  } catch (e) { /* fall through */ }
+  return LockService.getScriptLock();
+}
+
+/**
+ * Whether the email queue has anything for any processor to do: mail waiting to
+ * go out, or sent/failed rows past the 24-hour cleanup. Read without the lock so
+ * the every-minute triggers can skip the lock and the directory read on the
+ * (usual) minutes when there is nothing to do; the real run re-reads under it.
+ */
+function emailQueueHasWork_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Email Queue');
+  if (!sheet) return false;
+  const data = sheet.getDataRange().getValues();
+  if (data.length <= 1) return false;
+
+  const headers = data[0];
+  const statusIdx = headers.indexOf('Status');
+  const tsIdx = headers.indexOf('Timestamp');
+  if (statusIdx === -1) return false;
+
+  const now = new Date().getTime();
+  const oneDay = 24 * 60 * 60 * 1000;
+  for (let i = 1; i < data.length; i++) {
+    const status = data[i][statusIdx];
+    if (status === 'Pending') return true;
+    const timestamp = new Date(data[i][tsIdx]).getTime();
+    if ((status === 'Sent' || (status || '').toString().startsWith('Error')) && (now - timestamp > oneDay)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function processEmailQueue_() {
   const MAX_BATCH = 200; // Process up to 200 at a time to cover full building reports
-  
-  const lock = LockService.getScriptLock();
+
+  if (!emailQueueHasWork_()) return;
+
+  const lock = queueLock_();
   if (!lock.tryLock(30000)) return; 
 
   try {
@@ -4341,6 +4393,34 @@ function alertCalendarFailure_(a, reason) {
 }
 
 /**
+ * Whether any building has calendar work waiting: an assignment whose event is
+ * still to be created or removed, or a Settings test event. Read without the lock,
+ * like emailQueueHasWork_, so an idle minute costs one read and no lock.
+ */
+function assignmentCalendarHasWork_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(ASSIGNMENTS_SHEET_);
+  if (sheet) {
+    const data = sheet.getDataRange().getValues();
+    for (let i = 1; i < data.length; i++) {
+      if (!data[i][A_.id]) continue;
+      const status = (data[i][A_.calendarStatus] == null ? '' : data[i][A_.calendarStatus]).toString();
+      if (status === CAL_.pending || status === CAL_.pendingDelete) return true;
+    }
+  }
+
+  const props = PropertiesService.getScriptProperties().getProperties();
+  return Object.keys(props).some(key => {
+    if (key.indexOf(CAL_TEST_PREFIX_) !== 0) return false;
+    try {
+      const job = JSON.parse(props[key]);
+      return !!job && job.state === 'pending';
+    } catch (e) {
+      return false;
+    }
+  });
+}
+
+/**
  * The calendar work the building admin's trigger does, for their buildings only.
  *
  * Has to be driven by a trigger rather than the web app: the app runs as whoever
@@ -4348,7 +4428,9 @@ function alertCalendarFailure_(a, reason) {
  * by the building admin whose calendar it is.
  */
 function processPendingAssignments_() {
-  const lock = LockService.getScriptLock();
+  if (!assignmentCalendarHasWork_()) return 0;
+
+  const lock = queueLock_();
   if (!lock.tryLock(5000)) return 0; // another admin's trigger is already on it
 
   try {

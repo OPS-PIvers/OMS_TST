@@ -352,6 +352,8 @@ The `onFormSubmit(e)` function must be set up as an **installable trigger** in t
 
 Because triggers are per-user, a building admin needs **standing access to the TST spreadsheet** — `processEmailQueue_` reads and writes the Email Queue sheet as the trigger owner. Without it, that building's mail queues and never sends.
 
+**Locking.** `processEmailQueue_` and `processPendingAssignments_` share `queueLock_()` — the **document** lock (script lock only as a fallback) — and only with each other. The script lock belongs to `processEarnedSubmission_`'s duplicate guard; when the processors held it, a teacher's Submit waited behind another admin's whole email batch. They never write the same cells (the processors own Email Queue rows and the calendar columns; a submission appends earned rows and marks an assignment recorded), so keep them on separate locks. Each processor first checks for work without any lock (`emailQueueHasWork_`, `assignmentCalendarHasWork_`), so an idle minute costs one sheet read — no lock and no directory read — and then re-reads under the lock before acting.
+
 A Super Admin's trigger **does not** process other buildings' queue rows (`processEmailQueue_`). It used to, which raced the building admin every minute and made the From name a coin flip. The trade-off is deliberate: a building with nobody authorized queues mail rather than sending it under the wrong name.
 
 ### Email service health and the second deployment
