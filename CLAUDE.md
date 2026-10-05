@@ -11,7 +11,7 @@ OMS TST Manager is a Google Apps Script web application for managing TST (Time S
 - **Platform:** Google Apps Script (V8 Runtime)
 - **Backend:** [Code.js](Code.js) - Server-side logic using Google Apps Script APIs
 - **Frontend:** [Index.html](Index.html) - Single Page Application (SPA)
-- **Styling:** Tailwind CSS v3.x (via CDN)
+- **Styling:** Tailwind CSS 3.4.17, **pre-built and inlined** into Index.html (see *Styling build* below) — not the Play CDN
 - **Icons:** FontAwesome v6.x (via CDN)
 - **Database:** Google Spreadsheet (accessed via SpreadsheetApp)
 - **Deployment:** clasp (Command Line Apps Script Projects)
@@ -38,6 +38,21 @@ clasp open
 # Deploy a new version to the existing deployment
 clasp deploy -i AKfycbzPvaCCovRLEUVSe05KfRaDlXEs9k64oMCtpcXdOnYzVpP2BW16PaXV5SJVHNk3Ea3TBQ --description "Version description"
 ```
+
+### Styling build (Tailwind)
+
+Index.html's Tailwind CSS is generated ahead of time and inlined between the `BEGIN/END generated Tailwind CSS` markers in its `<style id="tailwind-css">` block. The page used to load Tailwind's Play CDN, which downloaded ~400 KB of JavaScript on every visit and rebuilt the stylesheet in the browser whenever the page changed.
+
+```bash
+npm install          # once: tailwindcss + postcss (build tooling only)
+npm run build:css    # after adding/changing classes in Index.html — commit the result
+npm run check:css    # what CI runs: fails if the inlined CSS is stale
+```
+
+- The theme (OPS colors, Lexend) lives in [tailwind.config.js](tailwind.config.js); [scripts/build-css.js](scripts/build-css.js) scans Index.html (minus the generated block) and rewrites the block on one line.
+- **A class added without rebuilding has no styles.** `check:css` runs in `test.yml` and again in `deploy.yml` before `clasp push`, so a stale block cannot ship. Never edit the generated block by hand.
+- Tailwind only finds **complete class names written out in the source**. Don't assemble them (`'bg-' + color + '-100'`); write each full name, e.g. in a lookup object.
+- `package.json`, `tailwind.config.js`, `scripts/` and `node_modules/` are not deployed (`.claspignore` is an allow-list), and `node test/run.js` still needs none of it.
 
 **Important:**
 - `clasp push` overwrites remote files completely. Always verify changes before pushing.
@@ -255,7 +270,7 @@ Switch School (multi-building) · Update Carry Over · Finalize School Year · V
 
 [Index.html](Index.html) is ~1900 lines containing:
 - HTML structure with Tailwind utility classes
-- Custom Tailwind config with OPS brand colors (`ops-blue`, `ops-red`, etc.)
+- Pre-built Tailwind CSS (inlined; theme with OPS brand colors `ops-blue`, `ops-red`, etc. in `tailwind.config.js`)
 - Client-side JavaScript for UI rendering and state management
 - Modal system for forms and confirmations
 - Toast notification system
@@ -290,7 +305,7 @@ Switch School (multi-building) · Update Carry Over · Finalize School Year · V
 
 ## Custom Color Palette
 
-Defined in Tailwind config within [Index.html](Index.html):
+Defined in [tailwind.config.js](tailwind.config.js) (run `npm run build:css` after changing it):
 - `ops-blue`: #2d3f89 (primary brand color)
 - `ops-blue-dark`: #1d2a5d
 - `ops-blue-lighter`: #eaecf5 (backgrounds)

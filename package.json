@@ -1,0 +1,14 @@
+{
+  "name": "oms-tst-manager",
+  "private": true,
+  "description": "Build tooling only. The app itself is Code.js, config.js and Index.html (see .claspignore); the test suite needs none of this.",
+  "scripts": {
+    "build:css": "node scripts/build-css.js",
+    "check:css": "node scripts/build-css.js --check",
+    "test": "node test/run.js"
+  },
+  "devDependencies": {
+    "postcss": "8.5.6",
+    "tailwindcss": "3.4.17"
+  }
+}
