@@ -5145,14 +5145,20 @@ function assignmentConfirmedPage_(a, already) {
  *   period names (e.g. "Time Range"), so only this building's members are replaced.
  */
 // ===== Schedule notes =====
-// An admin's note on one cell of the Master Schedule — a month, period and weekday
+// An admin's notes on one cell of the Master Schedule — a month, period and weekday
 // in one building — for the things availability can't say: "7th grade team
 // meeting", so a teacher who put their name down there isn't picked anyway. Admin
 // only, both ways: it is the admin's planning, not something teachers are shown.
+//
+// A cell holds a list of notes, one sheet row each. A note with a Teacher Email is
+// about that person in that cell ("only free the second half") and is drawn on
+// their card; one without is about the whole period.
 
 const SCHEDULE_NOTES_SHEET_ = 'TST Schedule Notes';
-const SCHEDULE_NOTES_HEADER_ = ['Building', 'Month', 'Period', 'Day', 'Note', 'Updated', 'Updated By'];
+const SCHEDULE_NOTES_HEADER_ = ['Building', 'Month', 'Period', 'Day', 'Note', 'Updated', 'Updated By', 'Teacher Email'];
 const SCHEDULE_DAYS_ = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+const SCHEDULE_NOTE_MAX_LENGTH_ = 200;
+const SCHEDULE_NOTES_PER_CELL_ = 10;
 
 function scheduleNotesSheet_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -5161,11 +5167,18 @@ function scheduleNotesSheet_() {
     sheet = ss.insertSheet(SCHEDULE_NOTES_SHEET_);
     sheet.appendRow(SCHEDULE_NOTES_HEADER_.slice());
     sheet.setFrozenRows(1);
+    return sheet;
   }
+  // A sheet from before per-teacher notes stops at Updated By; its rows read as
+  // whole-period notes, which is what they were.
+  const header = sheet.getRange(1, 1, 1, SCHEDULE_NOTES_HEADER_.length).getValues()[0];
+  SCHEDULE_NOTES_HEADER_.forEach((h, i) => {
+    if (!(header[i] || '').toString().trim()) sheet.getRange(1, i + 1).setValue(h);
+  });
   return sheet;
 }
 
-/** { month: { period: { Mon: note, ... } } } for one building. */
+/** { month: { period: { Mon: [{ text, email }], ... } } } for one building, in sheet order. */
 function scheduleNotesFor_(building) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SCHEDULE_NOTES_SHEET_);
   const out = {};
@@ -5177,7 +5190,8 @@ function scheduleNotesFor_(building) {
     const m = month.toString(), p = period.toString(), d = day.toString();
     if (!out[m]) out[m] = {};
     if (!out[m][p]) out[m][p] = {};
-    out[m][p][d] = note.toString();
+    if (!out[m][p][d]) out[m][p][d] = [];
+    out[m][p][d].push({ text: note.toString(), email: (data[i][7] || '').toString().trim().toLowerCase() });
   }
   return out;
 }
@@ -5190,11 +5204,59 @@ function getScheduleNotes(buildingFilter) {
 }
 
 /**
- * Replaces one period's notes for a month — or, with allMonths, for every month,
- * since a standing team meeting is usually the same all year. A blank note removes
- * that day's note. Only this building's rows are touched.
+ * One day's notes as sent by the client: a list of { text, email } (or plain
+ * strings), or a single string from before a cell could hold more than one.
+ * Blank notes are dropped; an email is lowercased, blank meaning the whole period.
  */
-function saveScheduleNotes_(building, month, period, dayNotes, allMonths, byEmail) {
+function normalizeDayNotes_(value) {
+  const list = Array.isArray(value) ? value : [value];
+  return list.map(n => {
+    const isObj = n && typeof n === 'object';
+    return {
+      text: ((isObj ? n.text : n) || '').toString().trim().slice(0, SCHEDULE_NOTE_MAX_LENGTH_),
+      email: ((isObj ? n.email : '') || '').toString().trim().toLowerCase()
+    };
+  }).filter(n => n.text).slice(0, SCHEDULE_NOTES_PER_CELL_);
+}
+
+/**
+ * Checks one period's notes before anything is written, and returns them by day.
+ * A note about a teacher must name a member of the building — or someone already
+ * noted on this period, so a note about a person who has since been archived
+ * doesn't make the whole period impossible to save.
+ */
+function prepareScheduleNotes_(building, period, dayNotes, members) {
+  const byDay = {};
+  SCHEDULE_DAYS_.forEach(d => { byDay[d] = normalizeDayNotes_((dayNotes || {})[d]); });
+
+  const known = new Set();
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SCHEDULE_NOTES_SHEET_);
+  if (sheet) {
+    const data = sheet.getDataRange().getValues();
+    for (let i = 1; i < data.length; i++) {
+      if ((data[i][0] || '').toString() === building && (data[i][2] || '').toString() === period) {
+        known.add((data[i][7] || '').toString().trim().toLowerCase());
+      }
+    }
+  }
+  const outsiders = [];
+  SCHEDULE_DAYS_.forEach(d => byDay[d].forEach(n => {
+    if (n.email && !members.has(n.email) && !known.has(n.email) && !outsiders.includes(n.email)) {
+      outsiders.push(n.email);
+    }
+  }));
+  if (outsiders.length > 0) {
+    throw new Error('Not on the ' + building + ' schedule: ' + outsiders.join(', '));
+  }
+  return byDay;
+}
+
+/**
+ * Replaces one period's notes for a month — or, with allMonths, for every month,
+ * since a standing team meeting is usually the same all year. A day with no notes
+ * is cleared. Only this building's rows are touched. byDay is prepareScheduleNotes_'s.
+ */
+function saveScheduleNotes_(building, month, period, byDay, allMonths, byEmail) {
   const months = allMonths ? MONTH_ORDER.slice() : [month];
   const sheet = scheduleNotesSheet_();
   const data = sheet.getDataRange().getValues();
@@ -5213,8 +5275,7 @@ function saveScheduleNotes_(building, month, period, dayNotes, allMonths, byEmai
   const rows = [];
   months.forEach(m => {
     SCHEDULE_DAYS_.forEach(d => {
-      const note = ((dayNotes || {})[d] || '').toString().trim().slice(0, 200);
-      if (note) rows.push([building, m, period, d, note, now, byEmail]);
+      byDay[d].forEach(n => rows.push([building, m, period, d, n.text, now, byEmail, n.email]));
     });
   });
   if (rows.length > 0) {
@@ -5223,8 +5284,10 @@ function saveScheduleNotes_(building, month, period, dayNotes, allMonths, byEmai
 }
 
 /**
- * dayNotes (optional): { Mon: 'note', ... } — omitted, the period's notes are left
- * as they are. notesAllMonths applies them to every month rather than just this one.
+ * dayNotes (optional): { Mon: [{ text, email }], ... } — email blank for a note about
+ * the whole period (a plain string per day is still read as one such note). Omitted,
+ * the period's notes are left as they are. notesAllMonths applies them to every
+ * month rather than just this one.
  */
 function updateSchedulePeriod(month, period, dayUpdates, building, dayNotes, notesAllMonths) {
   const ctx = getUserContext();
@@ -5263,6 +5326,7 @@ function updateSchedulePeriod(month, period, dayUpdates, building, dayNotes, not
   if (outsiders.length > 0) {
     throw new Error('Not on the ' + effectiveBuilding + ' schedule: ' + outsiders.join(', '));
   }
+  const notesByDay = hasNotes ? prepareScheduleNotes_(effectiveBuilding, period, dayNotes, members) : null;
 
   // 3. Delete this building's members' rows for Month + Period (other buildings'
   //    rows with the same period name survive), bottom-up so indices stay valid.
@@ -5291,7 +5355,7 @@ function updateSchedulePeriod(month, period, dayUpdates, building, dayNotes, not
   }
 
   if (hasNotes) {
-    saveScheduleNotes_(effectiveBuilding, month, period, dayNotes, !!notesAllMonths, ctx.email);
+    saveScheduleNotes_(effectiveBuilding, month, period, notesByDay, !!notesAllMonths, ctx.email);
   }
 
   return true;
