@@ -17,10 +17,13 @@ node test/run.js       # no dependencies, no network
 | `authorization.test.js` | Who may read what: teachers, admins from the wrong building, and people missing from the directory. |
 | `config_times.test.js` | Who may edit a building's settings, and how a period's start/end time resolves (day schedule, building default, then the times baked into the label). |
 | `schedule_hours.test.js` | The hours under each name in the Master Schedule: approved only, earned rather than available, year-to-date, combined across buildings, and equal to the Directory's Earned column. |
+| `schedule_scheduled_hours.test.js` | The "(+N scheduled)" beside those hours: upcoming and unfiled assignments count, a pending recorded one counts until approved (then it is in the hours instead), denied and cancelled never do, other buildings' coverage counts too. |
 | `calendar.test.js` | The per-building calendar: the event comes before the emails, only the building's own admin creates it, a failure still lets the assignment through, and the test-event button. |
 | `email_service.test.js` | Whether a building's mail is actually going out (authorized, and the queue draining), and the second-deployment page that installs an admin's own triggers. |
 | `assignments.test.js` | Coverage assignments end to end: who may assign, the duplicate guard, the three queued emails, recording (including that it cannot happen twice), cancellation against approved hours, the one nudge, and the signed Record link's expiry. |
 | `ui_flows.test.js` | Replays the `google.script.run` calls `Index.html` actually makes (recorded in `ui_calls.json`) and checks each flow still gets what the page renders. |
+| `performance.test.js` | Read cost: App Config is read once per call however many assignments there are, the cache never serves stale or shared config, and each Master Schedule row carries only its own month's items. |
+| `queue_lock.test.js` | The every-minute email/calendar trigger: it takes the document lock (never the script lock a Submit waits on), skips the lock and the directory read when idle, still cleans up and still sends with no document lock. |
 | `legacy_globals.test.js` | `Code_legacy.js` stays out of the deployed file set, and what its duplicate globals used to shadow. |
 | `record_ui_calls.js` | Regenerates `ui_calls.json`. Needs Playwright; everything else does not. |
 

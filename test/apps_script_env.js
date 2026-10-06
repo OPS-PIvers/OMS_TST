@@ -138,6 +138,12 @@ function createEnv(options) {
   const opts = options || {};
   const ss = new FakeSpreadsheet(opts.sheets || {});
   const sentEmails = [];
+  const lockLog = [];
+  const makeLock = kind => ({
+    tryLock: () => { lockLog.push(kind + ':acquire'); return true; },
+    waitLock: () => { lockLog.push(kind + ':acquire'); },
+    releaseLock: () => { lockLog.push(kind + ':release'); }
+  });
   const properties = Object.assign({}, opts.properties);
   const installedTriggers = [];
   // { id, calendarId, title, start, end, options } for every event still on a
@@ -192,13 +198,18 @@ function createEnv(options) {
       getScriptTimeZone: () => 'America/Chicago'
     },
 
+    // Both locks always succeed; lockLog records which one each call took, so a
+    // test can check that two code paths don't share a lock. options.noDocumentLock
+    // stands in for a context with no document lock (getDocumentLock returns null).
     LockService: {
-      getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {}, waitLock: () => {} })
+      getScriptLock: () => makeLock('script'),
+      getDocumentLock: () => (opts.noDocumentLock ? null : makeLock('document'))
     },
 
     PropertiesService: {
       getScriptProperties: () => ({
         getProperty: k => (k in properties ? properties[k] : null),
+        getProperties: () => Object.assign({}, properties),
         setProperty: (k, v) => { properties[k] = v; },
         deleteProperty: k => { delete properties[k]; }
       })
@@ -345,6 +356,7 @@ function createEnv(options) {
     context,
     spreadsheet: ss,
     sentEmails,
+    lockLog,
     properties,
     installedTriggers,
     calendarEvents,
@@ -368,6 +380,9 @@ function createEnv(options) {
     callInternal(fnName, ...args) {
       const fn = context[fnName];
       if (typeof fn !== 'function') throw new Error('No such server function: ' + fnName);
+      // Each call is its own Apps Script execution, which starts with fresh
+      // globals — so nothing Code.js caches for one request reaches the next.
+      if (typeof context.resetExecutionCache_ === 'function') context.resetExecutionCache_();
       return fn(...args);
     },
     /** Runs fn and returns { ok, value } or { ok: false, error }. */

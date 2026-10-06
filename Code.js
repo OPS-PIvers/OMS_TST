@@ -218,10 +218,30 @@ function saveMyPreferences(prefs) {
 }
 
 /**
+ * App Config rows, read once per execution. Formatting a period or naming a
+ * calendar asks for the config, and the queues do that for every assignment, so
+ * re-reading the sheet each time made the Assignments, Schedule and badge calls
+ * slower with every assignment ever made. Apps Script starts every execution
+ * (each google.script.run call, each trigger run) with fresh globals, so this
+ * never outlives one request. saveBuildingConfig clears it after writing.
+ *
+ * The raw rows are kept, not parsed objects, so every getConfig() caller still
+ * gets its own copy to change.
+ */
+let configRowsMemo_ = null;
+
+/** Drops this execution's cached reads. The tests call it between simulated requests. */
+function resetExecutionCache_() {
+  configRowsMemo_ = null;
+}
+
+/**
  * Loads configuration from 'App Config' sheet.
  * Initializes the sheet with default config if it doesn't exist.
  */
 function getConfig() {
+  if (configRowsMemo_) return parseConfigRows_(configRowsMemo_);
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName('App Config');
   
@@ -241,7 +261,11 @@ function getConfig() {
   
   const data = sheet.getDataRange().getValues();
   data.shift(); // Remove Header
-  
+  configRowsMemo_ = data;
+  return parseConfigRows_(data);
+}
+
+function parseConfigRows_(data) {
   const config = {};
   data.forEach(row => {
     const code = row[0];
@@ -319,6 +343,7 @@ function saveBuildingConfig(buildingCode, newConfigObj) {
     // Create new
     sheet.appendRow([buildingCode, jsonString]);
   }
+  configRowsMemo_ = null; // the rest of this execution must see what was just saved
 
   return true;
 }
@@ -1604,7 +1629,7 @@ function directoryFor_(ctx, building, targetEmail, includeArchived) {
  * Private: callers are responsible for authorizing the building (see
  * getStaffDirectoryData for the client-facing, role-aware version).
  */
-function staffDirectoryData_(buildingFilter, targetEmail, includeArchived) {
+function staffDirectoryData_(buildingFilter, targetEmail, includeArchived, balancesIn) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('Staff Directory');
   const data = sheet.getDataRange().getValues();
@@ -1632,7 +1657,9 @@ function staffDirectoryData_(buildingFilter, targetEmail, includeArchived) {
   //    building. The buildingFilter is used ONLY for directory membership and the
   //    per-building archived logic below — NOT for the totals. targetEmail is kept
   //    for the single-teacher optimization.
-  const balances = calculateDynamicBalances_(null, targetEmail);
+  //    balancesIn: a caller that already has calculateDynamicBalances_(null)
+  //    passes it in rather than have both sheets read a second time.
+  const balances = balancesIn || calculateDynamicBalances_(null, targetEmail);
 
   return data.map((r, i) => {
     const email = r[iEmail].toString().toLowerCase();
@@ -1770,10 +1797,17 @@ function getPendingEarned(buildingFilter) {
 
 // Pending (not approved, not denied) earned rows for one building. Callers are
 // responsible for authorizing the building.
-function pendingEarnedFor_(building) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName('TST Approvals (New)');
-  const data = sheet.getDataRange().getValues();
+// approvalsValues: the sheet's getValues(), header included, when the caller has
+// already read it (the Master Schedule needs it twice); left untouched.
+function pendingEarnedFor_(building, approvalsValues) {
+  let data;
+  if (approvalsValues) {
+    data = approvalsValues.slice();
+  } else {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('TST Approvals (New)');
+    data = sheet.getDataRange().getValues();
+  }
   data.shift();
 
   return data.map((r, i) => {
@@ -3094,10 +3128,62 @@ function isTriggerEvent_(e) {
          e.authMode === modes.CUSTOM_FUNCTION || e.authMode === modes.NONE;
 }
 
+/**
+ * The lock the email and calendar processors share among themselves.
+ *
+ * It is the document lock, not the script lock, on purpose. Every building
+ * admin's trigger runs these every minute and can hold the lock while it sends a
+ * whole batch of mail; on the script lock that made a teacher's Submit (whose
+ * duplicate guard waits on the script lock) sit behind someone else's email run.
+ * The two never write the same cells — the processors own the Email Queue rows
+ * and the calendar columns, a submission appends earned rows and marks an
+ * assignment recorded — so they need not exclude each other, only themselves.
+ * Falls back to the script lock wherever there is no document lock to be had.
+ */
+function queueLock_() {
+  try {
+    const lock = LockService.getDocumentLock();
+    if (lock) return lock;
+  } catch (e) { /* fall through */ }
+  return LockService.getScriptLock();
+}
+
+/**
+ * Whether the email queue has anything for any processor to do: mail waiting to
+ * go out, or sent/failed rows past the 24-hour cleanup. Read without the lock so
+ * the every-minute triggers can skip the lock and the directory read on the
+ * (usual) minutes when there is nothing to do; the real run re-reads under it.
+ */
+function emailQueueHasWork_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Email Queue');
+  if (!sheet) return false;
+  const data = sheet.getDataRange().getValues();
+  if (data.length <= 1) return false;
+
+  const headers = data[0];
+  const statusIdx = headers.indexOf('Status');
+  const tsIdx = headers.indexOf('Timestamp');
+  if (statusIdx === -1) return false;
+
+  const now = new Date().getTime();
+  const oneDay = 24 * 60 * 60 * 1000;
+  for (let i = 1; i < data.length; i++) {
+    const status = data[i][statusIdx];
+    if (status === 'Pending') return true;
+    const timestamp = new Date(data[i][tsIdx]).getTime();
+    if ((status === 'Sent' || (status || '').toString().startsWith('Error')) && (now - timestamp > oneDay)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function processEmailQueue_() {
   const MAX_BATCH = 200; // Process up to 200 at a time to cover full building reports
-  
-  const lock = LockService.getScriptLock();
+
+  if (!emailQueueHasWork_()) return;
+
+  const lock = queueLock_();
   if (!lock.tryLock(30000)) return; 
 
   try {
@@ -3386,9 +3472,9 @@ const MONTH_ORDER = ["September", "October", "November", "December", "January", 
 // Schedule membership for a building, keyed by lowercased email: staff assigned to
 // it (anywhere in a multi-building list) and not archived from it — the same set
 // the Directory shows. Values are display names.
-function scheduleMembers_(building) {
+function scheduleMembers_(building, balances) {
   const members = new Map();
-  staffDirectoryData_(building).forEach(s => {
+  staffDirectoryData_(building, undefined, undefined, balances).forEach(s => {
     members.set(s.email.toString().trim().toLowerCase(), s.name);
   });
   return members;
@@ -3432,20 +3518,28 @@ function scheduleData_(effectiveFilter, onlyEmail) {
   //    rows aren't building-tagged, so a multi-building person appears in each of
   //    their buildings; rows for anyone else (other buildings, archived, removed
   //    from the directory) are left out.
-  const memberEmails = scheduleMembers_(effectiveFilter);
-
+  //
   // 1. Approved hours earned this school year, combined across buildings — the
   //    exact number the Directory's Earned column shows, so the two cannot
-  //    disagree. Keyed by lowercased email.
+  //    disagree. Keyed by lowercased email. Worked out once and shared with the
+  //    membership lookup, which needs the same figures.
   const balances = calculateDynamicBalances_(null);
+  const memberEmails = scheduleMembers_(effectiveFilter, balances);
 
-  // 2. Get Pending Requests Map (same building as the schedule)
-  const pendingMap = getPendingEarnedMap_(effectiveFilter);
+  // 2. Get Pending Requests Map (same building as the schedule). The Approvals and
+  //    Assignments sheets are read once here and shared by everything below.
+  const approvalsSheet = ss.getSheetByName('TST Approvals (New)');
+  const approvalsValues = approvalsSheet ? approvalsSheet.getDataRange().getValues() : [[]];
+  const allAssignments = assignmentRows_();
+  const pendingMap = getPendingEarnedMap_(effectiveFilter, approvalsValues);
+
+  // 2a. Hours already committed but not yet in `hours` — see scheduledHoursMap_.
+  const scheduledMap = scheduledHoursMap_(allAssignments, approvalsValues);
 
   // 2b. Coverage already assigned in this building. The hourglass only knows about
   //     a request someone filed; this is the assignment itself, so a person who was
   //     given coverage and never submitted the form is still visibly taken.
-  const assignedMap = assignedCoverageMap_(effectiveFilter);
+  const assignedMap = assignedCoverageMap_(effectiveFilter, allAssignments);
 
   // 3. Process Schedule Data
   // We return a structured object: { "September": [ { name, email, days, period, hours, pendingRequests }, ... ], ... }
@@ -3453,6 +3547,28 @@ function scheduleData_(effectiveFilter, onlyEmail) {
   // appears in — the months organise availability, not the hours.
   const schedule = {};
   MONTH_ORDER.forEach(m => schedule[m] = []);
+
+  // Each entry carries only its own month's pending requests and assignments.
+  // The client only ever draws an item in the cell whose month matches, and a
+  // person has an availability row per period per month — so sending their whole
+  // list on every row multiplied the payload by (rows x assignments), megabytes by
+  // spring. A pending request whose date couldn't be read has no month and shows
+  // in every month, so it stays on every row as before.
+  const forMonth = (list, month, keepUndated) => {
+    if (!list) return [];
+    return list.filter(x => x.month === month || (keepUndated && !x.month));
+  };
+  const monthCache = {};
+  const monthItems = (emailKey, month) => {
+    const key = emailKey + '\n' + month;
+    if (!monthCache[key]) {
+      monthCache[key] = {
+        pending: forMonth(pendingMap[emailKey], month, true),
+        assigned: forMonth(assignedMap[emailKey], month, false)
+      };
+    }
+    return monthCache[key];
+  };
 
   data.forEach(row => {
     const [month, days, period, name, email] = row;
@@ -3464,10 +3580,12 @@ function scheduleData_(effectiveFilter, onlyEmail) {
 
     if (schedule[month]) {
       const hours = (balances[emailKey] || {}).earned || 0;
+      const scheduledHours = scheduledMap[emailKey] || 0;
+      const items = monthItems(emailKey, month);
       schedule[month].push({
-        month, days, period, name, email, hours,
-        pendingRequests: pendingMap[emailKey] || [],
-        assignments: assignedMap[emailKey] || []
+        month, days, period, name, email, hours, scheduledHours,
+        pendingRequests: items.pending,
+        assignments: items.assigned
       });
     }
   });
@@ -3494,12 +3612,12 @@ function scheduleData_(effectiveFilter, onlyEmail) {
  * drop it into the one grid cell that would double-book it. The date itself is
  * what the admin asked to see, so it travels pre-formatted.
  */
-function assignedCoverageMap_(building) {
+function assignedCoverageMap_(building, allAssignments) {
   const hasCalendar = !!calendarIdFor_(building);
   const calendarName = hasCalendar ? calendarNameFor_(building) : '';
   const map = {};
 
-  assignmentRows_(a => a.building === building &&
+  (allAssignments || assignmentRows_()).filter(a => a.building === building &&
                        a.status !== ASSIGNMENT_STATUS_.cancelled).forEach(a => {
     const key = a.subEmail.toString().trim().toLowerCase();
     const day = parseYmd_(a.date);
@@ -3536,9 +3654,52 @@ function assignedCoverageMap_(building) {
   return map;
 }
 
+/**
+ * Coverage hours a person is already committed to but that are not in their
+ * approved `hours` yet, keyed by lowercased sub email — the "(+2 scheduled)" beside
+ * the number on the Master Schedule. The grid sorts on the two together, so the
+ * person who is booked for next week is not offered first just because the hours
+ * have not been approved; `hours` itself is unchanged and still equals the
+ * Directory's Earned column.
+ *
+ * An assignment counts until its hours are approved, at which point they are in
+ * `hours` instead — so nothing is counted twice:
+ *   - Assigned (upcoming, or past and not filed): counts, unless an approved
+ *     request already matches it.
+ *   - Recorded: counts only while its request is pending. A denied or deleted
+ *     request means those hours are not coming.
+ *   - Cancelled: never.
+ * Combined across buildings, like `hours`. Matched on email + date + period name
+ * (earnedKey_), the same rule linkFiledAssignments_ uses.
+ */
+function scheduledHoursMap_(allAssignments, approvalsValues) {
+  const approved = new Set();
+  const pending = new Set();
+  for (let i = 1; i < approvalsValues.length; i++) {
+    const r = approvalsValues[i];
+    if (!r[0]) continue;
+    const key = earnedKey_(r[0], r[4], r[5]);
+    if (r[8] === true || r[8] === 'TRUE') approved.add(key);
+    else if (!(r[10] === true || r[10] === 'TRUE')) pending.add(key);
+  }
+
+  const map = {};
+  allAssignments.forEach(a => {
+    if (a.status === ASSIGNMENT_STATUS_.cancelled) return;
+    const key = earnedKey_(a.subEmail, a.date, a.period);
+    if (approved.has(key)) return;
+    if (a.status === ASSIGNMENT_STATUS_.recorded && !pending.has(key)) return;
+    const who = a.subEmail.toString().trim().toLowerCase();
+    if (!who) return;
+    map[who] = (map[who] || 0) + (Number(a.hours) || 0);
+  });
+  Object.keys(map).forEach(k => { map[k] = Math.round(map[k] * 100) / 100; });
+  return map;
+}
+
 // Pending earned requests for one building, keyed by lowercased email.
-function getPendingEarnedMap_(building) {
-  const pendingList = pendingEarnedFor_(building);
+function getPendingEarnedMap_(building, approvalsValues) {
+  const pendingList = pendingEarnedFor_(building, approvalsValues);
   const map = {};
 
   pendingList.forEach(item => {
@@ -4290,6 +4451,34 @@ function alertCalendarFailure_(a, reason) {
 }
 
 /**
+ * Whether any building has calendar work waiting: an assignment whose event is
+ * still to be created or removed, or a Settings test event. Read without the lock,
+ * like emailQueueHasWork_, so an idle minute costs one read and no lock.
+ */
+function assignmentCalendarHasWork_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(ASSIGNMENTS_SHEET_);
+  if (sheet) {
+    const data = sheet.getDataRange().getValues();
+    for (let i = 1; i < data.length; i++) {
+      if (!data[i][A_.id]) continue;
+      const status = (data[i][A_.calendarStatus] == null ? '' : data[i][A_.calendarStatus]).toString();
+      if (status === CAL_.pending || status === CAL_.pendingDelete) return true;
+    }
+  }
+
+  const props = PropertiesService.getScriptProperties().getProperties();
+  return Object.keys(props).some(key => {
+    if (key.indexOf(CAL_TEST_PREFIX_) !== 0) return false;
+    try {
+      const job = JSON.parse(props[key]);
+      return !!job && job.state === 'pending';
+    } catch (e) {
+      return false;
+    }
+  });
+}
+
+/**
  * The calendar work the building admin's trigger does, for their buildings only.
  *
  * Has to be driven by a trigger rather than the web app: the app runs as whoever
@@ -4297,7 +4486,9 @@ function alertCalendarFailure_(a, reason) {
  * by the building admin whose calendar it is.
  */
 function processPendingAssignments_() {
-  const lock = LockService.getScriptLock();
+  if (!assignmentCalendarHasWork_()) return 0;
+
+  const lock = queueLock_();
   if (!lock.tryLock(5000)) return 0; // another admin's trigger is already on it
 
   try {
@@ -4954,14 +5145,20 @@ function assignmentConfirmedPage_(a, already) {
  *   period names (e.g. "Time Range"), so only this building's members are replaced.
  */
 // ===== Schedule notes =====
-// An admin's note on one cell of the Master Schedule — a month, period and weekday
+// An admin's notes on one cell of the Master Schedule — a month, period and weekday
 // in one building — for the things availability can't say: "7th grade team
 // meeting", so a teacher who put their name down there isn't picked anyway. Admin
 // only, both ways: it is the admin's planning, not something teachers are shown.
+//
+// A cell holds a list of notes, one sheet row each. A note with a Teacher Email is
+// about that person in that cell ("only free the second half") and is drawn on
+// their card; one without is about the whole period.
 
 const SCHEDULE_NOTES_SHEET_ = 'TST Schedule Notes';
-const SCHEDULE_NOTES_HEADER_ = ['Building', 'Month', 'Period', 'Day', 'Note', 'Updated', 'Updated By'];
+const SCHEDULE_NOTES_HEADER_ = ['Building', 'Month', 'Period', 'Day', 'Note', 'Updated', 'Updated By', 'Teacher Email'];
 const SCHEDULE_DAYS_ = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+const SCHEDULE_NOTE_MAX_LENGTH_ = 200;
+const SCHEDULE_NOTES_PER_CELL_ = 10;
 
 function scheduleNotesSheet_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -4970,11 +5167,18 @@ function scheduleNotesSheet_() {
     sheet = ss.insertSheet(SCHEDULE_NOTES_SHEET_);
     sheet.appendRow(SCHEDULE_NOTES_HEADER_.slice());
     sheet.setFrozenRows(1);
+    return sheet;
   }
+  // A sheet from before per-teacher notes stops at Updated By; its rows read as
+  // whole-period notes, which is what they were.
+  const header = sheet.getRange(1, 1, 1, SCHEDULE_NOTES_HEADER_.length).getValues()[0];
+  SCHEDULE_NOTES_HEADER_.forEach((h, i) => {
+    if (!(header[i] || '').toString().trim()) sheet.getRange(1, i + 1).setValue(h);
+  });
   return sheet;
 }
 
-/** { month: { period: { Mon: note, ... } } } for one building. */
+/** { month: { period: { Mon: [{ text, email }], ... } } } for one building, in sheet order. */
 function scheduleNotesFor_(building) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SCHEDULE_NOTES_SHEET_);
   const out = {};
@@ -4986,7 +5190,8 @@ function scheduleNotesFor_(building) {
     const m = month.toString(), p = period.toString(), d = day.toString();
     if (!out[m]) out[m] = {};
     if (!out[m][p]) out[m][p] = {};
-    out[m][p][d] = note.toString();
+    if (!out[m][p][d]) out[m][p][d] = [];
+    out[m][p][d].push({ text: note.toString(), email: (data[i][7] || '').toString().trim().toLowerCase() });
   }
   return out;
 }
@@ -4999,11 +5204,59 @@ function getScheduleNotes(buildingFilter) {
 }
 
 /**
- * Replaces one period's notes for a month — or, with allMonths, for every month,
- * since a standing team meeting is usually the same all year. A blank note removes
- * that day's note. Only this building's rows are touched.
+ * One day's notes as sent by the client: a list of { text, email } (or plain
+ * strings), or a single string from before a cell could hold more than one.
+ * Blank notes are dropped; an email is lowercased, blank meaning the whole period.
  */
-function saveScheduleNotes_(building, month, period, dayNotes, allMonths, byEmail) {
+function normalizeDayNotes_(value) {
+  const list = Array.isArray(value) ? value : [value];
+  return list.map(n => {
+    const isObj = n && typeof n === 'object';
+    return {
+      text: ((isObj ? n.text : n) || '').toString().trim().slice(0, SCHEDULE_NOTE_MAX_LENGTH_),
+      email: ((isObj ? n.email : '') || '').toString().trim().toLowerCase()
+    };
+  }).filter(n => n.text).slice(0, SCHEDULE_NOTES_PER_CELL_);
+}
+
+/**
+ * Checks one period's notes before anything is written, and returns them by day.
+ * A note about a teacher must name a member of the building — or someone already
+ * noted on this period, so a note about a person who has since been archived
+ * doesn't make the whole period impossible to save.
+ */
+function prepareScheduleNotes_(building, period, dayNotes, members) {
+  const byDay = {};
+  SCHEDULE_DAYS_.forEach(d => { byDay[d] = normalizeDayNotes_((dayNotes || {})[d]); });
+
+  const known = new Set();
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SCHEDULE_NOTES_SHEET_);
+  if (sheet) {
+    const data = sheet.getDataRange().getValues();
+    for (let i = 1; i < data.length; i++) {
+      if ((data[i][0] || '').toString() === building && (data[i][2] || '').toString() === period) {
+        known.add((data[i][7] || '').toString().trim().toLowerCase());
+      }
+    }
+  }
+  const outsiders = [];
+  SCHEDULE_DAYS_.forEach(d => byDay[d].forEach(n => {
+    if (n.email && !members.has(n.email) && !known.has(n.email) && !outsiders.includes(n.email)) {
+      outsiders.push(n.email);
+    }
+  }));
+  if (outsiders.length > 0) {
+    throw new Error('Not on the ' + building + ' schedule: ' + outsiders.join(', '));
+  }
+  return byDay;
+}
+
+/**
+ * Replaces one period's notes for a month — or, with allMonths, for every month,
+ * since a standing team meeting is usually the same all year. A day with no notes
+ * is cleared. Only this building's rows are touched. byDay is prepareScheduleNotes_'s.
+ */
+function saveScheduleNotes_(building, month, period, byDay, allMonths, byEmail) {
   const months = allMonths ? MONTH_ORDER.slice() : [month];
   const sheet = scheduleNotesSheet_();
   const data = sheet.getDataRange().getValues();
@@ -5022,8 +5275,7 @@ function saveScheduleNotes_(building, month, period, dayNotes, allMonths, byEmai
   const rows = [];
   months.forEach(m => {
     SCHEDULE_DAYS_.forEach(d => {
-      const note = ((dayNotes || {})[d] || '').toString().trim().slice(0, 200);
-      if (note) rows.push([building, m, period, d, note, now, byEmail]);
+      byDay[d].forEach(n => rows.push([building, m, period, d, n.text, now, byEmail, n.email]));
     });
   });
   if (rows.length > 0) {
@@ -5032,8 +5284,10 @@ function saveScheduleNotes_(building, month, period, dayNotes, allMonths, byEmai
 }
 
 /**
- * dayNotes (optional): { Mon: 'note', ... } — omitted, the period's notes are left
- * as they are. notesAllMonths applies them to every month rather than just this one.
+ * dayNotes (optional): { Mon: [{ text, email }], ... } — email blank for a note about
+ * the whole period (a plain string per day is still read as one such note). Omitted,
+ * the period's notes are left as they are. notesAllMonths applies them to every
+ * month rather than just this one.
  */
 function updateSchedulePeriod(month, period, dayUpdates, building, dayNotes, notesAllMonths) {
   const ctx = getUserContext();
@@ -5072,6 +5326,7 @@ function updateSchedulePeriod(month, period, dayUpdates, building, dayNotes, not
   if (outsiders.length > 0) {
     throw new Error('Not on the ' + effectiveBuilding + ' schedule: ' + outsiders.join(', '));
   }
+  const notesByDay = hasNotes ? prepareScheduleNotes_(effectiveBuilding, period, dayNotes, members) : null;
 
   // 3. Delete this building's members' rows for Month + Period (other buildings'
   //    rows with the same period name survive), bottom-up so indices stay valid.
@@ -5100,7 +5355,7 @@ function updateSchedulePeriod(month, period, dayUpdates, building, dayNotes, not
   }
 
   if (hasNotes) {
-    saveScheduleNotes_(effectiveBuilding, month, period, dayNotes, !!notesAllMonths, ctx.email);
+    saveScheduleNotes_(effectiveBuilding, month, period, notesByDay, !!notesAllMonths, ctx.email);
   }
 
   return true;

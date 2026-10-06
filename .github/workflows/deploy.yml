@@ -47,6 +47,12 @@ jobs:
         # Covers the authorization rules, so a deploy can't quietly widen access.
         run: node test/run.js
 
+      - name: Check inlined Tailwind CSS is up to date
+        # Never deploy an Index.html whose CSS was not rebuilt after a class change.
+        run: |
+          npm ci
+          npm run check:css
+
       - name: Install clasp
         # Pinned to the 3.3.x line to match the locally-authed clasp that wrote
         # the CLASPRC_JSON secret (clasp 3's ~/.clasprc.json schema differs from 2.x).

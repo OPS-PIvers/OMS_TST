@@ -11,7 +11,7 @@ OMS TST Manager is a Google Apps Script web application for managing TST (Time S
 - **Platform:** Google Apps Script (V8 Runtime)
 - **Backend:** [Code.js](Code.js) - Server-side logic using Google Apps Script APIs
 - **Frontend:** [Index.html](Index.html) - Single Page Application (SPA)
-- **Styling:** Tailwind CSS v3.x (via CDN)
+- **Styling:** Tailwind CSS 3.4.17, **pre-built and inlined** into Index.html (see *Styling build* below) — not the Play CDN
 - **Icons:** FontAwesome v6.x (via CDN)
 - **Database:** Google Spreadsheet (accessed via SpreadsheetApp)
 - **Deployment:** clasp (Command Line Apps Script Projects)
@@ -38,6 +38,21 @@ clasp open
 # Deploy a new version to the existing deployment
 clasp deploy -i AKfycbzPvaCCovRLEUVSe05KfRaDlXEs9k64oMCtpcXdOnYzVpP2BW16PaXV5SJVHNk3Ea3TBQ --description "Version description"
 ```
+
+### Styling build (Tailwind)
+
+Index.html's Tailwind CSS is generated ahead of time and inlined between the `BEGIN/END generated Tailwind CSS` markers in its `<style id="tailwind-css">` block. The page used to load Tailwind's Play CDN, which downloaded ~400 KB of JavaScript on every visit and rebuilt the stylesheet in the browser whenever the page changed.
+
+```bash
+npm install          # once: tailwindcss + postcss (build tooling only)
+npm run build:css    # after adding/changing classes in Index.html — commit the result
+npm run check:css    # what CI runs: fails if the inlined CSS is stale
+```
+
+- The theme (OPS colors, Lexend) lives in [tailwind.config.js](tailwind.config.js); [scripts/build-css.js](scripts/build-css.js) scans Index.html (minus the generated block) and rewrites the block on one line.
+- **A class added without rebuilding has no styles.** `check:css` runs in `test.yml` and again in `deploy.yml` before `clasp push`, so a stale block cannot ship. Never edit the generated block by hand.
+- Tailwind only finds **complete class names written out in the source**. Don't assemble them (`'bg-' + color + '-100'`); write each full name, e.g. in a lookup object.
+- `package.json`, `tailwind.config.js`, `scripts/` and `node_modules/` are not deployed (`.claspignore` is an allow-list), and `node test/run.js` still needs none of it.
 
 **Important:**
 - `clasp push` overwrites remote files completely. Always verify changes before pushing.
@@ -112,8 +127,11 @@ The application relies on four key sheets within the bound Google Spreadsheet:
    - Rows archive to **TST Assignments Archive** at year-end, by building (`archiveAssignmentsForBuilding_`).
 
 6. **TST Schedule Notes** - Admin notes on Master Schedule cells (auto-created)
-   - Columns: Building (A), Month (B), Period (C), Day (D), Note (E), Updated (F), Updated By (G)
+   - Columns: Building (A), Month (B), Period (C), Day (D), Note (E), Updated (F), Updated By (G), Teacher Email (H)
    - For things availability can't say ("7th grade team meeting") so the admin doesn't pick someone who listed themselves there. **Admin-only both ways** — `getScheduleNotes(building)` reads, and `updateSchedulePeriod`'s optional `dayNotes` / `notesAllMonths` args write. Omitting `dayNotes` leaves notes untouched; "every month" copies to all of `MONTH_ORDER`. Kept out of `getScheduleData` so its month-keyed shape stays as is.
+   - **A cell holds a list of notes**, one row each, read back in sheet order as `{ month: { period: { Mon: [{ text, email }] } } }` (up to `SCHEDULE_NOTES_PER_CELL_` = 10, 200 characters each; line breaks are kept and drawn). `dayNotes` takes the same `[{ text, email }]` per day; a plain string per day is still accepted as one whole-period note.
+   - **Teacher Email** blank = about the whole period (drawn at the top of the cell); set = about that person in that cell, drawn on their card. A note about someone not listed in the cell is drawn at the top with their name, so removing a teacher from a cell never hides a note. A sheet from before the column existed gains it on the next save, and its rows read as whole-period notes.
+   - A teacher note must name a member of the building (`prepareScheduleNotes_`, checked before availability is touched, like `dayUpdates`) — **or someone already noted on that period**, so a note about a teacher archived since doesn't make the period impossible to save.
 
 ### Key Server Functions
 
@@ -179,6 +197,7 @@ Coverage is **assigned**, not requested — there is no accept/decline handshake
 - **Cancel** removes a *pending* earned request and emails both staff. If the hours are already **approved** it refuses and points at the existing Revert flow — approved hours are never clawed back silently.
 - **Filed without pressing Record:** a teacher who files the hours through the Submit form or the Google Form instead of the Record button still records the assignment. `linkFiledAssignments_` matches a non-denied earned row by email + date + `periodKey_` (the period name without bell times) and marks it `Recorded` with Recorded By `filed`. It runs at filing time (`processEarnedSubmission_`), when the queues are read (`assignmentsFor_`, `getMyAssignments`) and before the nudge. Before it existed, such an assignment sat at "Not recorded" with the hours already approved, and Cancel — the only button that looked like a fix — emails both staff. `recordAssignment_` likewise skips `submitEarned_` when a matching request already exists.
 - **Reminders:** one automatic nudge at ~7am the day after the coverage date (`nudgeOutstandingAssignments`, marked via Nudged TS so it fires once), plus a manual Remind button. A manual reminder counts as the one nudge.
+- **Assignments tab history:** the list opens on the assignments still open (status `Assigned` — upcoming, or past and not recorded); Recorded and Cancelled ones sit behind "Show recorded & cancelled (N)" (`STATE.showAssignmentHistory`, kept for the session). It only changes what is drawn: `getAssignments` still returns every row, and nothing is moved to another sheet — the duplicate guard, the cancelled-reassign warning and `linkFiledAssignments_` all need the full history in one place.
 - **Badges:** the admin Assignments badge and the teacher's Submit badge both count only **past-date, not-yet-recorded** coverage. Upcoming assignments are not actionable, so counting them would leave a permanent number on the tab. The admin count comes from `assignmentsFor_`, the same helper as the list, so badge and list cannot disagree.
 - **Emails all go through the queue** (`addToEmailQueue_`), which is what makes the **building's own admin** the sender. Nothing about an assignment may call `MailApp.sendEmail` directly — that was the bug in the old `sendCoverageRequest`, which sent as the deployer.
 
@@ -188,6 +207,7 @@ Coverage is **assigned**, not requested — there is no accept/decline handshake
 - `periodTimesFor_(building, period, date)` resolves in order: **day-group override → building default (`periodTimes`) → times written into the label**. It returns `null` when nothing is configured, and that `null` is meaningful — the calendar reports it instead of inventing a time.
 - **OHS runs two bell schedules**: Mon/Wed/Fri are the defaults, Tue/Thu is a `dayGroups` entry. **Spartan Hour only exists on Tue/Thu**, so it deliberately has no default time; assigning it on a Monday reports "no time set for that day". Do not add a Mon/Wed/Fri default to silence that — it would put someone on a calendar at a time that does not exist.
 - `parseTimeRange_` reads a **one-digit hour as 12-hour** and a two-digit one as 24-hour. That is what keeps `Period 8 - 12:37 - 1:08` from becoming a twelve-hour event while leaving an `<input type="time">` value alone.
+- `getConfig()` reads the App Config sheet **once per execution** (`configRowsMemo_`) and parses a fresh copy for each caller, so callers may still mutate what they get. `periodDisplay_`, `calendarIdFor_` and friends run once per assignment in the queues and the schedule; re-reading the sheet each time made those screens slower with every assignment ever made. Apps Script gives every execution fresh globals, so the memo never outlives a request; anything that writes App Config must clear it (as `saveBuildingConfig` does). The test harness calls `resetExecutionCache_()` before each simulated call.
 - `config.js` seeds App Config **only when the sheet does not exist**, so editing it does nothing to a district already running — a schedule added to `config.js` later never appears, and Settings shows empty time fields while the times are perfectly well defined in the source. **Settings → Periods → "Load Built-In Schedule"** (`installBellSchedule(building)`) copies them across, leaving calendar ID, carry-over cap and name untouched.
   - `installBellSchedule` **requires an explicit building** rather than falling back to the caller's own the way reads do. It replaces a building's periods, and the Apps Script editor's Run button passes no arguments, so a default would quietly rewrite the wrong school.
 
@@ -223,15 +243,18 @@ That ordering is deliberate and load-bearing:
   - The number under each name is **approved hours earned so far this school year**, combined across the person's buildings — literally `calculateDynamicBalances_(null).earned`, the same value the Directory's Earned column shows, so the two screens cannot disagree. It is what the grid sorts by, so whoever has contributed least is offered first.
     - **Earned, not available.** Used hours, Paid Out and Carry Over must never be subtracted from it. It measures who has been covering, not who has hours banked — someone who covers constantly and spends it all must not read as the least busy person in the building. Don't "fix" it to match the Directory's Running Total.
     - Pending and denied rows are excluded. Counting a denied request would steer coverage away from the person whose request you turned down, and pending coverage is already surfaced in the same cell by its own hourglass.
+    - **Scheduled hours sit beside it, never inside it**: "6.0 hrs earned (+2 scheduled)". `scheduledHoursMap_` gives each entry `scheduledHours` — coverage already assigned but not yet approved, combined across buildings — and the grid **sorts on `hours + scheduledHours`**, so the person booked for next week isn't offered first just because those hours aren't approved yet (a building admin's request). An assignment counts until its hours are approved, then they are in `hours` instead, so nothing is counted twice: *Assigned* counts unless an approved request matches it; *Recorded* counts only while its request is pending (denied or deleted means those hours aren't coming); *Cancelled* never. Matching is email + date + period name (`earnedKey_`), as in `linkFiledAssignments_`. `hours` itself must still equal the Directory's Earned.
     - It is **not** date-filtered, so it is the same number in every month a person appears in — the months organise availability, not hours. `finalizeSchoolYear` deletes approved rows from the sheet, and that is what resets it. An earlier version bucketed by month against the real clock; the building admins asked for a running total instead.
   - Each entry's `pendingRequests` carry `month` and `weekday` (`getPendingEarnedMap_`), and the hourglass only shows in the grid cell that matches both **and the period**, so a pending Tuesday Period 3 submission shows only on that cell. Periods are compared by name (`schedulePeriodKey()` in Index.html: `Period 3 - 9:52 - 10:39` and a legacy `3` both read `period 3`), so editing bell times doesn't strand older requests; a combined period (`Period 4/5`) only matches its own row. A `time_range` building compares no period, the same as the Assigned chips. A request whose date can't be read has a blank month and shows on its period in every column rather than disappearing.
   - A second, **gray** hourglass (`otherPeriodsSameDay()` in Index.html) marks a person who already has a pending request *or* an assignment in a **different** period on that same month and weekday. Narrowing the orange one to the period (#27) took that signal away, and admins use it to avoid taking two preps from someone on one day. It is a warning, not a refusal — the server's same-date conflict prompt is unchanged. Not shown for `time_range` buildings.
+  - Each entry's `pendingRequests` and `assignments` are **only that entry's month** (an undated pending request has no month and rides on every row). The client never draws an item outside its month, and sending a person's whole list on each of their availability rows grew the payload with rows × assignments — megabytes by spring.
   - Each entry also carries `assignments` — coverage already assigned to that person, from `assignedCoverageMap_(building)`. The client shows the dates on the person's card in the one grid cell a second booking would collide in (same month, same weekday, same period), with the detail on hover.
     - The source is the **TST Assignments row, not the calendar event**, which is the whole point: the row exists from the moment the admin assigns, so someone who was given coverage and never filed the form still reads as taken. The hourglass beside it only ever knew about a request that was filed, which is how the same person got booked twice.
     - For that reason it is **not gated on the building having a calendar** — a building with no calendar has the same double-booking problem. Where there *is* a calendar, each entry's `calendar` string says where the event stands (on the calendar / still queued / failed), and it is blank when the building has none.
     - Cancelled assignments are excluded (freeing the person up is the reason to cancel); recorded ones stay, flagged `recorded` — the coverage still happened.
     - The cell match compares the period only in a `periods` building. A `time_range` building (OIS, SE) stores the assignment's period as the **time span that was picked** while its grid row is a placeholder ("Time Range"), so there the month and weekday are the whole cell — `schedulePeriodsAreComparable()` in Index.html is that rule.
     - Assigning from the grid reloads it (`sendAssignment`), so the card the admin is looking at stops saying the person is free.
+  - **Only open months are drawn.** `renderAdminSchedule` draws the month headers and the grid of each month in `STATE.expandedMonths` (`adminScheduleMonthBody(month)`); `toggleAccordion` draws any other month the first time it is opened (the content div carries `data-month` / `data-rendered`). Building all ten months and hiding nine was most of the cost of opening the tab. Anything that needs a month's cells must open it first — editing a period already forces its month open.
 - **updateSchedulePeriod(month, period, dayUpdates, building)** - Admin only; `building` must pass `allowedBuildingFor_` (defaults to the caller's own building). Only deletes/rebuilds rows for that building's `scheduleMembers_` — buildings can share period names (OIS and SE both use "Time Range"), so other buildings' rows must survive. Rejects (before touching the sheet) any email in `dayUpdates` that isn't a member.
 - Client: the eye button in the Directory's Actions column calls `startViewAs(email)`, which stashes the admin's `STATE.user`/`STATE.building` in `STATE.viewAs` and swaps in the teacher; `exitViewAs()` (banner or profile menu) restores them. Teacher actions already send `STATE.user.email`, so submissions made while viewing as someone are recorded under that teacher.
 
@@ -252,10 +275,20 @@ Switch School (multi-building) · Update Carry Over · Finalize School Year · V
 
 [Index.html](Index.html) is ~1900 lines containing:
 - HTML structure with Tailwind utility classes
-- Custom Tailwind config with OPS brand colors (`ops-blue`, `ops-red`, etc.)
+- Pre-built Tailwind CSS (inlined; theme with OPS brand colors `ops-blue`, `ops-red`, etc. in `tailwind.config.js`)
 - Client-side JavaScript for UI rendering and state management
 - Modal system for forms and confirmations
 - Toast notification system
+
+### Tab cache (admin tabs)
+
+`switchTab` redraws an admin tab (Earned, Used, Assignments, Schedule, Directory) from the data it last drew (`TAB_CACHE`, filled by each loader via `cacheTab`) while the loader fetches fresh data exactly as before — every visit still fetches. Rules that keep it safe:
+- The copy is drawn **locked** (`inert`, dimmed, `aria-busy`) and only unlocked by `tabLoaded()` once the fresh data has been drawn over it. Approve/Deny address rows by number, which shift, so nothing may ever be clicked on a cached copy.
+- If the fetch fails, `discardCachedView()` replaces a locked copy with an error rather than unlocking it.
+- It is keyed by building + signed-in (or View As) email + `showArchived`, so a school switch or View As never shows someone else's copy.
+- `showCachedTab` mirrors each loader's own before/after steps (selection resets, `STATE` fields); keep the two in step when changing a loader.
+
+`updateBadges` sends one `getDashboardCounts` at a time and coalesces calls made meanwhile into a single re-run, so the badge always ends on a count requested after the latest change.
 
 ### Role-Based Views
 
@@ -277,7 +310,7 @@ Switch School (multi-building) · Update Carry Over · Finalize School Year · V
 
 ## Custom Color Palette
 
-Defined in Tailwind config within [Index.html](Index.html):
+Defined in [tailwind.config.js](tailwind.config.js) (run `npm run build:css` after changing it):
 - `ops-blue`: #2d3f89 (primary brand color)
 - `ops-blue-dark`: #1d2a5d
 - `ops-blue-lighter`: #eaecf5 (backgrounds)
@@ -323,6 +356,8 @@ The `onFormSubmit(e)` function must be set up as an **installable trigger** in t
 **Each building admin** installs their own triggers from the spreadsheet menu (**TST Admin → Authorize Email Service**), which is what makes queued mail go out as them. `setupEmailService` installs three: `processEmailQueue` on change, `processEmailQueue` every minute, and `nudgeOutstandingAssignments` daily at 7am. Re-running it clears the old set first, so it is also the fix for a trigger Apps Script has disabled.
 
 Because triggers are per-user, a building admin needs **standing access to the TST spreadsheet** — `processEmailQueue_` reads and writes the Email Queue sheet as the trigger owner. Without it, that building's mail queues and never sends.
+
+**Locking.** `processEmailQueue_` and `processPendingAssignments_` share `queueLock_()` — the **document** lock (script lock only as a fallback) — and only with each other. The script lock belongs to `processEarnedSubmission_`'s duplicate guard; when the processors held it, a teacher's Submit waited behind another admin's whole email batch. They never write the same cells (the processors own Email Queue rows and the calendar columns; a submission appends earned rows and marks an assignment recorded), so keep them on separate locks. Each processor first checks for work without any lock (`emailQueueHasWork_`, `assignmentCalendarHasWork_`), so an idle minute costs one sheet read — no lock and no directory read — and then re-reads under the lock before acting.
 
 A Super Admin's trigger **does not** process other buildings' queue rows (`processEmailQueue_`). It used to, which raced the building admin every minute and made the From name a coin flip. The trade-off is deliberate: a building with nobody authorized queues mail rather than sending it under the wrong name.
 
