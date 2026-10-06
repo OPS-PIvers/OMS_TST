@@ -5115,6 +5115,26 @@
       return /^[0-9]/.test(s) ? 'period ' + s : s;
     }
 
+    /**
+     * What a person already has on this cell's day (same month and weekday) in a
+     * *different* period: pending requests and live assignments alike. The cell's
+     * own period is left to the hourglass and the Assigned chips; this is what tells
+     * an admin the person is already giving up a prep that day. A time_range
+     * building has no other period to compare, and a request whose date couldn't be
+     * read can't be placed on a day, so both yield nothing.
+     */
+    function otherPeriodsSameDay(t, month, day, period, comparePeriods) {
+      if (!comparePeriods) return [];
+      const key = schedulePeriodKey(period);
+      const pending = (t.pendingRequests || [])
+        .filter(r => r.month === month && r.weekday === day && schedulePeriodKey(r.period) !== key)
+        .map(r => ({ kind: 'Pending', date: new Date(r.date).toLocaleDateString(), period: r.period, coveredFor: r.subbedFor }));
+      const assigned = (t.assignments || [])
+        .filter(a => a.month === month && a.weekday === day && a.period !== period && schedulePeriodKey(a.period) !== key)
+        .map(a => ({ kind: a.recorded ? 'Recorded' : 'Assigned', date: a.dateDisplay, period: a.periodDisplay || a.period, coveredFor: a.coveredFor }));
+      return pending.concat(assigned);
+    }
+
     function loadTeacherSchedule() {
        google.script.run.withSuccessHandler(data => {
          renderTeacherSchedule(data);
@@ -5493,6 +5513,35 @@
                                                      data-tooltip="${escapeHtml(tooltipHtml)}"
                                                      onmouseenter="showTooltip(event, this.dataset.tooltip)"
                                                      onmousemove="moveTooltip(event)" 
+                                                     onmouseleave="hideTooltip()">
+                                                  </i>`;
+                                             }
+
+                                             // Already booked another period that same day. Gray rather
+                                             // than orange: nothing collides in this cell, but the admin
+                                             // should see it before taking a second prep from them.
+                                             const elsewhere = otherPeriodsSameDay(t, month, d, p, comparePeriods);
+                                             if (elsewhere.length > 0) {
+                                                const elsewhereItems = elsewhere.map(e => `
+                                                    <div class="border-b border-gray-600/50 pb-2 mb-2 last:border-0 last:pb-0 last:mb-0">
+                                                      <div class="flex justify-between items-center gap-3 mb-0.5">
+                                                        <span class="font-bold text-white">${escapeHtml(e.date)}</span>
+                                                        <span class="bg-gray-700 text-gray-100 px-1.5 py-0.5 rounded text-[10px] font-medium">${escapeHtml(e.kind)}</span>
+                                                      </div>
+                                                      <div class="text-gray-300 truncate text-[11px]">${escapeHtml(e.period)}</div>
+                                                      ${e.coveredFor ? `<div class="text-gray-300 truncate text-[11px]"><span class="opacity-75">Covering:</span> ${escapeHtml(displayCoveredName(e.coveredFor))}</div>` : ''}
+                                                    </div>`).join('');
+                                                const elsewhereTooltip = `
+                                                  <div class="font-bold text-gray-100 border-b border-gray-500/30 pb-2 mb-2 uppercase tracking-wide text-[10px] flex items-center gap-2">
+                                                    <i class="fas fa-hourglass-half"></i> Booked another period this day (${elsewhere.length})
+                                                  </div>
+                                                  <div>${elsewhereItems}</div>
+                                                `;
+                                                pendingIndicator += `
+                                                  <i class="fas fa-hourglass-half text-gray-400 ml-1 cursor-help hover:text-gray-600 transition-colors"
+                                                     data-tooltip="${escapeHtml(elsewhereTooltip)}"
+                                                     onmouseenter="showTooltip(event, this.dataset.tooltip)"
+                                                     onmousemove="moveTooltip(event)"
                                                      onmouseleave="hideTooltip()">
                                                   </i>`;
                                              }
