@@ -139,6 +139,31 @@ exports.run = function ({ test, assert }) {
     assert.ok(key('Period 5A') !== key('Period 5B'));
   });
 
+  test('a booking in another period that same day is surfaced, not one in this period', () => {
+    const html = require('fs').readFileSync(require('path').join(__dirname, '..', 'Index.html'), 'utf8');
+    const keySrc = /function schedulePeriodKey\(label\) \{[\s\S]*?\n    \}/.exec(html);
+    const src = /function otherPeriodsSameDay\([^)]*\) \{[\s\S]*?\n    \}/.exec(html);
+    assert.ok(src, 'otherPeriodsSameDay is missing from Index.html');
+    const other = new Function(keySrc[0] + '\n' + src[0] + '\nreturn otherPeriodsSameDay;')();
+
+    const t = {
+      pendingRequests: [
+        { month: 'October', weekday: 'Tue', period: 'Period 2 - 8:59 - 9:46', date: '2026-10-06', subbedFor: 'A' },
+        { month: 'October', weekday: 'Tue', period: 'Period 3 - 9:52 - 10:39', date: '2026-10-06', subbedFor: 'B' },
+        { month: 'October', weekday: 'Wed', period: 'Period 2 - 8:59 - 9:46', date: '2026-10-07', subbedFor: 'C' },
+        { month: '', weekday: '', period: 'Period 2', date: '', subbedFor: 'D' }
+      ],
+      assignments: [
+        { month: 'October', weekday: 'Tue', period: 'Period 6 - 12:37 - 1:08', dateDisplay: 'Tue, Oct 13', coveredFor: 'E' },
+        { month: 'October', weekday: 'Tue', period: 'Period 3 - 9:52 - 10:39', dateDisplay: 'Tue, Oct 13', coveredFor: 'F' }
+      ]
+    };
+    const got = other(t, 'October', 'Tue', 'Period 3 - 9:52 - 10:39', true).map(e => e.coveredFor).sort();
+    assert.deepEqual(got, ['A', 'E'], 'other periods on the same month and weekday only');
+    assert.deepEqual(other(t, 'October', 'Tue', 'Time Range', false), [],
+      'a time-range building has no other period');
+  });
+
   test('a checkbox read back as the string "TRUE" still counts', () => {
     const grid = gridWith([row(USERS.omsTeacher, 'Tina Teacher', '2025-09-10', 3, 'TRUE', '')]);
     assert.equal(hoursFor(grid, 'September', USERS.omsTeacher), 3);
