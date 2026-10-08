@@ -198,7 +198,7 @@ Coverage is **assigned**, not requested — there is no accept/decline handshake
 - **Filed without pressing Record:** a teacher who files the hours through the Submit form or the Google Form instead of the Record button still records the assignment. `linkFiledAssignments_` matches a non-denied earned row by email + date + `periodKey_` (the period name without bell times) and marks it `Recorded` with Recorded By `filed`. It runs at filing time (`processEarnedSubmission_`), when the queues are read (`assignmentsFor_`, `getMyAssignments`) and before the nudge. Before it existed, such an assignment sat at "Not recorded" with the hours already approved, and Cancel — the only button that looked like a fix — emails both staff. `recordAssignment_` likewise skips `submitEarned_` when a matching request already exists.
 - **Reminders:** one automatic nudge at ~7am the day after the coverage date (`nudgeOutstandingAssignments`, marked via Nudged TS so it fires once), plus a manual Remind button. A manual reminder counts as the one nudge.
 - **Assignments tab history:** the list opens on the assignments still open (status `Assigned` — upcoming, or past and not recorded); Recorded and Cancelled ones sit behind "Show recorded & cancelled (N)" (`STATE.showAssignmentHistory`, kept for the session). It only changes what is drawn: `getAssignments` still returns every row, and nothing is moved to another sheet — the duplicate guard, the cancelled-reassign warning and `linkFiledAssignments_` all need the full history in one place.
-- **Badges:** the admin Assignments badge and the teacher's Submit badge both count only **past-date, not-yet-recorded** coverage. Upcoming assignments are not actionable, so counting them would leave a permanent number on the tab. The admin count comes from `assignmentsFor_`, the same helper as the list, so badge and list cannot disagree.
+- **Badges:** the admin Assignments badge and the teacher's Assignments badge both count only **past-date, not-yet-recorded** coverage. Upcoming assignments are not actionable, so counting them would leave a permanent number on the tab. The admin count comes from `assignmentsFor_`, the same helper as the list, so badge and list cannot disagree.
 - **Emails all go through the queue** (`addToEmailQueue_`), which is what makes the **building's own admin** the sender. Nothing about an assignment may call `MailApp.sendEmail` directly — that was the bug in the old `sendCoverageRequest`, which sent as the deployer.
 
 #### Period times, and how a period reads to a person
@@ -298,8 +298,10 @@ Switch School (multi-building) · Update Carry Over · Finalize School Year · V
 - `admin-reports`: Staff directory with balance overview and email functionality
 
 **Teacher Views:**
-- `teacher-totals`: Personal balance and quick submission forms
-- `teacher-history`: Complete transaction history (earned, used, denied)
+- `teacher-submit`: Submit earned time. When assigned coverage is waiting to be recorded, a banner points to the Assignments tab instead of listing it here
+- `teacher-assignments`: The teacher's own coverage (`getMyAssignments`): **Needs recording** (past, not recorded, with the Record button), **Upcoming coverage**, **Coverage arranged for your classes**, and recorded ones behind "Show recorded" (`STATE.showMyAssignmentHistory`). "Needs recording" uses the same rule as the badge (`countRecordableAssignments`), so the two cannot disagree
+- `teacher-schedule`: Own availability
+- `teacher-totals`: My Report: balance and full transaction history
 
 ### Form Validation & Safety
 
