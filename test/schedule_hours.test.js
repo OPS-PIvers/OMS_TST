@@ -86,7 +86,7 @@ exports.run = function ({ test, assert }) {
   });
 
   test('a pending request is not counted, but still rides along as pending', () => {
-    const grid = gridWith([row(USERS.omsTeacher, 'Tina Teacher', '2025-09-10', 2, false, false)]);
+    const grid = gridWith([row(USERS.omsTeacher, 'Tina Teacher', '2053-09-10', 2, false, false)]);
     const cell = grid['September'].find(r => r.email.toLowerCase() === USERS.omsTeacher);
 
     assert.equal(cell.hours, 0, 'unapproved hours are not earned hours');
@@ -102,8 +102,8 @@ exports.run = function ({ test, assert }) {
     grid[month].find(r => r.email.toLowerCase() === USERS.omsTeacher).pendingRequests;
 
   test('a pending request carries the month and weekday it was for', () => {
-    // 2025-09-10 is a Wednesday.
-    const grid = gridWith([row(USERS.omsTeacher, 'Tina Teacher', '2025-09-10', 1, false, false)]);
+    // 2053-09-10 is a Wednesday (and in the future, which is when the grid shows it).
+    const grid = gridWith([row(USERS.omsTeacher, 'Tina Teacher', '2053-09-10', 1, false, false)]);
     const p = pendingOf(grid, 'September')[0];
     assert.equal(p.month, 'September');
     assert.equal(p.weekday, 'Wed');
@@ -112,10 +112,20 @@ exports.run = function ({ test, assert }) {
   test('a date cell late in the evening keeps its own weekday', () => {
     // safeDate sends a date cell as UTC ISO; 9pm Central is already the next day
     // in UTC, so reading the date off the string would move it to Thursday.
-    const grid = gridWith([row(USERS.omsTeacher, 'Tina Teacher', new Date(2025, 8, 10, 21, 0, 0), 1, false, false)]);
+    const grid = gridWith([row(USERS.omsTeacher, 'Tina Teacher', new Date(2053, 8, 10, 21, 0, 0), 1, false, false)]);
     const p = pendingOf(grid, 'September')[0];
     assert.equal(p.weekday, 'Wed');
     assert.equal(p.month, 'September');
+  });
+
+  test('a pending request for a date that has passed drops off the grid', () => {
+    // It is still waiting in the Earned queue; the grid only answers "is this
+    // person taken that day", and a day that is over can't be taken.
+    const grid = gridWith([
+      row(USERS.omsTeacher, 'Tina Teacher', '2025-09-10', 1, false, false),
+      row(USERS.omsTeacher, 'Tina Teacher', '2053-09-10', 1, false, false)
+    ]);
+    assert.deepEqual(pendingOf(grid, 'September').map(p => p.date), ['2053-09-10']);
   });
 
   test('an unreadable date leaves month blank, so the client keeps showing it', () => {

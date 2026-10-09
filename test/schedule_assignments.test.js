@@ -147,14 +147,22 @@ exports.run = function ({ test, assert }) {
       'never a stored 24-hour time in front of a person');
   });
 
-  test('coverage that has not happened yet reads as upcoming', () => {
+  test('coverage dated today still shows', () => {
     const env = envFor(USERS.omsAdmin);
-    assign(env);
-    assert.equal(bookingsFor(env, 'OMS', SOON.month, USERS.omsTeacher)[0].upcoming, true);
+    const today = coverageDate(0);
+    assign(env, { date: today.key });
+    assert.equal(bookingsFor(env, 'OMS', today.month, USERS.omsTeacher).length, 1,
+      'the day is not over yet');
+  });
 
-    const past = envFor(USERS.omsAdmin);
-    assign(past, { date: PAST.key });
-    assert.equal(bookingsFor(past, 'OMS', PAST.month, USERS.omsTeacher)[0].upcoming, false);
+  test('coverage whose date has passed drops off the grid', () => {
+    // The cell is month x weekday, so last Friday's coverage would otherwise sit
+    // on every Friday of the month. Chasing an unrecorded one is the Assignments
+    // tab's job, not the grid's.
+    const env = envFor(USERS.omsAdmin);
+    assign(env, { date: PAST.key });
+    assert.equal(bookingsFor(env, 'OMS', PAST.month, USERS.omsTeacher).length, 0);
+    assert.equal(env.run('getAssignments', 'OMS').length, 1, 'the assignment itself is untouched');
   });
 
   test('a second booking on another date is listed alongside the first', () => {
@@ -179,13 +187,13 @@ exports.run = function ({ test, assert }) {
       'freeing the person up is the whole reason to cancel');
   });
 
-  test('a recorded assignment stays, flagged as recorded', () => {
+  test('a recorded assignment stays until its date passes, flagged as recorded', () => {
     const env = envFor(USERS.omsAdmin);
-    const id = assign(env, { date: PAST.key });
+    const id = assign(env);
     assert.allowed(env.attempt('recordAssignment', id, USERS.omsTeacher));
 
-    const booked = bookingsFor(env, 'OMS', PAST.month, USERS.omsTeacher);
-    assert.equal(booked.length, 1, 'the coverage still happened');
+    const booked = bookingsFor(env, 'OMS', SOON.month, USERS.omsTeacher);
+    assert.equal(booked.length, 1, 'the person is still committed that day');
     assert.equal(booked[0].recorded, true);
   });
 
