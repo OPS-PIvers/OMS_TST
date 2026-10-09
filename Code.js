@@ -3605,8 +3605,12 @@ function scheduleData_(effectiveFilter, onlyEmail) {
  * the booking; a building without one simply has no calendar line to show.
  *
  * Cancelled assignments are left out — the whole reason to cancel is to free the
- * person up. Recorded ones stay in: the coverage still happened, and the admin is
+ * person up. Recorded ones stay in while the date is still to come: the admin is
  * looking at this to see who is committed on a given day.
+ *
+ * Past dates are left out. The grid cell is month x weekday, so a coverage from
+ * last Friday sat on every Friday of the month and read as if the person were still
+ * taken. Following up on one that was never recorded is the Assignments tab's job.
  *
  * Each entry carries the month / weekday / period it belongs to so the client can
  * drop it into the one grid cell that would double-book it. The date itself is
@@ -3622,6 +3626,8 @@ function assignedCoverageMap_(building, allAssignments) {
     const key = a.subEmail.toString().trim().toLowerCase();
     const day = parseYmd_(a.date);
     if (!key || !day) return;
+    // Once the day is over it can't collide with anything (see scheduleData_).
+    if (daysSinceDate_(a.date) > 0) return;
 
     let calendar = '';
     if (hasCalendar) {
@@ -3644,7 +3650,6 @@ function assignedCoverageMap_(building, allAssignments) {
       coveredFor: a.coveredFor,
       status: a.status,
       recorded: a.status === ASSIGNMENT_STATUS_.recorded,
-      upcoming: daysSinceDate_(a.date) <= 0,
       calendar: calendar
     });
   });
@@ -3704,13 +3709,17 @@ function getPendingEarnedMap_(building, approvalsValues) {
 
   pendingList.forEach(item => {
     const key = item.email.toString().trim().toLowerCase();
+    // Minimal data needed for the tooltip/indicator, plus the month / weekday the
+    // client matches (with the period) against the grid cell, so the hourglass
+    // only shows where the coverage was. Same cell rule as assignedCoverageMap_,
+    // including dropping a date that has passed: the request is still waiting in
+    // the Earned queue, but the person is no longer taken that day. An unreadable
+    // date is kept, since there is no telling whether it has passed.
+    const day = pendingRequestDay_(item.date);
+    if (day && daysSinceDate_(day) > 0) return;
     if (!map[key]) {
       map[key] = [];
     }
-    // Minimal data needed for the tooltip/indicator, plus the month / weekday the
-    // client matches (with the period) against the grid cell, so the hourglass
-    // only shows where the coverage was. Same cell rule as assignedCoverageMap_.
-    const day = pendingRequestDay_(item.date);
     map[key].push({
       date: item.date, // Already safeDate string
       subbedFor: item.subbedFor,

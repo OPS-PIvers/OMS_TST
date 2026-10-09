@@ -131,8 +131,10 @@ exports.run = function ({ test, assert }) {
         seen += e.assignments.length;
       });
     });
-    // Every assignment that falls in a school month still appears exactly once.
-    const all = env.run('getAssignments', 'OMS').filter(a => grid[MONTH_NAMES[Number(a.date.slice(5, 7)) - 1]]);
+    // Every assignment still to come that falls in a school month appears exactly once.
+    const today = env.context.normDateKey_(new Date());
+    const all = env.run('getAssignments', 'OMS').filter(a => a.date >= today &&
+      grid[MONTH_NAMES[Number(a.date.slice(5, 7)) - 1]]);
     assert.equal(seen, all.length);
     assert.ok(seen > 0, 'no assignments landed in the school year');
   });
