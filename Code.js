@@ -1162,6 +1162,171 @@ function archiveRowsByEmails_(ss, srcName, archName, approvedIdx, emailSet, year
   }
 }
 
+/**
+ * One-off repair for a building that skipped Finalize School Year and fixed Carry
+ * Over by hand: last year's approved Used rows are still in TST Usage (New), so
+ * they count against this year's balance a second time. This moves them to TST
+ * Usage Archive — exactly what finalize would have done for Used — and touches
+ * nothing else (Carry Over, Paid Out and Earned stay as the admin left them).
+ *
+ * Scope matches finalize: approved rows dated before `cutoff`, for staff whose
+ * PRIMARY building is `building`, whichever building the row is tagged with.
+ *
+ * Super Admin only. Dry run unless `apply === true`: the default only reports what
+ * would move. Every archived row carries `label` in its School Year column, so
+ * restoreArchivedUsed(label, true) puts them back. Run from the web app's console:
+ *   google.script.run.withSuccessHandler(console.log)
+ *     .archiveUsedBefore('OHS', '2026-07-01', '2025-26 OHS Used cleanup')
+ */
+function archiveUsedBefore(building, cutoff, label, apply) {
+  const ctx = getUserContext();
+  if (!ctx.isSuperAdmin) throw new Error('Unauthorized: Super Admin access required.');
+
+  const bldg = (building || '').toString().trim();
+  if (!bldg) throw new Error("Name the building, e.g. archiveUsedBefore('OHS', '2026-07-01', '2025-26 OHS Used cleanup').");
+  const cutoffDate = parseCleanupDate_(cutoff);
+  if (!cutoffDate) throw new Error('Give the cutoff as a date, e.g. 2026-07-01.');
+  const tag = (label || '').toString().trim();
+  if (!tag) throw new Error('A label is required — it is what restoreArchivedUsed uses to undo this.');
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const src = ss.getSheetByName('TST Usage (New)');
+  if (!src) throw new Error("Sheet 'TST Usage (New)' not found.");
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const primaryHere = new Set();
+    const staffSheet = getStaffSheet_();
+    const idx = getStaffIndices_(staffSheet);
+    staffSheet.getDataRange().getValues().slice(1).forEach(r => {
+      const email = (r[idx.email] || '').toString().trim().toLowerCase();
+      if (email && splitBuildings_(r[idx.building])[0] === bldg) primaryHere.add(email);
+    });
+
+    const data = src.getDataRange().getValues();
+    const width = data[0].length;
+    const moving = [];
+    const rowsToDelete = [];
+    const skippedPending = [];
+    const unreadableDates = [];
+
+    for (let i = 1; i < data.length; i++) {
+      const r = data[i];
+      const email = (r[0] || '').toString().trim().toLowerCase();
+      if (!email || !primaryHere.has(email)) continue;
+      const when = parseCleanupDate_(r[2]);
+      const approved = r[4] === true || r[4] === 'TRUE';
+      const summary = { row: i + 1, email: r[0], name: r[1], date: safeDate(r[2]), hours: Number(r[3]) || 0, building: r[7] || DEFAULT_BUILDING };
+      if (!when) { unreadableDates.push(summary); continue; }
+      if (when >= cutoffDate) continue;
+      if (!approved) { skippedPending.push(summary); continue; }
+      moving.push(summary);
+      rowsToDelete.push({ row: i + 1, values: r.slice(0, width).concat([tag]) });
+    }
+
+    const arch = ss.getSheetByName('TST Usage Archive');
+    if (apply === true && arch && archiveRowsWithLabel_(arch, width, tag).length > 0) {
+      throw new Error('TST Usage Archive already has rows labelled "' + tag + '". Use a different label, or restore those first.');
+    }
+
+    const byPerson = {};
+    moving.forEach(m => {
+      const k = m.email.toString().toLowerCase();
+      if (!byPerson[k]) byPerson[k] = { name: m.name, email: m.email, rows: 0, hours: 0 };
+      byPerson[k].rows++;
+      byPerson[k].hours = Math.round((byPerson[k].hours + m.hours) * 100) / 100;
+    });
+
+    const result = {
+      applied: apply === true,
+      building: bldg,
+      cutoff: cutoffDate.toISOString().split('T')[0],
+      label: tag,
+      rowCount: moving.length,
+      totalHours: Math.round(moving.reduce((s, m) => s + m.hours, 0) * 100) / 100,
+      byPerson: Object.keys(byPerson).map(k => byPerson[k]).sort((a, b) => String(a.name).localeCompare(String(b.name))),
+      rows: moving,
+      skippedPending: skippedPending,
+      unreadableDates: unreadableDates
+    };
+    if (apply !== true || moving.length === 0) return result;
+
+    let target = arch;
+    if (!target) {
+      target = ss.insertSheet('TST Usage Archive');
+      target.appendRow(data[0].concat(['School Year']));
+      target.setFrozenRows(1);
+    }
+    const values = rowsToDelete.map(d => d.values);
+    target.getRange(target.getLastRow() + 1, 1, values.length, values[0].length).setValues(values);
+    rowsToDelete.map(d => d.row).sort((a, b) => b - a).forEach(rn => src.deleteRow(rn));
+    Logger.log('[archiveUsedBefore] ' + ctx.email + ' archived ' + moving.length + ' Used rows for ' + bldg + ' as "' + tag + '"');
+    return result;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Undoes archiveUsedBefore: moves every TST Usage Archive row whose School Year is
+ * `label` back to TST Usage (New). Restored rows go to the bottom of the sheet
+ * (their old positions are gone), which nothing depends on. Super Admin only; dry
+ * run unless `apply === true`.
+ */
+function restoreArchivedUsed(label, apply) {
+  const ctx = getUserContext();
+  if (!ctx.isSuperAdmin) throw new Error('Unauthorized: Super Admin access required.');
+  const tag = (label || '').toString().trim();
+  if (!tag) throw new Error('Give the label the rows were archived under.');
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const src = ss.getSheetByName('TST Usage (New)');
+  const arch = ss.getSheetByName('TST Usage Archive');
+  if (!src || !arch) return { applied: false, label: tag, rowCount: 0, totalHours: 0 };
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const width = src.getDataRange().getValues()[0].length;
+    const matches = archiveRowsWithLabel_(arch, width, tag);
+    const result = {
+      applied: apply === true,
+      label: tag,
+      rowCount: matches.length,
+      totalHours: Math.round(matches.reduce((s, m) => s + (Number(m.values[3]) || 0), 0) * 100) / 100
+    };
+    if (apply !== true || matches.length === 0) return result;
+
+    const values = matches.map(m => m.values.slice(0, width));
+    src.getRange(src.getLastRow() + 1, 1, values.length, width).setValues(values);
+    matches.map(m => m.row).sort((a, b) => b - a).forEach(rn => arch.deleteRow(rn));
+    Logger.log('[restoreArchivedUsed] ' + ctx.email + ' restored ' + matches.length + ' Used rows labelled "' + tag + '"');
+    return result;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// Archive rows carry their label one column past the Usage sheet's own columns
+// (archiveRowsByEmails_ appends it the same way).
+function archiveRowsWithLabel_(arch, width, tag) {
+  const data = arch.getDataRange().getValues();
+  const out = [];
+  for (let i = 1; i < data.length; i++) {
+    if ((data[i][width] || '').toString().trim() === tag) out.push({ row: i + 1, values: data[i] });
+  }
+  return out;
+}
+
+function parseCleanupDate_(v) {
+  if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
+  const s = (v || '').toString().trim();
+  if (!s) return null;
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 // Kept for backward-compatibility (no longer used by finalizeSchoolYear, which now
 // archives by email set). Do not remove — preserves the existing signature.
 function archiveBuildingTransactions_(building, yearName) {
