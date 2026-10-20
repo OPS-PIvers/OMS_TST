@@ -167,13 +167,16 @@ exports.run = function ({ test, assert }) {
 
   test('a second booking on another date is listed alongside the first', () => {
     const env = envFor(USERS.omsAdmin);
-    const other = coverageDate(14);
+    // Same weekday and same month as SOON, whatever today is: a week later unless that
+    // runs into next month, else today (which still shows on the grid).
+    const later = coverageDate(14);
+    const other = later.month === SOON.month ? later : coverageDate(0);
     assign(env);
     assign(env, { date: other.key });
 
     const booked = bookingsFor(env, 'OMS', SOON.month, USERS.omsTeacher);
     assert.equal(booked.length, 2);
-    assert.deepEqual(booked.map(b => b.date), [SOON.key, other.key], 'oldest first');
+    assert.deepEqual(booked.map(b => b.date), [SOON.key, other.key].sort(), 'oldest first');
   });
 
   // ---- What drops off it -----------------------------------------------------
