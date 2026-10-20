@@ -1163,60 +1163,44 @@ function archiveRowsByEmails_(ss, srcName, archName, approvedIdx, emailSet, year
 }
 
 /**
- * Late Finalize School Year, for a building that never ran finalize and kept
- * adding this year's hours on top of last year's. Does for last school year
- * exactly what finalizeSchoolYear would have done in June, and leaves this year's
- * activity where it is:
- *  - For staff whose PRIMARY building is `building` (and not archived from it),
- *    last year's ending balance = Carry Over + last year's Earned − Used − Paid
- *    Out, where "last year" means approved rows dated before `cutoff` (Earned col
- *    E, Used col C) in any building.
- *  - That balance, capped at the building's carryOverMax, becomes Carry Over;
- *    anything above the cap is forfeited. Paid Out is zeroed and Last Finalized
- *    set to `yearName`, as finalize does. Pending Finalize is cleared.
- *  - Last year's approved rows move to TST Approvals Archive / TST Usage Archive.
- *    Rows dated on or after `cutoff`, pending/denied rows and rows whose date
- *    cannot be read stay put (and are reported).
- * Staff already finalized for `yearName` are skipped, so it cannot roll anyone
- * twice; staff whose primary building is elsewhere are not touched.
+ * One-off repair for a building that skipped Finalize School Year and fixed Carry
+ * Over by hand: last year's approved Earned and Used rows are still in TST
+ * Approvals (New) / TST Usage (New), so they are counted again on top of the
+ * Carry Over that already reflects them. This moves them to TST Approvals Archive
+ * / TST Usage Archive — exactly what finalize would have archived — and touches
+ * nothing else (Carry Over and Paid Out stay as the admin set them).
  *
- * Super Admin only. Dry run unless `apply === true`: the default changes nothing
- * and returns, per person, the total now, the total afterwards and the hours
- * forfeited. Applying writes a year-end snapshot sheet (listed under View Archived
- * Years) that doubles as the undo record for undoLateFinalize(building, yearName,
- * true). Run from the web app's console:
+ * Earned and Used move together on purpose. Removing only one side shifts every
+ * balance by the other side's hours.
+ *
+ * Scope matches finalize: approved rows dated before `cutoff` (Earned col E, Used
+ * col C), for staff whose PRIMARY building is `building`, whichever building the
+ * row is tagged with.
+ *
+ * Super Admin only. Dry run unless `apply === true`: the default only reports what
+ * would move, including each person's balance before and after, so the admin can
+ * confirm the Carry Over they typed in already accounts for last year. Every
+ * archived row carries `label` in its School Year column, so
+ * restorePriorYear(label, true) puts them back. Run from the web app's console:
  *   google.script.run.withSuccessHandler(r => { console.log(r); console.table(r.byPerson); })
- *     .lateFinalize('OHS', '2026-07-01', '2025-26')
+ *     .archivePriorYear('OHS', '2026-07-01', '2025-26 OHS cleanup')
  */
 const PRIOR_YEAR_SHEETS_ = [
-  // dateIdx / hoursIdx / approvedIdx / deniedIdx / buildingIdx are 0-based columns.
+  // dateIdx / hoursIdx / approvedIdx / buildingIdx are 0-based columns.
   { key: 'earned', src: 'TST Approvals (New)', arch: 'TST Approvals Archive', dateIdx: 4, hoursIdx: 7, approvedIdx: 8, deniedIdx: 10, buildingIdx: 13 },
   { key: 'used', src: 'TST Usage (New)', arch: 'TST Usage Archive', dateIdx: 2, hoursIdx: 3, approvedIdx: 4, deniedIdx: -1, buildingIdx: 7 }
 ];
 
-const LATE_FINALIZE_HEADER_ = ['Name', 'Email', 'Building(s)', 'Carry Over (start)', 'Earned', 'Used', 'Paid Out',
-  'Balance', 'New Carry Over', 'Forfeited', 'Last Finalized (before)', 'Pending Finalize (before)'];
-
-// One label names the snapshot sheet and tags every archived row, so the undo can
-// find exactly this run and nothing else (a real finalize uses the bare year name).
-function lateFinalizeLabel_(bldg, yearName) {
-  return yearName + ' ' + bldg + ' (late finalize)';
-}
-
-function lateFinalizeArgs_(building, yearName) {
-  const bldg = (building || '').toString().trim();
-  const name = (yearName || '').toString().trim();
-  if (!bldg) throw new Error("Name the building, e.g. lateFinalize('OHS', '2026-07-01', '2025-26').");
-  if (!name) throw new Error("Name the school year being finalized, e.g. '2025-26'.");
-  return { bldg: bldg, name: name, label: lateFinalizeLabel_(bldg, name) };
-}
-
-function lateFinalize(building, cutoff, yearName, apply) {
+function archivePriorYear(building, cutoff, label, apply) {
   const ctx = getUserContext();
   if (!ctx.isSuperAdmin) throw new Error('Unauthorized: Super Admin access required.');
-  const a = lateFinalizeArgs_(building, yearName);
+
+  const bldg = (building || '').toString().trim();
+  if (!bldg) throw new Error("Name the building, e.g. archivePriorYear('OHS', '2026-07-01', '2025-26 OHS cleanup').");
   const cutoffDate = parseCleanupDate_(cutoff);
   if (!cutoffDate) throw new Error('Give the cutoff as a date, e.g. 2026-07-01.');
+  const tag = (label || '').toString().trim();
+  if (!tag) throw new Error('A label is required — it is what restorePriorYear uses to undo this.');
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   PRIOR_YEAR_SHEETS_.forEach(s => {
@@ -1226,34 +1210,23 @@ function lateFinalize(building, cutoff, yearName, apply) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
-    const round = n => Math.round(n * 100) / 100;
-    const cap = carryOverMaxFor_(a.bldg);
-
-    // Staff this building finalizes, as finalizeSchoolYear chooses them.
+    // Primary-here staff, with what the Directory shows for them right now.
+    const staff = {};
     const staffSheet = getStaffSheet_();
     const idx = getStaffIndices_(staffSheet);
-    const staff = {};
-    const alreadyFinalized = [];
-    staffSheet.getDataRange().getValues().forEach((r, i) => {
-      if (i === 0) return;
+    staffSheet.getDataRange().getValues().slice(1).forEach(r => {
       const email = (r[idx.email] || '').toString().trim().toLowerCase();
-      if (!email) return;
-      const buildings = splitBuildings_(r[idx.building]);
-      if (buildings[0] !== a.bldg || parseArchivedList_(r[idx.archived], buildings).includes(a.bldg)) return;
-      const lastFin = (r[idx.lastFinalized] || '').toString().trim();
-      if (lastFin === a.name) { alreadyFinalized.push(r[idx.name]); return; }
-      staff[email] = {
-        row: i + 1, name: r[idx.name], email: r[idx.email], buildings: r[idx.building],
-        carryOver: Number(r[idx.carry]) || 0, paidOut: Number(r[idx.paid]) || 0,
-        lastFinalized: lastFin, pendingFinalize: (r[idx.pendingFinalize] || '').toString().trim()
-      };
+      if (!email || splitBuildings_(r[idx.building])[0] !== bldg) return;
+      staff[email] = { name: r[idx.name], email: r[idx.email], carryOver: Number(r[idx.carry]) || 0, paidOut: Number(r[idx.paid]) || 0 };
     });
     const balances = calculateDynamicBalances_(null);
 
+    const round = n => Math.round(n * 100) / 100;
     const plan = {};
-    const lastYear = { earned: {}, used: {} };
+    const moved = { earned: {}, used: {} };
     const skippedPending = [];
     const unreadableDates = [];
+
     PRIOR_YEAR_SHEETS_.forEach(s => {
       const data = ss.getSheetByName(s.src).getDataRange().getValues();
       const width = data[0].length;
@@ -1269,84 +1242,55 @@ function lateFinalize(building, cutoff, yearName, apply) {
         if (!when) { if (approved) unreadableDates.push(summary); continue; }
         if (when >= cutoffDate || denied) continue;
         if (!approved) { skippedPending.push(summary); continue; }
-        rows.push({ summary: summary, row: i + 1, values: r.slice(0, width).concat([a.label]) });
-        lastYear[s.key][email] = round((lastYear[s.key][email] || 0) + summary.hours);
+        rows.push({ summary: summary, row: i + 1, values: r.slice(0, width).concat([tag]) });
+        moved[s.key][email] = round((moved[s.key][email] || 0) + summary.hours);
       }
       plan[s.key] = { sheet: s, header: data[0], width: width, rows: rows };
     });
 
-    const people = Object.keys(staff).map(email => {
+    const byPerson = Object.keys(staff).map(email => {
       const p = staff[email];
       const b = balances[email] || { earned: 0, used: 0 };
-      const lastE = lastYear.earned[email] || 0;
-      const lastU = lastYear.used[email] || 0;
-      const thisE = round(b.earned - lastE);
-      const thisU = round(b.used - lastU);
-      const endOfLastYear = round(p.carryOver + lastE - lastU - p.paidOut);
-      const newCarry = round(Math.min(endOfLastYear, cap));
-      const forfeited = endOfLastYear > cap ? round(endOfLastYear - cap) : 0;
+      const earnedOut = moved.earned[email] || 0;
+      const usedOut = moved.used[email] || 0;
+      const before = round(p.carryOver + b.earned - b.used - p.paidOut);
+      const after = round(before - earnedOut + usedOut);
       return {
-        p: p,
-        row: {
-          name: p.name, email: p.email, carryOver: p.carryOver, paidOut: p.paidOut,
-          lastYearEarned: lastE, lastYearUsed: lastU, endOfLastYear: endOfLastYear,
-          newCarryOver: newCarry, forfeited: forfeited, thisYearEarned: thisE, thisYearUsed: thisU,
-          totalNow: round(p.carryOver + b.earned - b.used - p.paidOut),
-          totalAfter: round(newCarry + thisE - thisU)
-        }
+        name: p.name, email: p.email, carryOver: p.carryOver, paidOut: p.paidOut,
+        earnedNow: round(b.earned), usedNow: round(b.used),
+        lastYearEarned: earnedOut, lastYearUsed: usedOut,
+        earnedAfter: round(b.earned - earnedOut), usedAfter: round(b.used - usedOut),
+        balanceNow: before, balanceAfter: after, change: round(after - before)
       };
-    }).sort((x, y) => String(x.row.name).localeCompare(String(y.row.name)));
+    }).filter(p => p.lastYearEarned || p.lastYearUsed)
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
 
-    const byPerson = people.map(x => x.row);
-    const sumHours = rows => round(rows.reduce((t, m) => t + m.summary.hours, 0));
+    if (apply === true) {
+      PRIOR_YEAR_SHEETS_.forEach(s => {
+        const arch = ss.getSheetByName(s.arch);
+        if (arch && archiveRowsWithLabel_(arch, plan[s.key].width, tag).length > 0) {
+          throw new Error(s.arch + ' already has rows labelled "' + tag + '". Use a different label, or restore those first.');
+        }
+      });
+    }
+
     const result = {
       applied: apply === true,
-      building: a.bldg,
+      building: bldg,
       cutoff: cutoffDate.toISOString().split('T')[0],
-      yearName: a.name,
-      label: a.label,
-      cap: cap,
-      staffCount: byPerson.length,
-      earned: { rowCount: plan.earned.rows.length, totalHours: sumHours(plan.earned.rows) },
-      used: { rowCount: plan.used.rows.length, totalHours: sumHours(plan.used.rows) },
-      overCap: byPerson.filter(p => p.forfeited > 0).map(p => ({ name: p.name, email: p.email, endOfLastYear: p.endOfLastYear, forfeited: p.forfeited })),
-      totalForfeited: round(byPerson.reduce((t, p) => t + p.forfeited, 0)),
+      label: tag,
+      earned: { rowCount: plan.earned.rows.length, totalHours: round(plan.earned.rows.reduce((t, m) => t + m.summary.hours, 0)) },
+      used: { rowCount: plan.used.rows.length, totalHours: round(plan.used.rows.reduce((t, m) => t + m.summary.hours, 0)) },
       byPerson: byPerson,
-      alreadyFinalized: alreadyFinalized,
+      // A balance that would go negative is the clearest sign the hand-entered Carry
+      // Over does not already include last year's hours — check these people first.
+      goesNegative: byPerson.filter(p => p.balanceAfter < 0).map(p => p.name),
+      rows: plan.earned.rows.concat(plan.used.rows).map(m => m.summary),
       skippedPending: skippedPending,
       unreadableDates: unreadableDates
     };
     if (apply !== true) return result;
 
-    if (ss.getSheetByName(a.label)) throw new Error('A sheet named "' + a.label + '" already exists — this year may already have been late-finalized.');
-    if (!byPerson.length) throw new Error('No active staff with ' + a.bldg + ' as their primary building to finalize.');
-    PRIOR_YEAR_SHEETS_.forEach(s => {
-      const arch = ss.getSheetByName(s.arch);
-      if (arch && archiveRowsWithLabel_(arch, plan[s.key].width, a.label).length > 0) {
-        throw new Error(s.arch + ' already has rows labelled "' + a.label + '". Undo that run first.');
-      }
-    });
-
-    // 1. The snapshot first: it is the undo record for everything below.
-    const snap = ss.insertSheet(a.label);
-    snap.appendRow(LATE_FINALIZE_HEADER_);
-    snap.getRange(2, 1, people.length, LATE_FINALIZE_HEADER_.length).setValues(people.map(x => [
-      x.p.name, x.p.email, x.p.buildings, x.p.carryOver, x.row.lastYearEarned, x.row.lastYearUsed, x.p.paidOut,
-      x.row.endOfLastYear, x.row.newCarryOver, x.row.forfeited, x.p.lastFinalized, x.p.pendingFinalize]));
-    snap.setFrozenRows(1);
-    snap.addDeveloperMetadata('tstArchiveBuilding', a.bldg);
-    snap.addDeveloperMetadata('tstArchiveYear', a.label);
-    snap.addDeveloperMetadata('tstLateFinalize', a.label);
-
-    // 2. Roll Carry Over, zero Paid Out, mark finalized.
-    people.forEach(x => {
-      staffSheet.getRange(x.p.row, idx.carry + 1).setValue(x.row.newCarryOver);
-      staffSheet.getRange(x.p.row, idx.paid + 1).setValue(0);
-      staffSheet.getRange(x.p.row, idx.lastFinalized + 1).setValue(a.name);
-      if (x.p.pendingFinalize) staffSheet.getRange(x.p.row, idx.pendingFinalize + 1).setValue('');
-    });
-
-    // 3. Archive last year's rows.
     PRIOR_YEAR_SHEETS_.forEach(s => {
       const p = plan[s.key];
       if (!p.rows.length) return;
@@ -1359,11 +1303,10 @@ function lateFinalize(building, cutoff, yearName, apply) {
       const values = p.rows.map(m => m.values);
       target.getRange(target.getLastRow() + 1, 1, values.length, values[0].length).setValues(values);
       const src = ss.getSheetByName(s.src);
-      p.rows.map(m => m.row).sort((x, y) => y - x).forEach(rn => src.deleteRow(rn));
+      p.rows.map(m => m.row).sort((a, b) => b - a).forEach(rn => src.deleteRow(rn));
     });
-
-    Logger.log('[lateFinalize] ' + ctx.email + ' finalized ' + byPerson.length + ' ' + a.bldg + ' staff for ' + a.name +
-      ' (' + result.earned.rowCount + ' Earned, ' + result.used.rowCount + ' Used rows archived; ' + result.totalForfeited + ' hrs forfeited)');
+    Logger.log('[archivePriorYear] ' + ctx.email + ' archived ' + result.earned.rowCount + ' Earned and ' +
+      result.used.rowCount + ' Used rows for ' + bldg + ' as "' + tag + '"');
     return result;
   } finally {
     lock.releaseLock();
@@ -1371,62 +1314,31 @@ function lateFinalize(building, cutoff, yearName, apply) {
 }
 
 /**
- * Undoes lateFinalize(building, …, yearName, true): moves the archived rows back,
- * and for each person in its snapshot takes back the Carry Over change, restores
- * Paid Out, Last Finalized and Pending Finalize, then deletes the snapshot.
- *
- * Carry Over and Paid Out are restored by DIFFERENCE, not overwritten, so a
- * correction an admin made to someone after the late finalize survives the undo.
- * Super Admin only; dry run unless `apply === true`.
+ * Undoes archivePriorYear: moves every archive row whose School Year is `label`
+ * back to TST Approvals (New) / TST Usage (New). Restored rows go to the bottom of
+ * their sheet (their old positions are gone), which nothing depends on. Super
+ * Admin only; dry run unless `apply === true`.
  */
-function undoLateFinalize(building, yearName, apply) {
+function restorePriorYear(label, apply) {
   const ctx = getUserContext();
   if (!ctx.isSuperAdmin) throw new Error('Unauthorized: Super Admin access required.');
-  const a = lateFinalizeArgs_(building, yearName);
+  const tag = (label || '').toString().trim();
+  if (!tag) throw new Error('Give the label the rows were archived under.');
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const snap = ss.getSheets().filter(sh => sh.getDeveloperMetadata().some(m => m.getKey() === 'tstLateFinalize' && m.getValue() === a.label))[0];
-  if (!snap) throw new Error('No late finalize found for ' + a.bldg + ' ' + a.name + ' (looked for sheet "' + a.label + '").');
-
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
-    const round = n => Math.round(n * 100) / 100;
-    const snapRows = snap.getDataRange().getValues().slice(1).filter(r => r[1]);
-
-    const staffSheet = getStaffSheet_();
-    const idx = getStaffIndices_(staffSheet);
-    const staffVals = staffSheet.getDataRange().getValues();
-    const rowOf = {};
-    staffVals.forEach((r, i) => {
-      const em = (r[idx.email] || '').toString().trim().toLowerCase();
-      if (i > 0 && em) rowOf[em] = { row: i + 1, values: r };
-    });
-
-    const people = snapRows.map(r => {
-      const em = r[1].toString().trim().toLowerCase();
-      const live = rowOf[em];
-      const carryDelta = (Number(r[8]) || 0) - (Number(r[3]) || 0);
-      return {
-        name: r[0], email: r[1], live: live,
-        carryOverNow: live ? Number(live.values[idx.carry]) || 0 : null,
-        carryOverAfter: live ? round((Number(live.values[idx.carry]) || 0) - carryDelta) : null,
-        paidOutAfter: live ? round((Number(live.values[idx.paid]) || 0) + (Number(r[6]) || 0)) : null,
-        lastFinalized: r[10], pendingFinalize: r[11]
-      };
-    });
-
-    const result = {
-      applied: apply === true, building: a.bldg, yearName: a.name, label: a.label,
-      byPerson: people.map(p => ({ name: p.name, email: p.email, carryOverNow: p.carryOverNow, carryOverAfter: p.carryOverAfter, paidOutAfter: p.paidOutAfter })),
-      missingFromDirectory: people.filter(p => !p.live).map(p => p.name)
-    };
+    const result = { applied: apply === true, label: tag };
     const plans = PRIOR_YEAR_SHEETS_.map(s => {
       const src = ss.getSheetByName(s.src);
       const arch = ss.getSheetByName(s.arch);
-      const width = src.getDataRange().getValues()[0].length;
-      const matches = arch ? archiveRowsWithLabel_(arch, width, a.label) : [];
-      result[s.key] = { rowCount: matches.length, totalHours: round(matches.reduce((t, m) => t + (Number(m.values[s.hoursIdx]) || 0), 0)) };
+      const width = src ? src.getDataRange().getValues()[0].length : 0;
+      const matches = src && arch ? archiveRowsWithLabel_(arch, width, tag) : [];
+      result[s.key] = {
+        rowCount: matches.length,
+        totalHours: Math.round(matches.reduce((t, m) => t + (Number(m.values[s.hoursIdx]) || 0), 0) * 100) / 100
+      };
       return { src: src, arch: arch, width: width, matches: matches };
     });
     if (apply !== true) return result;
@@ -1435,18 +1347,10 @@ function undoLateFinalize(building, yearName, apply) {
       if (!p.matches.length) return;
       const values = p.matches.map(m => m.values.slice(0, p.width));
       p.src.getRange(p.src.getLastRow() + 1, 1, values.length, p.width).setValues(values);
-      p.matches.map(m => m.row).sort((x, y) => y - x).forEach(rn => p.arch.deleteRow(rn));
+      p.matches.map(m => m.row).sort((a, b) => b - a).forEach(rn => p.arch.deleteRow(rn));
     });
-    people.forEach(p => {
-      if (!p.live) return;
-      staffSheet.getRange(p.live.row, idx.carry + 1).setValue(p.carryOverAfter);
-      staffSheet.getRange(p.live.row, idx.paid + 1).setValue(p.paidOutAfter);
-      staffSheet.getRange(p.live.row, idx.lastFinalized + 1).setValue(p.lastFinalized);
-      staffSheet.getRange(p.live.row, idx.pendingFinalize + 1).setValue(p.pendingFinalize);
-    });
-    ss.deleteSheet(snap);
-
-    Logger.log('[undoLateFinalize] ' + ctx.email + ' undid "' + a.label + '"');
+    Logger.log('[restorePriorYear] ' + ctx.email + ' restored ' + result.earned.rowCount + ' Earned and ' +
+      result.used.rowCount + ' Used rows labelled "' + tag + '"');
     return result;
   } finally {
     lock.releaseLock();
