@@ -3957,13 +3957,43 @@ function pendingRequestDay_(value) {
   return isNaN(d.getTime()) ? null : parseYmd_(d);
 }
 
-function saveAvailability(month, availabilityList, targetEmail, periodsShown) {
+// The months after `month` in the school year — what "the rest of the year" means
+// to both copy-forward paths. Empty for June or an unknown month.
+function monthsAfter_(month) {
+  const i = MONTH_ORDER.indexOf(month);
+  return i === -1 ? [] : MONTH_ORDER.slice(i + 1);
+}
+
+// Deletes the given 1-based row numbers, a contiguous run at a time and bottom-up
+// so the numbers still to come stay valid. A person's rows for one month were
+// written together, so this is usually one call per month instead of one per row.
+function deleteSheetRows_(sheet, rowNumbers) {
+  const rows = rowNumbers.slice().sort((a, b) => b - a);
+  let i = 0;
+  while (i < rows.length) {
+    let start = rows[i];
+    let count = 1;
+    while (i + count < rows.length && rows[i + count] === start - 1) {
+      start--;
+      count++;
+    }
+    sheet.deleteRows(start, count);
+    i += count;
+  }
+}
+
+function saveAvailability(month, availabilityList, targetEmail, periodsShown, copyToLaterMonths) {
   // availabilityList: [{ days: "Mon,Tue", period: "Period 1" }, ...]
   // targetEmail: set only when an admin saves on a teacher's behalf via "View as".
   // periodsShown: the periods on the form that was saved. Availability rows aren't
   //   building-tagged and buildings name periods differently, so only these periods
   //   are replaced — a multi-building teacher saving one building's grid keeps their
   //   rows for the other building. When omitted, every row for the month is replaced.
+  // copyToLaterMonths: also write the same availability into every month after this
+  //   one, replacing what was there (same period scope). Teachers fill in September
+  //   once and adjust month by month, rather than entering it ten times.
+  if (copyToLaterMonths && !MONTH_ORDER.includes(month)) throw new Error('Unknown month: ' + month);
+  const months = [month].concat(copyToLaterMonths ? monthsAfter_(month) : []);
   const sessionEmail = Session.getActiveUser().getEmail();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const staffSheet = ss.getSheetByName('Staff Directory');
@@ -3986,21 +4016,91 @@ function saveAvailability(month, availabilityList, targetEmail, periodsShown) {
   const sheet = ss.getSheetByName('TST Availability');
   const data = sheet.getDataRange().getValues();
 
-  // 1. Remove existing rows for this user + month (limited to the periods shown)
-  // We loop backwards to delete
+  // 1. Remove existing rows for this user + month(s) (limited to the periods shown)
   const periodScope = Array.isArray(periodsShown) ? new Set(periodsShown) : null;
-  for (let i = data.length - 1; i >= 1; i--) {
-    if (data[i][0] === month && data[i][4].toString().trim().toLowerCase() === userEmail.toLowerCase() &&
+  const doomed = [];
+  for (let i = 1; i < data.length; i++) {
+    if (months.includes(data[i][0]) && (data[i][4] || '').toString().trim().toLowerCase() === userEmail.toLowerCase() &&
         (!periodScope || periodScope.has(data[i][2]))) {
-      sheet.deleteRow(i + 1);
+      doomed.push(i + 1);
+    }
+  }
+  deleteSheetRows_(sheet, doomed);
+
+  // 2. Add new rows, one write for every month
+  // A: Month | B: Day(s) | C: Period | D: Name | E: Email | F: Hours (Ignored/Formula)
+  const newRows = [];
+  months.forEach(m => {
+    (availabilityList || []).forEach(item => {
+      newRows.push([m, item.days, item.period, userName, userEmail, ""]);
+    });
+  });
+  if (newRows.length > 0) {
+    sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, newRows[0].length).setValues(newRows);
+  }
+  return { months: months };
+}
+
+/**
+ * Admin: fills the rest of the year from one month's availability — each teacher's
+ * rows in fromMonth are copied into every later month in which that teacher has
+ * nothing entered yet. A month a teacher has already filled in is left exactly as
+ * it is, so this can be run at any point without undoing anyone's adjustments.
+ *
+ * Only this building's members and (when given) this building's periods are read
+ * or written, for the same reason saveAvailability scopes by period: rows aren't
+ * building-tagged, and a multi-building teacher's other building is not ours.
+ */
+function copyScheduleForward(fromMonth, building, periods) {
+  const ctx = getUserContext();
+  assertAdmin_(ctx);
+  const effectiveBuilding = allowedBuildingFor_(ctx, building);
+  if (!effectiveBuilding) {
+    throw new Error('You can only edit the schedule for your own building(s).');
+  }
+  if (!MONTH_ORDER.includes(fromMonth)) throw new Error('Unknown month: ' + fromMonth);
+  const targets = monthsAfter_(fromMonth);
+  if (targets.length === 0) throw new Error('There are no months after ' + fromMonth + ' to copy into.');
+
+  const members = scheduleMembers_(effectiveBuilding);
+  const periodScope = Array.isArray(periods) && periods.length > 0 ? new Set(periods) : null;
+
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('TST Availability');
+  if (!sheet) return { from: fromMonth, months: targets, people: 0, filled: 0, skipped: 0 };
+  const data = sheet.getDataRange().getValues();
+
+  const source = {};   // email -> [row]
+  const filled = new Set(); // email + '\n' + month that already has rows
+  for (let i = 1; i < data.length; i++) {
+    const r = data[i];
+    const email = (r[4] || '').toString().trim().toLowerCase();
+    if (!members.has(email)) continue;
+    if (periodScope && !periodScope.has(r[2])) continue;
+    if (r[0] === fromMonth) {
+      if (!source[email]) source[email] = [];
+      source[email].push(r);
+    } else if (targets.includes(r[0])) {
+      filled.add(email + '\n' + r[0]);
     }
   }
 
-  // 2. Add new rows
-  // A: Month | B: Day(s) | C: Period | D: Name | E: Email | F: Hours (Ignored/Formula)
-  availabilityList.forEach(item => {
-    sheet.appendRow([month, item.days, item.period, userName, userEmail, ""]);
+  const newRows = [];
+  let filledCount = 0;
+  let skipped = 0;
+  Object.keys(source).forEach(email => {
+    targets.forEach(m => {
+      if (filled.has(email + '\n' + m)) { skipped++; return; }
+      filledCount++;
+      source[email].forEach(r => {
+        newRows.push([m, r[1], r[2], members.get(email) || r[3], r[4], '']);
+      });
+    });
   });
+  if (newRows.length > 0) {
+    sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, newRows[0].length).setValues(newRows);
+  }
+  return { from: fromMonth, months: targets, people: Object.keys(source).length,
+           filled: filledCount, skipped: skipped };
 }
 
 // ===== TST Coverage Assignments =====

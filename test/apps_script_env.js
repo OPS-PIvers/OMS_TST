@@ -100,6 +100,7 @@ class FakeSheet {
 
   appendRow(row) { this.values.push(row.slice()); return this; }
   deleteRow(rowNumber) { this.values.splice(rowNumber - 1, 1); return this; }
+  deleteRows(rowPosition, howMany) { this.values.splice(rowPosition - 1, howMany); return this; }
   sort() { return this; }
 
   addDeveloperMetadata(key, value) {
