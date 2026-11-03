@@ -6112,7 +6112,7 @@
                 <input type="checkbox" name="noteToSub" checked class="rounded border-gray-300 text-ops-blue mr-2"> Include for the person covering
               </label>
               <label class="flex items-center text-xs text-ops-gray-dark">
-                <input type="checkbox" name="noteToCovered" checked class="rounded border-gray-300 text-ops-blue mr-2"> Include for the person being covered
+                <input type="checkbox" name="noteToCovered" class="rounded border-gray-300 text-ops-blue mr-2"> Include for the person being covered
               </label>
             </div>
           </div>
@@ -6131,15 +6131,14 @@
     /**
      * The note the Assign modal starts with. It is only a starting point: the admin
      * can edit it or clear it, and once they type in it, changing the date leaves
-     * their wording alone. Both people get it by default, so the wording has to
-     * read right to the person covering and to the person being covered.
+     * their wording alone.
      */
     function assignThankYouNote(ymd) {
       const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd || '');
       const when = m
-        ? ' for ' + new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+        ? ' on ' + new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
         : '';
-      return `TST coverage is set${when}. Thank you for working together to make it happen!`;
+      return `Thank you for being available for TST coverage${when}. We appreciate your willingness to help!`;
     }
 
     function refreshAssignThankYou(form) {
