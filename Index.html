@@ -6131,14 +6131,15 @@
     /**
      * The note the Assign modal starts with. It is only a starting point: the admin
      * can edit it or clear it, and once they type in it, changing the date leaves
-     * their wording alone.
+     * their wording alone. Both people get it by default, so the wording has to
+     * read right to the person covering and to the person being covered.
      */
     function assignThankYouNote(ymd) {
       const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd || '');
       const when = m
-        ? ' on ' + new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+        ? ' for ' + new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
         : '';
-      return `Thank you for being available for TST coverage${when}. We appreciate your willingness to help!`;
+      return `TST coverage is set${when}. Thank you for working together to make it happen!`;
     }
 
     function refreshAssignThankYou(form) {
