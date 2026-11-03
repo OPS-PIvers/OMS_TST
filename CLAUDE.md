@@ -55,6 +55,7 @@ npm run check:css    # what CI runs: fails if the inlined CSS is stale
 - `package.json`, `tailwind.config.js`, `scripts/` and `node_modules/` are not deployed (`.claspignore` is an allow-list), and `node test/run.js` still needs none of it.
 
 **Important:**
+- Merging to `main` already runs `clasp push` and redeploys the web app through GitHub Actions (see *Deployment Notes*), so the commands above are for deploying outside that flow.
 - `clasp push` overwrites remote files completely. Always verify changes before pushing.
 - Always use the deployment ID (`-i` flag) to update the existing web app deployment rather than creating a new one.
 - [.claspignore](.claspignore) is an **allow-list**: only `Code.js`, `config.js`, `Index.html` and `appsscript.json` are pushed. A new server-side file is not deployed until it is added there, and non-Apps-Script files (the Node tests, [Code_legacy.js](Code_legacy.js)) must stay out — Apps Script shares one global scope across a project's files and evaluates them in order, so a stray file's top-level code runs on every execution and its duplicate function names shadow the real ones.
@@ -411,4 +412,6 @@ Defined in [appsscript.json](appsscript.json):
 - Web app execution: "User Deploying" (runs as the deployer, accesses deployer's sheets)
 - Access level: "DOMAIN" (restricted to domain users only)
 - Timezone: America/Chicago
-- After `clasp push`, you may need to redeploy via `clasp deploy` or the Apps Script editor for changes to take effect in the web app
+- **Merging to `main` deploys automatically.** [.github/workflows/deploy.yml](.github/workflows/deploy.yml) runs on every push to `main` that touches deployable source (`*.js`, `*.gs`, `*.html`, `appsscript.json`, `.clasp.json` or the workflow itself): it runs the tests and `check:css`, then `clasp push --force`, then `clasp deploy -i <main deployment ID>`. Don't run `clasp push`/`clasp deploy` by hand after a merge. It can also be run on demand from the Actions tab ("Run workflow"). A docs-only change (e.g. this file) does not trigger it.
+  - It redeploys **only the main deployment**. The second ("user accessing") deployment behind `?action=authorizeEmail` is not touched, so redeploy that one by hand when a change affects it (see *Email service health and the second deployment*).
+  - Manual `clasp push` + `clasp deploy` is only for deploying without merging; after a bare `clasp push`, the web app doesn't change until it is redeployed.
