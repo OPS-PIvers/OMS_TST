@@ -253,6 +253,21 @@ function createEnv(options) {
       getCalendarById: id => {
         const meta = calendars[id];
         if (!meta) return null;
+        // A CalendarEvent over the plain record tests read from calendarEvents.
+        const wrapEvent = event => ({
+          getId: () => event.id,
+          getTitle: () => event.title,
+          setTitle: t => { if (meta.readOnly) throw new Error('No edit access.'); event.title = t; },
+          setTime: (start, end) => { if (meta.readOnly) throw new Error('No edit access.'); event.start = start; event.end = end; },
+          setDescription: d => { event.options.description = d; },
+          getGuestList: () => event.guests.map(e => ({ getEmail: () => e })),
+          addGuest: e => { event.guests.push(e); },
+          removeGuest: e => { event.guests = event.guests.filter(g => g !== e); },
+          deleteEvent: () => {
+            const i = calendarEvents.indexOf(event);
+            if (i > -1) calendarEvents.splice(i, 1);
+          }
+        });
         const calendar = {
           getName: () => meta.name || id,
           getId: () => id,
@@ -266,27 +281,14 @@ function createEnv(options) {
               end: end,
               options: options || {}
             };
+            event.guests = (event.options.guests || '').split(',').filter(Boolean);
             calendarEvents.push(event);
-            return {
-              getId: () => event.id,
-              getTitle: () => event.title,
-              deleteEvent: () => {
-                const i = calendarEvents.indexOf(event);
-                if (i > -1) calendarEvents.splice(i, 1);
-              }
-            };
+            return wrapEvent(event);
           },
           getEventById: eventId => {
             const event = calendarEvents.find(ev => ev.id === eventId && ev.calendarId === id);
             if (!event) return null;
-            return {
-              getId: () => event.id,
-              getTitle: () => event.title,
-              deleteEvent: () => {
-                const i = calendarEvents.indexOf(event);
-                if (i > -1) calendarEvents.splice(i, 1);
-              }
-            };
+            return wrapEvent(event);
           }
         };
         return calendar;
