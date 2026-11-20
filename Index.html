@@ -3539,6 +3539,7 @@
         if (open) {
           actions.push(`<button data-id="${escapeHtml(a.id)}" onclick="remindAssignment(this.dataset.id)" title="Re-send the Record email" class="text-ops-blue hover:text-ops-blue-dark px-2"><i class="fas fa-bell"></i></button>`);
           actions.push(`<button data-id="${escapeHtml(a.id)}" data-name="${escapeHtml(a.subName)}" onclick="recordAssignmentForStaff(this.dataset.id, this.dataset.name)" title="Record on their behalf" class="text-green-600 hover:text-green-800 px-2"><i class="fas fa-check-circle"></i></button>`);
+          actions.push(`<button data-id="${escapeHtml(a.id)}" onclick="editAssignment(this.dataset.id)" title="Edit this assignment" aria-label="Edit this assignment" class="text-ops-blue hover:text-ops-blue-dark px-2"><i class="fas fa-pen"></i></button>`);
         }
         if (a.status !== 'Cancelled') {
           actions.push(`<button data-id="${escapeHtml(a.id)}" data-name="${escapeHtml(a.subName)}" onclick="reassignCoverage(this.dataset.id, this.dataset.name)" title="Cancel and assign someone else" class="text-ops-blue hover:text-ops-blue-dark px-2"><i class="fas fa-exchange-alt"></i></button>`);
@@ -3669,6 +3670,41 @@
           });
         }
       });
+    }
+
+    /**
+     * Opens the Assign modal on an existing assignment. The person covering is
+     * fixed (changing them is Reassign); everything else can change, and the admin
+     * picks who is emailed about it.
+     */
+    function editAssignment(id) {
+      const a = (STATE.assignments || []).find(x => x.id === id);
+      if (!a) return;
+      openAssignCoverageModal(a.subEmail, a.subName, a.period, '', {
+        edit: a,
+        date: a.date,
+        coveredForName: a.coveredFor,
+        coveredForEmail: a.coveredForEmail
+      });
+    }
+
+    function sendAssignmentEdit(id, payload) {
+      showLoading(true);
+      google.script.run.withSuccessHandler(res => {
+        showLoading(false);
+        if (res && res.unchanged) {
+          showToast("Nothing was changed.", "info");
+          return;
+        }
+        const anyone = payload.notifySub || payload.notifyCovered;
+        showToast(res && res.pendingCalendar
+          ? (anyone ? "Saved. The calendar updates, then the emails go out, within a minute or two." : "Saved. The calendar updates within a minute or two.")
+          : (res && res.emailed ? "Saved, and the changes were emailed." : "Assignment updated."), "success");
+        loadAdminAssignments();
+      }).withFailureHandler(err => {
+        showLoading(false);
+        showToast("Could not save: " + err, "error");
+      }).editAssignment(id, payload);
     }
 
     // --- The teacher's own assignments ---
@@ -6024,6 +6060,7 @@
      */
     function openAssignCoverageModal(tEmail, tName, period, month, prefill) {
       const pre = prefill || {};
+      const ed = pre.edit || null;
       const bConfig = STATE.config[STATE.building] || STATE.config[STATE.defaultBuilding] || {};
       const isPeriods = bConfig.scheduleType !== 'time_range';
       const coverageTypes = (bConfig.coverageTypes || []).filter(t => t.value !== 'custom');
@@ -6033,9 +6070,11 @@
         ? `<input type="hidden" name="teacherEmail" value="${escapeHtml(tEmail)}">
            <input type="hidden" name="teacherName" value="${escapeHtml(tName)}">
            <div class="mb-4 bg-blue-50 p-4 rounded border border-blue-100">
-             <label class="block text-xs font-bold text-ops-blue uppercase tracking-wider mb-1">Assigning Coverage To</label>
+             <label class="block text-xs font-bold text-ops-blue uppercase tracking-wider mb-1">${ed ? 'Covering' : 'Assigning Coverage To'}</label>
              <div class="text-lg font-bold text-ops-blue-dark">${escapeHtml(displayName(tName))}</div>
-             <div class="text-sm text-ops-gray">${escapeHtml(period)}</div>
+             ${ed
+               ? `<div class="text-xs text-ops-gray mt-1">To give this to someone else, use Reassign instead.</div>`
+               : `<div class="text-sm text-ops-gray">${escapeHtml(period)}</div>`}
            </div>`
         : `<div class="mb-4">
              <label class="block text-sm font-bold text-ops-gray-dark mb-2">Who is covering?</label>
@@ -6045,18 +6084,45 @@
              </select>
            </div>`;
 
+      // Editing a time-range assignment starts from the span it was assigned with.
+      const span = ed ? /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(ed.period || '') : null;
+      const pad2 = n => String(n).padStart(2, '0');
+      const startVal = span ? pad2(span[1]) + ':' + span[2] : '';
+      const endVal = span ? pad2(span[3]) + ':' + span[4] : '';
+
+      // A period renamed in Settings since this was assigned is kept as an option,
+      // so opening the editor never silently moves the assignment.
+      const periodList = (bConfig.periods || []);
+      const periodPick = ed && isPeriods
+        ? `<div class="mb-4">
+             <label class="block text-sm font-bold text-ops-gray-dark mb-2">Period</label>
+             <select name="period" required class="block w-full rounded border-gray-300 p-2 border">
+               ${periodList.indexOf(ed.period) === -1 ? `<option value="${escapeHtml(ed.period)}" selected>${escapeHtml(ed.period)}</option>` : ''}
+               ${periodList.map(p => `<option value="${escapeHtml(p)}" ${p === ed.period ? 'selected' : ''}>${escapeHtml(p)}</option>`).join('')}
+             </select>
+           </div>`
+        : '';
+
       const timeHtml = isPeriods
-        ? `<input type="hidden" name="period" value="${escapeHtml(period)}">`
+        ? (ed ? periodPick : `<input type="hidden" name="period" value="${escapeHtml(period)}">`)
         : `<div class="grid grid-cols-2 gap-4 mb-4">
              <div>
                <label class="block text-sm font-bold text-ops-gray-dark mb-2">Start Time</label>
-               <input type="time" name="startTime" step="${escapeHtml((bConfig.increment || 15) * 60)}" required class="block w-full rounded border-gray-300 p-2 border">
+               <input type="time" name="startTime" value="${escapeHtml(startVal)}" step="${escapeHtml((bConfig.increment || 15) * 60)}" required class="block w-full rounded border-gray-300 p-2 border">
              </div>
              <div>
                <label class="block text-sm font-bold text-ops-gray-dark mb-2">End Time</label>
-               <input type="time" name="endTime" step="${escapeHtml((bConfig.increment || 15) * 60)}" required class="block w-full rounded border-gray-300 p-2 border">
+               <input type="time" name="endTime" value="${escapeHtml(endVal)}" step="${escapeHtml((bConfig.increment || 15) * 60)}" required class="block w-full rounded border-gray-300 p-2 border">
              </div>
            </div>`;
+
+      // The duration it was assigned with: by label first, then by hours.
+      let durationIdx = 0;
+      if (ed) {
+        const byLabel = coverageTypes.findIndex(t => t.label === ed.amountType);
+        const byValue = coverageTypes.findIndex(t => Number(t.value) === Number(ed.hours));
+        durationIdx = byLabel > -1 ? byLabel : (byValue > -1 ? byValue : 0);
+      }
 
       const durationHtml = isPeriods
         ? `<div class="mb-4">
@@ -6064,7 +6130,7 @@
              <div class="flex gap-4">
                ${coverageTypes.map((t, idx) => `
                  <label class="flex-1 cursor-pointer">
-                   <input type="radio" name="duration" value="${escapeHtml(t.value)}" data-label="${escapeHtml(t.label)}" ${idx === 0 ? 'checked' : ''} class="peer sr-only">
+                   <input type="radio" name="duration" value="${escapeHtml(t.value)}" data-label="${escapeHtml(t.label)}" ${idx === durationIdx ? 'checked' : ''} class="peer sr-only">
                    <div class="rounded-lg border border-gray-300 p-3 text-center hover:bg-gray-50 peer-checked:border-ops-blue peer-checked:bg-ops-blue-lighter peer-checked:text-ops-blue-dark transition">
                      <div class="font-bold">${escapeHtml(t.label)}</div>
                    </div>
@@ -6073,8 +6139,33 @@
            </div>`
         : `<div class="mb-4 text-sm text-ops-gray"><i class="fas fa-info-circle mr-1"></i> Duration is calculated from the time range.</div>`;
 
+      // Someone no longer in the list (archived since) stays selected rather than the
+      // dropdown quietly switching to whoever is first.
+      const coveredMissing = ed && ed.coveredForEmail &&
+        !sortedStaff.some(s => s.email === ed.coveredForEmail);
+
+      const noteText = ed ? (ed.note || '') : assignThankYouNote(pre.date);
+      const noteToSubChecked = ed && ed.note ? !!ed.noteToSub : true;
+      const noteToCoveredChecked = ed && ed.note ? !!ed.noteToCovered : true;
+
+      const notifyHtml = ed
+        ? `<div class="mb-6 border-t border-gray-200 pt-4">
+             <label class="block text-sm font-bold text-ops-gray-dark mb-2">Email about the changes</label>
+             <div class="flex flex-col gap-2">
+               <label class="flex items-center text-sm text-ops-gray-dark">
+                 <input type="checkbox" name="notifySub" checked class="rounded border-gray-300 text-ops-blue mr-2"> ${escapeHtml(displayName(tName))} (covering)
+               </label>
+               <label class="flex items-center text-sm text-ops-gray-dark">
+                 <input type="checkbox" name="notifyCovered" checked class="rounded border-gray-300 text-ops-blue mr-2"> The person being covered for
+               </label>
+             </div>
+             <p class="text-xs text-gray-400 mt-2">The email lists only what changed. If you change who is being covered for, the new person is told coverage is arranged and the previous one that it no longer covers them.${
+               calendarConfigured() ? ' The calendar event is updated either way.' : ''}</p>
+           </div>`
+        : '';
+
       const modalContent = `
-        <form onsubmit="handleAssignCoverageSubmit(event)">
+        <form onsubmit="handleAssignCoverageSubmit(event)" ${ed ? `data-edit-id="${escapeHtml(ed.id)}"` : ''}>
           ${teacherHtml}
 
           <div class="mb-4">
@@ -6095,6 +6186,7 @@
 
             <div id="req-sub-staff-container" class="${pre.coveredForName && !pre.coveredForEmail ? 'hidden' : ''}">
               <select name="subbedNameDropdown" class="block w-full rounded border-gray-300 p-2 border">
+                ${coveredMissing ? `<option value="${escapeHtml(ed.coveredForEmail)}" data-name="${escapeHtml(ed.coveredFor)}" selected>${escapeHtml(displayCoveredName(ed.coveredFor))}</option>` : ''}
                 ${sortedStaff.map(s => `<option value="${escapeHtml(s.email)}" data-name="${escapeHtml(s.name)}" ${pre.coveredForEmail === s.email ? 'selected' : ''}>${escapeHtml(displayName(s.name))}</option>`).join('')}
               </select>
             </div>
@@ -6106,26 +6198,34 @@
 
           <div class="mb-6 border-t border-gray-200 pt-4">
             <label class="block text-sm font-bold text-ops-gray-dark mb-2">Note <span class="font-normal text-ops-gray">(optional)</span></label>
-            <textarea name="note" rows="3" data-auto="1" oninput="this.dataset.auto = '0'" placeholder="e.g. Sub plans are on the desk" class="block w-full rounded border-gray-300 p-2 border text-sm">${escapeHtml(assignThankYouNote(pre.date))}</textarea>
+            <textarea name="note" rows="3" data-auto="${ed ? '0' : '1'}" oninput="this.dataset.auto = '0'" placeholder="e.g. Sub plans are on the desk" class="block w-full rounded border-gray-300 p-2 border text-sm">${escapeHtml(noteText)}</textarea>
             <div class="flex flex-wrap gap-4 mt-2">
               <label class="flex items-center text-xs text-ops-gray-dark">
-                <input type="checkbox" name="noteToSub" checked class="rounded border-gray-300 text-ops-blue mr-2"> Include for the person covering
+                <input type="checkbox" name="noteToSub" ${noteToSubChecked ? 'checked' : ''} class="rounded border-gray-300 text-ops-blue mr-2"> Include for the person covering
               </label>
               <label class="flex items-center text-xs text-ops-gray-dark">
-                <input type="checkbox" name="noteToCovered" checked class="rounded border-gray-300 text-ops-blue mr-2"> Include for the person being covered
+                <input type="checkbox" name="noteToCovered" ${noteToCoveredChecked ? 'checked' : ''} class="rounded border-gray-300 text-ops-blue mr-2"> Include for the person being covered
               </label>
             </div>
           </div>
 
+          ${notifyHtml}
+
           <div class="flex justify-end gap-3">
             <button type="button" onclick="closeModal()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300">Cancel</button>
             <button type="submit" class="px-4 py-2 bg-ops-blue text-white rounded hover:bg-ops-blue-dark font-bold shadow-sm">
-              <i class="fas fa-paper-plane mr-2"></i> Assign Coverage
+              ${ed ? '<i class="fas fa-save mr-2"></i> Save Changes' : '<i class="fas fa-paper-plane mr-2"></i> Assign Coverage'}
             </button>
           </div>
         </form>`;
 
-      showModal("Assign Coverage", modalContent);
+      showModal(ed ? "Edit Coverage" : "Assign Coverage", modalContent);
+    }
+
+    /** Whether the building being viewed has a TST calendar set in Settings. */
+    function calendarConfigured() {
+      const c = STATE.config[STATE.building] || {};
+      return !!(c.calendarId || '').toString().trim();
     }
 
     /**
@@ -6237,7 +6337,14 @@
       e.preventDefault();
       const payload = buildAssignPayload(e.target);
       if (!payload) return;
+      const editId = e.target.dataset.editId;
       closeModal();
+      if (editId) {
+        payload.notifySub = e.target.notifySub.checked;
+        payload.notifyCovered = e.target.notifyCovered.checked;
+        sendAssignmentEdit(editId, payload);
+        return;
+      }
       sendAssignment(payload);
     }
 
