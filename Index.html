@@ -2738,18 +2738,21 @@
        const email = form.email.value.trim();
        if (!name || !email) { showToast("Name and email are required.", "error"); return; }
 
+       const isSuper = STATE.user.isSuperAdmin;
        const data = {
           name: name,
           email: email,
           role: form.role.value,
-          building: getSelectedBuildings(),
+          // Building admins add to the building they're working in.
+          building: isSuper ? getSelectedBuildings() : STATE.building,
           carryOver: form.carryOver.value,
           paidOut: form.paidOut.value
        };
 
        showLoading(true);
-       google.script.run.withSuccessHandler(() => {
+       google.script.run.withSuccessHandler(res => {
           showLoading(false);
+          if (res && res.exists) { showExistingStaffNotice(res, data); return; }
           showToast("Staff member added.", "success");
           closeModal();
           loadAdminTotals();
@@ -2757,6 +2760,81 @@
           showLoading(false);
           showToast("Add failed: " + (err.message || err), "error");
        }).addStaffMember(data);
+    }
+
+    function buildingLabel(code) {
+       return (STATE.config[code] && STATE.config[code].name) ? STATE.config[code].name : code;
+    }
+
+    function joinWords(list) {
+       if (list.length <= 1) return list.join('');
+       return list.slice(0, -1).join(', ') + ' and ' + list[list.length - 1];
+    }
+
+    // The email typed into Add Staff is already in the directory. Say who they are
+    // and where, and offer the one fix that applies: add them to this building,
+    // or reactivate them here if they were archived.
+    function showExistingStaffNotice(info, data) {
+       STATE.pendingExistingStaff = data;
+       const who = '<strong>' + escapeHtml(info.name || info.email) + '</strong> (' + escapeHtml(info.email) + ')';
+       const where = (info.buildings || []).map(b =>
+          escapeHtml(buildingLabel(b)) + ((info.archivedFrom || []).includes(b) ? ' <span class="text-gray-500">(archived)</span>' : '')
+       ).join(', ') || 'no building';
+       const names = list => joinWords(list.map(b => '<strong>' + escapeHtml(buildingLabel(b)) + '</strong>'));
+
+       const lines = [];
+       if (info.missing.length) lines.push('They are not in ' + names(info.missing) + ' yet.');
+       if (info.archived.length) lines.push('They were archived from ' + names(info.archived) + '.');
+       if (info.active.length) lines.push('They are already in ' + names(info.active) + "'s directory.");
+
+       const canFix = info.missing.length > 0 || info.archived.length > 0;
+       let action = '';
+       if (canFix) {
+          const targets = info.missing.concat(info.archived).map(buildingLabel);
+          const verb = info.missing.length && info.archived.length ? 'Add & reactivate in '
+                     : info.archived.length ? 'Reactivate in ' : 'Add to ';
+          const icon = info.archived.length && !info.missing.length ? 'fa-user-check' : 'fa-user-plus';
+          action = '<button onclick="resolveExistingStaff()" class="px-4 py-2 bg-ops-blue text-white rounded hover:bg-ops-blue-dark font-bold text-sm shadow"><i class="fas ' + icon + ' mr-2"></i>' + escapeHtml(verb + joinWords(targets)) + '</button>';
+       }
+
+       const nameNote = info.nameDiffers
+          ? '<p class="text-xs text-gray-500 mt-3">You typed &ldquo;' + escapeHtml(data.name) + '&rdquo;. Their existing name, role and balances are kept. Edit them afterwards if something needs changing.</p>'
+          : (canFix ? '<p class="text-xs text-gray-500 mt-3">Their existing role and balances are kept.</p>' : '');
+
+       const html = `
+         <div class="p-1">
+           <div class="bg-amber-50 border border-amber-200 rounded p-3 text-sm text-amber-800">
+             <i class="fas fa-info-circle mr-1"></i>${who} is already in the staff directory.
+           </div>
+           <p class="text-sm text-gray-700 mt-4"><span class="font-bold text-ops-gray-dark">Assigned to:</span> ${where}</p>
+           <p class="text-sm text-gray-700 mt-2">${lines.join(' ')}</p>
+           ${nameNote}
+           <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-100">
+             <button onclick="closeModal()" class="px-4 py-2 border border-gray-300 rounded text-gray-600 hover:bg-gray-50 font-bold text-sm">${canFix ? 'Cancel' : 'Close'}</button>
+             ${action}
+           </div>
+         </div>`;
+       showModal("Already in the Directory", html, 'max-w-lg');
+    }
+
+    function resolveExistingStaff() {
+       const data = STATE.pendingExistingStaff;
+       if (!data) { closeModal(); return; }
+       showLoading(true);
+       google.script.run.withSuccessHandler(res => {
+          showLoading(false);
+          STATE.pendingExistingStaff = null;
+          const who = (res && res.name) || data.email;
+          const parts = [];
+          if (res && res.added && res.added.length) parts.push('added to ' + joinWords(res.added.map(buildingLabel)));
+          if (res && res.reactivated && res.reactivated.length) parts.push('reactivated in ' + joinWords(res.reactivated.map(buildingLabel)));
+          showToast(who + (parts.length ? ' ' + parts.join(' and ') : ' is already active') + '.', "success");
+          closeModal();
+          loadAdminTotals();
+       }).withFailureHandler(err => {
+          showLoading(false);
+          showToast("Couldn't update: " + (err.message || err), "error");
+       }).addStaffMember(Object.assign({}, data, { resolveExisting: true }));
     }
 
     function submitEditStaff(email) {

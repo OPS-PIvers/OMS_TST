@@ -776,20 +776,34 @@ function assertSelfOrManagerOf_(targetEmail) {
 /**
  * Adds a new staff member. Writes individual cells (never appendRow) so the
  * Running Total ARRAYFORMULA in column H is not clobbered.
+ *
+ * If the email is already in the directory nothing is written. The call returns
+ * `{ exists: true, ... }` describing that person instead (see
+ * existingStaffSummary_), so the admin can be told who they are and offered the
+ * fix: add them to this building, or reactivate them here if archived. The fix
+ * is a second call with `resolveExisting: true`. Before this, re-adding an
+ * archived person "succeeded" without changing anything, and they never appeared.
  */
 function addStaffMember(data) {
   const ctx = getUserContext();
   assertAdmin_(ctx);
+  data = data || {};
 
   const name = (data.name || '').toString().trim();
   const email = (data.email || '').toString().trim();
   if (!name || !email) throw new Error('Name and email are required.');
 
   const role = (data.role || 'Teacher').toString().trim() || 'Teacher';
-  // Building admins always add to their own building; only Super Admins choose.
-  const building = ctx.isSuperAdmin
-    ? ((data.building || '').toString().trim() || ctx.building)
-    : ctx.building;
+  // Super Admins choose the building(s). A building admin adds to the building
+  // they are working in (a multi-building admin may have switched school), and
+  // only ever one of their own.
+  let building;
+  if (ctx.isSuperAdmin) {
+    building = (data.building || '').toString().trim() || ctx.building;
+  } else {
+    const requested = (data.building || '').toString().trim();
+    building = (requested && ctx.buildings.includes(requested)) ? requested : ctx.building;
+  }
   const carryOver = Number(data.carryOver) || 0;
   const paidOut = Number(data.paidOut) || 0;
 
@@ -801,19 +815,9 @@ function addStaffMember(data) {
 
   const existing = findStaffRowByEmail_(all, idx.email, email);
   if (existing > -1) {
-    // Super Admins manage existing people via Edit. A building admin re-adding an
-    // existing person (e.g. staff who work across buildings) simply gets their
-    // building merged into that person's assignment instead of a duplicate row.
-    if (ctx.isSuperAdmin) {
-      throw new Error('A staff member with that email already exists. Edit them instead.');
-    }
-    const currentBuildings = (all[existing][idx.building] || '').toString()
-      .split(',').map(b => b.trim()).filter(Boolean);
-    if (!currentBuildings.includes(building)) {
-      currentBuildings.push(building);
-      sheet.getRange(existing + 1, idx.building + 1).setValue(currentBuildings.join(', '));
-    }
-    return true;
+    const targets = splitBuildings_(building);
+    if (!data.resolveExisting) return existingStaffSummary_(all[existing], idx, targets, name);
+    return addExistingStaffToBuildings_(sheet, idx, existing, all[existing], targets);
   }
 
   // Insert immediately after the last row that has an email, so the new row
@@ -832,7 +836,69 @@ function addStaffMember(data) {
   sheet.getRange(newRow, idx.building + 1).setValue(building);
   sheet.getRange(newRow, idx.archived + 1).setValue(false);
 
-  return true;
+  return { added: true };
+}
+
+/**
+ * What the Add Staff form needs to explain an email that is already in the
+ * directory. For each requested building: `missing` = not assigned there yet,
+ * `archived` = assigned but archived there, `active` = already in that
+ * building's directory. Only buildings the caller asked for are classified;
+ * `buildings` / `archivedFrom` give the whole picture for the message.
+ */
+function existingStaffSummary_(row, idx, targets, typedName) {
+  const assigned = splitBuildings_(row[idx.building]);
+  const archivedFrom = parseArchivedList_(row[idx.archived], assigned);
+  const missing = [], archived = [], active = [];
+  targets.forEach(b => {
+    if (!assigned.includes(b)) missing.push(b);
+    else if (archivedFrom.includes(b)) archived.push(b);
+    else active.push(b);
+  });
+  const name = (row[idx.name] || '').toString().trim();
+  return {
+    exists: true,
+    name: name,
+    email: (row[idx.email] || '').toString().trim(),
+    role: (row[idx.role] || '').toString().trim(),
+    buildings: assigned,
+    archivedFrom: archivedFrom.filter(b => assigned.includes(b)),
+    missing: missing,
+    archived: archived,
+    active: active,
+    nameDiffers: !!typedName && typedName.toLowerCase() !== name.toLowerCase()
+  };
+}
+
+/**
+ * The one-click fix for an existing person: assign them to each target building
+ * they aren't in yet, and take each target building off their Archived list.
+ * Name, role, Carry Over and Paid Out are left alone (the person's primary
+ * building owns those; a building admin adding them is never their primary,
+ * because a new building is appended after the existing ones).
+ */
+function addExistingStaffToBuildings_(sheet, idx, i, row, targets) {
+  const assigned = splitBuildings_(row[idx.building]);
+  // Read the Archived cell against the CURRENT buildings before adding any: a
+  // legacy "TRUE" means "archived everywhere they were", and must not come to
+  // include the building being added.
+  let archivedFrom = parseArchivedList_(row[idx.archived], assigned);
+  const added = [], reactivated = [];
+  targets.forEach(b => {
+    if (!assigned.includes(b)) { assigned.push(b); added.push(b); }
+    if (archivedFrom.includes(b)) { archivedFrom = archivedFrom.filter(x => x !== b); reactivated.push(b); }
+  });
+  if (added.length) sheet.getRange(i + 1, idx.building + 1).setValue(assigned.join(', '));
+  if (added.length || reactivated.length) {
+    sheet.getRange(i + 1, idx.archived + 1).setValue(archivedFrom.join(', '));
+  }
+  return {
+    resolved: true,
+    name: (row[idx.name] || '').toString().trim(),
+    email: (row[idx.email] || '').toString().trim(),
+    added: added,
+    reactivated: reactivated
+  };
 }
 
 /**
