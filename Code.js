@@ -3847,6 +3847,7 @@ function assignedCoverageMap_(building, allAssignments) {
     if (hasCalendar) {
       if (a.calendarStatus === CAL_.created) calendar = 'On the ' + calendarName;
       else if (a.calendarStatus === CAL_.pending) calendar = 'Calendar event still queued';
+      else if (a.calendarStatus === CAL_.pendingUpdate) calendar = 'Calendar update still queued';
       else if (isCalendarFailure_(a.calendarStatus)) calendar = 'Calendar event failed';
     }
 
@@ -4126,7 +4127,8 @@ const ASSIGNMENT_HEADER_ = [
   'Note', 'Note To Sub', 'Note To Covered',
   'Status', 'Recorded TS', 'Recorded By', 'Nudged TS',
   'Calendar Event ID', 'Calendar Status', 'Notified TS',
-  'Cancelled TS', 'Cancelled By'
+  'Cancelled TS', 'Cancelled By',
+  'Edited TS', 'Edited By', 'Change Notice'
 ];
 
 // 0-based indexes into a row shaped like ASSIGNMENT_HEADER_.
@@ -4137,7 +4139,8 @@ const A_ = {
   note: 13, noteToSub: 14, noteToCovered: 15,
   status: 16, recordedTs: 17, recordedBy: 18, nudgedTs: 19,
   calendarEventId: 20, calendarStatus: 21, notifiedTs: 22,
-  cancelledTs: 23, cancelledBy: 24
+  cancelledTs: 23, cancelledBy: 24,
+  editedTs: 25, editedBy: 26, changeNotice: 27
 };
 
 const ASSIGNMENT_STATUS_ = { assigned: 'Assigned', recorded: 'Recorded', cancelled: 'Cancelled' };
@@ -4250,7 +4253,10 @@ function assignmentFromRow_(row, rowIndex) {
     calendarStatus: str(A_.calendarStatus),
     notifiedTs: row[A_.notifiedTs] || '',
     cancelledTs: row[A_.cancelledTs] || '',
-    cancelledBy: str(A_.cancelledBy)
+    cancelledBy: str(A_.cancelledBy),
+    editedTs: row[A_.editedTs] || '',
+    editedBy: str(A_.editedBy),
+    changeNotice: str(A_.changeNotice)
   };
 }
 
@@ -4602,6 +4608,7 @@ const CAL_ = {
   created: 'Created',
   failed: 'Failed',
   pendingDelete: 'Pending Delete',
+  pendingUpdate: 'Pending Update',
   deleted: 'Deleted'
 };
 
@@ -4667,6 +4674,18 @@ function assignmentEventDescription_(a) {
   return lines.join('\n');
 }
 
+function assignmentEventGuests_(a) {
+  return [a.subEmail, a.coveredForEmail].filter(Boolean);
+}
+
+function createAssignmentEvent_(calendar, a, when) {
+  return calendar.createEvent(assignmentEventTitle_(a), when.start, when.end, {
+    description: assignmentEventDescription_(a),
+    guests: assignmentEventGuests_(a).join(','),
+    sendInvites: false
+  });
+}
+
 /**
  * Creates the event for one assignment, then sends its emails.
  *
@@ -4691,13 +4710,7 @@ function finishAssignmentCreation_(sheet, a) {
         if (!calendar) {
           failure = 'Calendar not found, or this account cannot edit it (' + calendarId + ').';
         } else {
-          const guests = [a.subEmail, a.coveredForEmail].filter(Boolean).join(',');
-          const event = calendar.createEvent(assignmentEventTitle_(a), when.start, when.end, {
-            description: assignmentEventDescription_(a),
-            guests: guests,
-            sendInvites: false
-          });
-          eventId = event.getId();
+          eventId = createAssignmentEvent_(calendar, a, when).getId();
           status = CAL_.created;
         }
       } catch (err) {
@@ -4750,6 +4763,79 @@ function finishAssignmentCancellation_(sheet, a) {
   return updated;
 }
 
+/**
+ * Brings an edited assignment's event in line with the row, then sends the change
+ * emails the admin asked for. Same order as creation: the calendar first, so the
+ * emails only say it was updated when it was.
+ *
+ * An assignment whose event never got made (a failure, or one assigned before the
+ * building had a calendar) gets one now rather than staying off the calendar.
+ */
+function finishAssignmentUpdate_(sheet, a) {
+  const calendarId = calendarIdFor_(a.building);
+  let eventId = a.calendarEventId;
+  let status = CAL_.none;
+  let failure = '';
+
+  if (calendarId) {
+    const when = assignmentEventWindow_(a);
+    if (!when) {
+      failure = 'No start and end time is set for "' + a.period + '" on that day. ' +
+        'Add it under Settings → Periods.';
+    } else {
+      try {
+        const calendar = CalendarApp.getCalendarById(calendarId);
+        if (!calendar) {
+          failure = 'Calendar not found, or this account cannot edit it (' + calendarId + ').';
+        } else {
+          const event = eventId ? calendar.getEventById(eventId) : null;
+          if (event) {
+            event.setTitle(assignmentEventTitle_(a));
+            event.setTime(when.start, when.end);
+            event.setDescription(assignmentEventDescription_(a));
+            syncEventGuests_(event, assignmentEventGuests_(a));
+          } else {
+            eventId = createAssignmentEvent_(calendar, a, when).getId();
+          }
+          status = CAL_.created;
+        }
+      } catch (err) {
+        failure = (err && err.message) ? err.message : String(err);
+      }
+    }
+  }
+
+  if (failure) status = CAL_.failed + ': ' + failure;
+
+  const updates = {};
+  updates[A_.calendarEventId] = eventId;
+  updates[A_.calendarStatus] = status;
+  updates[A_.changeNotice] = '';
+  setAssignmentCells_(sheet, a.rowIndex, updates);
+
+  const updated = Object.assign({}, a, { calendarEventId: eventId, calendarStatus: status, changeNotice: '' });
+  const notice = parseChangeNotice_(a.changeNotice);
+  if (notice) sendAssignmentChangeEmails_(updated, notice.before, notice);
+  if (failure) alertCalendarFailure_(updated, 'The calendar event could not be updated: ' + failure);
+  return updated;
+}
+
+/**
+ * Swaps the event's guests for the assignment's two staff. Guests are added the
+ * same quiet way they are at creation: our email is the notification.
+ */
+function syncEventGuests_(event, wanted) {
+  const want = wanted.map(e => e.toLowerCase());
+  const have = (event.getGuestList() || []).map(g => g.getEmail());
+  have.forEach(email => {
+    if (want.indexOf(email.toLowerCase()) === -1) event.removeGuest(email);
+  });
+  const haveLower = have.map(e => e.toLowerCase());
+  wanted.forEach(email => {
+    if (haveLower.indexOf(email.toLowerCase()) === -1) event.addGuest(email);
+  });
+}
+
 function alertCalendarFailure_(a, reason) {
   const body =
     '<p>The coverage assignment for <strong>' + escapeHtml_(a.subName) + '</strong> on <strong>' +
@@ -4785,7 +4871,7 @@ function assignmentCalendarHasWork_() {
     for (let i = 1; i < data.length; i++) {
       if (!data[i][A_.id]) continue;
       const status = (data[i][A_.calendarStatus] == null ? '' : data[i][A_.calendarStatus]).toString();
-      if (status === CAL_.pending || status === CAL_.pendingDelete) return true;
+      if (status === CAL_.pending || status === CAL_.pendingDelete || status === CAL_.pendingUpdate) return true;
     }
   }
 
@@ -4820,12 +4906,14 @@ function processPendingAssignments_() {
     const sheet = assignmentsSheet_();
 
     const due = assignmentRows_(a =>
-      (a.calendarStatus === CAL_.pending || a.calendarStatus === CAL_.pendingDelete) &&
+      (a.calendarStatus === CAL_.pending || a.calendarStatus === CAL_.pendingDelete ||
+        (a.calendarStatus === CAL_.pendingUpdate && a.status !== ASSIGNMENT_STATUS_.cancelled)) &&
       mine.indexOf(a.building) > -1);
 
     due.forEach(a => {
       try {
         if (a.calendarStatus === CAL_.pendingDelete) finishAssignmentCancellation_(sheet, a);
+        else if (a.calendarStatus === CAL_.pendingUpdate) finishAssignmentUpdate_(sheet, a);
         else finishAssignmentCreation_(sheet, a);
       } catch (err) {
         console.error('Assignment calendar job failed', a.id, err);
@@ -5052,6 +5140,7 @@ function assignmentsFor_(building) {
       nudgedTs: safeDate(a.nudgedTs),
       notifiedTs: safeDate(a.notifiedTs),
       cancelledTs: safeDate(a.cancelledTs),
+      editedTs: safeDate(a.editedTs),
       dateDisplay: longDate_(a.date),
       periodDisplay: periodDisplay_(a.building, a.period, a.date),
       durationLabel: durationLabel_(a),
@@ -5192,12 +5281,16 @@ function cancelAssignment(id) {
   // An event can only be removed by the admin who owns it, so hand that to their
   // trigger and let it send the cancellation emails once the removal is done —
   // otherwise the email claims a removal that has not happened yet.
-  const hasCalendarWork = !!a.calendarEventId || a.calendarStatus === CAL_.pending;
+  const hasCalendarWork = !!a.calendarEventId || a.calendarStatus === CAL_.pending ||
+    a.calendarStatus === CAL_.pendingUpdate;
 
   const updates = {};
   updates[A_.status] = ASSIGNMENT_STATUS_.cancelled;
   updates[A_.cancelledTs] = new Date();
   updates[A_.cancelledBy] = ctx.name || ctx.email;
+  // An edit still waiting on the calendar is moot now; its emails must not follow
+  // the cancellation out.
+  updates[A_.changeNotice] = '';
   if (hasCalendarWork) updates[A_.calendarStatus] = CAL_.pendingDelete;
   setAssignmentCells_(assignmentsSheet_(), a.rowIndex, updates);
 
@@ -5207,6 +5300,279 @@ function cancelAssignment(id) {
   // ever heard of it.
   if (a.notifiedTs) sendAssignmentCancelledEmails_(a);
   return { cancelled: true };
+}
+
+// ===== Editing an assignment =====
+
+/** The parts of an assignment an admin can change after assigning it. */
+const ASSIGNMENT_EDIT_FIELDS_ = [
+  'date', 'period', 'amountType', 'hours', 'coveredFor', 'coveredForEmail',
+  'note', 'noteToSub', 'noteToCovered'
+];
+
+function assignmentEditSnapshot_(a) {
+  const out = {};
+  ASSIGNMENT_EDIT_FIELDS_.forEach(k => { out[k] = a[k]; });
+  return out;
+}
+
+function parseChangeNotice_(raw) {
+  if (!raw) return null;
+  try {
+    const n = JSON.parse(raw);
+    return n && n.before ? n : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Admin action: change an open assignment's date, period, duration, who it covers
+ * for, or its note. The person covering stays the same; changing them is Reassign
+ * (cancel and assign someone else), because the Record link they were emailed is
+ * signed for them.
+ *
+ * payload: the same shape assignCoverage takes (teacher fields ignored), plus
+ *          notifySub / notifyCovered — whether to email those staff what changed.
+ *
+ * With a calendar, the event belongs to the building admin and only their trigger
+ * can change it, so the row is marked Pending Update and the trigger updates the
+ * event, then sends the emails — the same order assigning uses. Without one, the
+ * emails go now. An assignment nobody has been told about yet (its event is still
+ * queued) needs no change email: the first email they get already has the new
+ * details.
+ */
+function editAssignment(id, payload) {
+  const ctx = getUserContext();
+  const a = findAssignment_(id);
+  if (!a) throw new Error('Assignment not found.');
+  assertCanManageAssignment_(ctx, a);
+  if (a.status !== ASSIGNMENT_STATUS_.assigned) {
+    throw new Error('This assignment is already ' + a.status.toLowerCase() + ', so it can no longer be edited.');
+  }
+
+  const p = payload || {};
+  const coveredForEmail = (p.coveredForEmail || '').toString().trim();
+  const coveredFor = (p.subbedFor || '').toString().trim();
+  if (coveredForEmail && coveredForEmail.toLowerCase() !== a.coveredForEmail.toLowerCase()) {
+    assertCanManageStaffEmails_(ctx, [coveredForEmail]);
+  }
+
+  const date = normDateKey_(p.date);
+  if (!parseYmd_(date)) throw new Error('A valid coverage date is required.');
+  const period = (p.period || '').toString().trim();
+  if (!period) throw new Error('A period is required.');
+  if (!coveredFor) throw new Error('Please say who needs coverage.');
+  const hours = Number(p.amount);
+  if (!isFinite(hours) || hours <= 0) throw new Error('Coverage duration must be greater than zero.');
+  if (coveredForEmail && coveredForEmail.toLowerCase() === a.subEmail.toLowerCase()) {
+    throw new Error('A staff member cannot be assigned to cover for themselves.');
+  }
+
+  const note = (p.note || '').toString().trim();
+  const next = {
+    date: date,
+    period: period,
+    amountType: (p.amountType || '').toString(),
+    hours: hours,
+    coveredFor: coveredFor,
+    coveredForEmail: coveredForEmail,
+    note: note,
+    noteToSub: !!p.noteToSub && !!note,
+    noteToCovered: !!p.noteToCovered && !!note && !!coveredForEmail
+  };
+
+  const before = assignmentEditSnapshot_(a);
+  const changed = ASSIGNMENT_EDIT_FIELDS_.filter(k => String(before[k]) !== String(next[k]));
+  if (changed.length === 0) return { edited: false, unchanged: true };
+
+  // Same duplicate guard as assigning: one person cannot hold the same period twice.
+  if (next.date !== a.date || next.period !== a.period) {
+    const clash = assignmentRows_(x =>
+      x.id !== a.id &&
+      x.status !== ASSIGNMENT_STATUS_.cancelled &&
+      x.subEmail.toLowerCase() === a.subEmail.toLowerCase() &&
+      x.date === next.date && x.period === next.period);
+    if (clash.length > 0) {
+      throw new Error(a.subName + ' is already assigned to ' + period + ' on ' + shortDate_(date) + '.');
+    }
+  }
+
+  const updates = {};
+  updates[A_.date] = next.date;
+  updates[A_.period] = next.period;
+  updates[A_.timeType] = next.amountType;
+  updates[A_.hours] = next.hours;
+  updates[A_.coveredFor] = next.coveredFor;
+  updates[A_.coveredForEmail] = next.coveredForEmail;
+  updates[A_.note] = next.note;
+  updates[A_.noteToSub] = next.noteToSub;
+  updates[A_.noteToCovered] = next.noteToCovered;
+  updates[A_.editedTs] = new Date();
+  updates[A_.editedBy] = ctx.name || ctx.email;
+  // Moved to a day that has not happened yet: the one automatic nudge belongs
+  // after the new date, not the old one.
+  if (next.date !== a.date && daysSinceDate_(next.date) <= 0) updates[A_.nudgedTs] = '';
+
+  const sheet = assignmentsSheet_();
+  const notify = { sub: !!p.notifySub, covered: !!p.notifyCovered };
+
+  // Not announced yet: its creation is still queued and will go out with these details.
+  if (!a.notifiedTs) {
+    setAssignmentCells_(sheet, a.rowIndex, updates);
+    return { edited: true, pendingCalendar: a.calendarStatus === CAL_.pending };
+  }
+
+  // Only the note's audience changed: nothing on the calendar describes that.
+  const calendarFields = changed.filter(k => k !== 'noteToSub' && k !== 'noteToCovered');
+  const queuedUpdate = a.calendarStatus === CAL_.pendingUpdate;
+  if (calendarIdFor_(a.building) && (calendarFields.length > 0 || queuedUpdate)) {
+    // A second edit before the trigger runs keeps the first edit's "before", so the
+    // email describes everything that changed since staff were last told.
+    const prior = queuedUpdate ? parseChangeNotice_(a.changeNotice) : null;
+    const notice = {
+      before: prior ? prior.before : before,
+      sub: notify.sub || !!(prior && prior.sub),
+      covered: notify.covered || !!(prior && prior.covered)
+    };
+    updates[A_.calendarStatus] = CAL_.pendingUpdate;
+    updates[A_.changeNotice] = JSON.stringify(notice);
+    setAssignmentCells_(sheet, a.rowIndex, updates);
+    return { edited: true, pendingCalendar: true };
+  }
+
+  setAssignmentCells_(sheet, a.rowIndex, updates);
+  const updated = Object.assign({}, a, next);
+  const sent = sendAssignmentChangeEmails_(updated, before, notify);
+  return { edited: true, emailed: sent };
+}
+
+/**
+ * What changed, as [label, before, after] rows a person can read. `noteFlag` names
+ * which audience flag decides whether this reader sees the note at all.
+ */
+function assignmentChangeRows_(before, a, noteFlag) {
+  const rows = [];
+  const add = (label, x, y) => { if (x !== y) rows.push([label, x || '(none)', y || '(none)']); };
+  add('Date', longDate_(before.date), longDate_(a.date));
+  add('Period', periodDisplay_(a.building, before.period, before.date), periodDisplay_(a.building, a.period, a.date));
+  add('Duration', durationLabel_(before), durationLabel_(a));
+  add('Covering For', before.coveredFor, a.coveredFor);
+  if (noteFlag) {
+    const was = before[noteFlag] ? before.note : '';
+    const now = a[noteFlag] ? a.note : '';
+    if (was !== now) rows.push(['Note', was ? 'Updated' : 'Added', now ? 'see below' : 'Removed']);
+  }
+  return rows;
+}
+
+function changeTable_(rows) {
+  const body = rows.map(r =>
+    `<tr><td style="padding: 6px 10px 6px 0; font-weight: bold; vertical-align: top;">${escapeHtml_(r[0])}</td>` +
+    `<td style="padding: 6px 10px; color: #6b7280; text-decoration: line-through; vertical-align: top;">${escapeHtml_(r[1])}</td>` +
+    `<td style="padding: 6px 0 6px 10px; color: #1d2a5d; font-weight: bold; vertical-align: top;">${escapeHtml_(r[2])}</td></tr>`
+  ).join('');
+  return `<p style="margin: 20px 0 6px 0; font-weight: bold; color: #2d3f89;">What changed</p>` +
+    `<table style="border-collapse: collapse; font-size: 14px; margin-bottom: 20px;">${body}</table>`;
+}
+
+function assignmentCalendarUpdatedLine_(a) {
+  if (!a || a.calendarStatus !== CAL_.created) return '';
+  return '<p style="font-size: 13px; color: #6b7280;">The ' +
+    escapeHtml_(calendarNameFor_(a.building)) + ' has been updated.</p>';
+}
+
+/**
+ * The change emails, to whoever the admin ticked. A reader with nothing visible
+ * changed (say, only the other person's note) is not emailed. When the person
+ * being covered for changed, "the person being covered for" means both: the new
+ * one is told coverage is arranged, the old one that it no longer covers them.
+ * Returns how many emails were queued.
+ */
+function sendAssignmentChangeEmails_(a, before, notify) {
+  const buildingName = buildingNameFor_(a.building);
+  const opts = { buildingCode: a.building };
+  const adminName = a.assignedByName || a.assignedBy;
+  const dateLong = longDate_(a.date);
+  const periodText = periodDisplay_(a.building, a.period, a.date);
+  let sent = 0;
+
+  if (notify.sub && a.subEmail) {
+    const rows = assignmentChangeRows_(before, a, 'noteToSub');
+    if (rows.length > 0) {
+      const recordUrl = buildAssignmentLink_(scriptUrl_(), { action: 'record', id: a.id, tEmail: a.subEmail });
+      const body =
+        `<p>Hello <strong>${escapeHtml_(a.subName)}</strong>,</p>` +
+        `<p>Your TST Coverage assignment has been changed. You are now covering for <strong>${escapeHtml_(a.coveredFor)}</strong> on ` +
+        `<strong>${escapeHtml_(dateLong)}</strong>, <strong>${escapeHtml_(periodText)}</strong>.</p>` +
+        changeTable_(rows) +
+        detailsBox_([
+          ['Date', dateLong],
+          ['Period', periodText],
+          ['Covering For', a.coveredFor],
+          ['Duration', durationLabel_(a)]
+        ]) +
+        (a.noteToSub ? noteBlock_(a.note) : '') +
+        assignmentCalendarUpdatedLine_(a) +
+        `<p style="font-size: 13px; color: #6b7280;">If you have a conflict, contact ${escapeHtml_(adminName)} directly.</p>`;
+      sendStyledEmail_(a.subEmail, assignmentSubject_(a, 'TST Coverage Updated'), 'TST Coverage Updated',
+        body, 'Record My TST Time', buildingName, Object.assign({ buttonUrl: recordUrl }, opts));
+      sent++;
+    }
+  }
+
+  if (notify.covered) {
+    const oldEmail = (before.coveredForEmail || '').toString();
+    const switched = oldEmail.toLowerCase() !== (a.coveredForEmail || '').toLowerCase();
+
+    if (a.coveredForEmail) {
+      const details = detailsBox_([
+        ['Date', dateLong],
+        ['Period', periodText],
+        ['Covered By', a.subName]
+      ]);
+      const noteHtml = a.noteToCovered ? noteBlock_(a.note) : '';
+      if (switched) {
+        // New to them, so it reads like the original arrangement email.
+        const body =
+          `<p>Hello <strong>${escapeHtml_(a.coveredFor)}</strong>,</p>` +
+          `<p><strong>${escapeHtml_(a.subName)}</strong> has been assigned to cover your ` +
+          `<strong>${escapeHtml_(periodText)}</strong> class on <strong>${escapeHtml_(dateLong)}</strong>.</p>` +
+          details + noteHtml + assignmentCalendarLine_(a);
+        sendStyledEmail_(a.coveredForEmail, assignmentSubject_(a, 'TST Coverage Arranged'), 'TST Coverage Arranged',
+          body, 'View My TST', buildingName, opts);
+        sent++;
+      } else {
+        const rows = assignmentChangeRows_(before, a, 'noteToCovered')
+          .filter(r => r[0] !== 'Covering For');
+        if (rows.length > 0) {
+          const body =
+            `<p>Hello <strong>${escapeHtml_(a.coveredFor)}</strong>,</p>` +
+            `<p>The coverage arranged for your class has been changed. <strong>${escapeHtml_(a.subName)}</strong> is now covering your ` +
+            `<strong>${escapeHtml_(periodText)}</strong> class on <strong>${escapeHtml_(dateLong)}</strong>.</p>` +
+            changeTable_(rows) + details + noteHtml + assignmentCalendarUpdatedLine_(a);
+          sendStyledEmail_(a.coveredForEmail, assignmentSubject_(a, 'TST Coverage Updated'), 'TST Coverage Updated',
+            body, 'View My TST', buildingName, opts);
+          sent++;
+        }
+      }
+    }
+
+    if (switched && oldEmail) {
+      const oldPeriod = periodDisplay_(a.building, before.period, before.date);
+      const body =
+        `<p>Hello <strong>${escapeHtml_(before.coveredFor)}</strong>,</p>` +
+        `<p>The coverage arranged for your <strong>${escapeHtml_(oldPeriod)}</strong> class on ` +
+        `<strong>${escapeHtml_(longDate_(before.date))}</strong> has been changed. ` +
+        `<strong>${escapeHtml_(a.subName)}</strong> is no longer covering your class.</p>` +
+        `<p style="font-size: 13px; color: #6b7280;">Contact ${escapeHtml_(adminName)} if you still need coverage.</p>`;
+      sendStyledEmail_(oldEmail, 'TST Coverage Changed: ' + shortDate_(before.date) + ' — ' + before.period,
+        'Coverage Changed', body, 'View My TST', buildingName, opts);
+      sent++;
+    }
+  }
+
+  return sent;
 }
 
 /**
